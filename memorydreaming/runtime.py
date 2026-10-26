@@ -44,6 +44,7 @@ from .models import (
     MemoryStatus,
     ObserveResult,
     Query,
+    ReadFilter,
     RetrievalResult,
     RetrievedItem,
     Scope,
@@ -98,6 +99,10 @@ class MemoryRuntime:
     @property
     def settings(self) -> Settings:
         return self._settings
+
+    @property
+    def clock(self) -> Clock:
+        return self._clock
 
     @property
     def db(self) -> Database:
@@ -181,6 +186,8 @@ class MemoryRuntime:
         max_items: int | None = None,
         token_budget: int | None = None,
         as_of: datetime | None = None,
+        *, read_filter: ReadFilter | None = None,
+        detail: str = "auto",
     ) -> RetrievalResult:
         """检索证据。返回结果自带检索轨迹与缺口说明。
 
@@ -195,6 +202,8 @@ class MemoryRuntime:
             max_items=max_items,
             token_budget=token_budget,
             as_of=as_of,
+            read_filter=read_filter,
+            detail=detail,
         )
         return self._pipeline.run(query)
 

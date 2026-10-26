@@ -39,7 +39,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 4：事件幂等按作用域隔离，摘要/任务持久保存完整作用域。
 # 版本 5：任务租约、提交凭证和延迟重试。
 # 版本 6：断言抑制、来源片段、内容代次及作用域独立的核心字段来源。
-SCHEMA_VERSION = "6"
+# 版本 7：宿主实际投递记录，纯新增表。
+SCHEMA_VERSION = "7"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 

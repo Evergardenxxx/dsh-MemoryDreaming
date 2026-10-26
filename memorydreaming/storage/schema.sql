@@ -300,3 +300,13 @@ CREATE TABLE IF NOT EXISTS core_field_tombstones (
     created_at TEXT NOT NULL,
     PRIMARY KEY(scope_key, kind, field_key)
 );
+
+-- 只保存宿主确认已显示的回复；未知投递状态不当作已发生的对话。
+CREATE TABLE IF NOT EXISTS host_deliveries (
+    event_id TEXT PRIMARY KEY REFERENCES events(event_id),
+    user_event_id TEXT NOT NULL REFERENCES events(event_id),
+    delivery_state TEXT NOT NULL CHECK(delivery_state IN ('final', 'interrupted')),
+    used_memory_ids_json TEXT NOT NULL DEFAULT '[]',
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+    evidence_complete INTEGER NOT NULL DEFAULT 1 CHECK(evidence_complete IN (0,1))
+);

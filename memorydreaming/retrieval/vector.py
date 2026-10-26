@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ..clock import utcnow
-from ..models import LinkRelation, MemoryItem, MemoryStatus, MemoryType, Scope
+from ..models import LinkRelation, MemoryItem, MemoryStatus, MemoryType, ReadFilter, Scope
 from ..storage.database import Database
 from ..storage.repository import scope_sql
 from .embedding import Embedder, HashingEmbedder
@@ -94,6 +94,7 @@ class VectorIndex:
         memory_types: list[MemoryType] | None = None,
         limit: int = 20,
         min_score: float = 0.3,
+        *, read_filter: ReadFilter | None = None,
     ) -> list[VectorHit]:
         """按余弦相似度检索。
 
@@ -106,7 +107,7 @@ class VectorIndex:
         if not any(query_vector):
             return []
 
-        rows = self._repos.vectors.load_scope(scope, self._embedder.name, memory_types)
+        rows = self._repos.vectors.load_scope(scope, self._embedder.name, memory_types, read_filter=read_filter)
         hits: list[VectorHit] = []
 
         for memory_id, memory_type, blob in rows:

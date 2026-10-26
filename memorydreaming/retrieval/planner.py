@@ -104,6 +104,12 @@ class QueryPlanner:
 
         type_scores = self._score_types(query.text, time_hint, now)
         expansion_mode = self._expansion_mode(time_hint, now)
+        if query.detail not in ("auto", "overview", "evidence"):
+            raise ValueError("detail 必须为 auto / overview / evidence")
+        if query.detail == "overview":
+            expansion_mode = "summary_then_expand"
+        elif query.detail == "evidence":
+            expansion_mode = "detail"
 
         # 高分类型给足候选预算，低分类型只留小额探查预算。
         # 「探查」的意义在于：路由可能猜错，留一点预算能兜住意外。

@@ -39,6 +39,7 @@ from ..models import (
     MemoryType,
     Modality,
     Scope,
+    ReadFilter,
     Summary,
     body_to_text,
     new_id,
@@ -79,6 +80,30 @@ def _scope_key(scope: Scope) -> str:
         [scope.user_id, scope.character_id, scope.relationship_id, scope.activity_id, scope.domain],
         ensure_ascii=False, separators=(",", ":"),
     )
+
+
+def retrieval_sql(scope: Scope, alias: str = "", read_filter: ReadFilter | None = None) -> tuple[str, list[object]]:
+    """在候选 LIMIT 前应用共享/活动联合范围及本轮事件排除。"""
+    visible, params = scope_sql(scope, alias)
+    if read_filter is None:
+        return visible, params
+    prefix = f"{alias}." if alias else ""
+    clauses = [visible]
+    if read_filter.activity_ids is not None:
+        ids = list(dict.fromkeys(item for item in read_filter.activity_ids if item is not None))
+        alternatives = []
+        if None in read_filter.activity_ids:
+            alternatives.append(f"{prefix}activity_id IS NULL")
+        if ids:
+            alternatives.append(f"{prefix}activity_id IN ({_placeholders(len(ids))})")
+            params.extend(ids)
+        clauses.append("(" + " OR ".join(alternatives) + ")" if alternatives else "0")
+    for event_id in read_filter.exclude_event_ids:
+        # 精确匹配 JSON 引号包围的事件 ID；不要求 SQLite 编译 JSON 扩展。
+        token = json.dumps(event_id, ensure_ascii=False).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append(f"{prefix}source_event_ids_json NOT LIKE ? ESCAPE '\\'")
+        params.append(f"%{token}%")
+    return " AND ".join(clauses), params
 
 
 def _json_list(values: Iterable[str] | None) -> str:
@@ -479,13 +504,14 @@ class MemoryRepository:
         since: datetime,
         memory_types: list[MemoryType] | None,
         limit: int,
+        *, read_filter: ReadFilter | None = None,
     ) -> list[MemoryItem]:
         """取某个时间点之后出现的记忆，按事件时间倒序。
 
         用 COALESCE(occurred_start, recorded_at)：有的记忆只有记录时间
         （比如「用户今天提到自己十年前搬过家」），不能因为缺事件时间就漏掉。
         """
-        visible, params = scope_sql(scope)
+        visible, params = retrieval_sql(scope, read_filter=read_filter)
         sql = f"""
             SELECT * FROM memories
             WHERE {visible}
@@ -511,9 +537,10 @@ class MemoryRepository:
         end: datetime,
         memory_types: list[MemoryType] | None,
         limit: int,
+        *, read_filter: ReadFilter | None = None,
     ) -> list[MemoryItem]:
         """按事件时间范围取记忆，用于「明确日期」的精确回查。"""
-        visible, params = scope_sql(scope)
+        visible, params = retrieval_sql(scope, read_filter=read_filter)
         sql = f"""
             SELECT * FROM memories
             WHERE {visible}
@@ -1468,13 +1495,14 @@ class VectorRepository:
         scope: Scope,
         model: str,
         memory_types: list[MemoryType] | None = None,
+        *, read_filter: ReadFilter | None = None,
     ) -> list[tuple[str, MemoryType, bytes]]:
         """取出某个角色在某模型下的全部向量。
 
         第一版是全量载入内存做暴力检索：本地几百上千条记忆完全够用，
         而且实现简单、没有近似误差。规模上去再换 ANN 索引。
         """
-        visible, params = scope_sql(scope, "m")
+        visible, params = retrieval_sql(scope, "m", read_filter)
         sql = f"""
             SELECT v.memory_id, v.vector, m.memory_type
             FROM memory_vectors v
@@ -1530,8 +1558,8 @@ class SummaryRepository:
         ).fetchone()
         return _summary_from_row(row) if row else None
 
-    def list_active(self, scope: Scope, limit: int = 50) -> list[Summary]:
-        visible, params = scope_sql(scope)
+    def list_active(self, scope: Scope, limit: int = 50, *, read_filter: ReadFilter | None = None) -> list[Summary]:
+        visible, params = retrieval_sql(scope, read_filter=read_filter)
         rows = self._conn.execute(
             f"""
             SELECT * FROM summaries

@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import json
 import uuid
+import sys
+from contextlib import redirect_stdout
 
 from .clock import load_timezone, utcnow
 from .config import Settings
@@ -72,6 +74,14 @@ def _build_parser() -> argparse.ArgumentParser:
     forget = sub.add_parser("forget", help="按 ID 删除记忆")
     forget.add_argument("memory_id")
     forget.add_argument("--reason", default="用户要求删除")
+
+    mcp = sub.add_parser("mcp", help="启动只读 MCP stdio 服务；身份由启动配置绑定")
+    mcp.add_argument("--user", required=True)
+    mcp.add_argument("--character", required=True)
+    mcp.add_argument("--relationship", required=True)
+    mcp.add_argument("--domain", default="real")
+    mcp.add_argument("--allow-activity", action="append", default=[], help="显式允许的活动 ID，可重复")
+    mcp.add_argument("--activity", help="默认焦点，必须同时在允许目录内")
     return parser
 
 
@@ -94,6 +104,24 @@ def main(argv: list[str] | None = None) -> int:
         # 评估用临时库，跑完即弃；传 --db 可以保留下来慢慢看
         print(run_evaluation(args.db).render())
         return 0
+
+    if args.command == "mcp":
+        from .host import HostAdapter, SessionBinding
+        from .mcp import McpServer
+        for stream in (sys.stdin, sys.stdout):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
+        # 配置降级和初始化诊断只进入 stderr，stdout 留给 MCP JSON-RPC。
+        with redirect_stdout(sys.stderr):
+            runtime = _open_runtime(args)
+        try:
+            binding = SessionBinding(args.user, args.character, args.relationship, "mcp-" + uuid.uuid4().hex,
+                                     domain=args.domain, allowed_activity_ids=tuple(args.allow_activity),
+                                     selected_activity_id=args.activity)
+            session = HostAdapter(runtime).open_session(binding)
+            return McpServer(session).serve()
+        finally:
+            runtime.close()
 
     runtime = _open_runtime(args)
     try:

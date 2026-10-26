@@ -1,7 +1,7 @@
 {
   "protocol_version": "1.0",
-  "status": "design_only",
-  "description": "协议中立的工具定义；尚未提供可执行的 HTTP/MCP 服务。宿主注入可信身份，不接受 LLM 指定用户、角色或领域。",
+  "status": "partial_implementation",
+  "description": "完整目标契约。v0.7 HostAdapter/MCP 只注册 memory_search 与 memory_read；修改建议仍待实现。身份由可信宿主注入。",
   "tools": [
     {
       "name": "memory_search",

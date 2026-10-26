@@ -48,11 +48,21 @@ from .models import (
 )
 from .retrieval.embedding import Embedder, HashingEmbedder
 from .runtime import MemoryRuntime
+from .host import HostAdapter, MemorySession, PreparedTurn, SessionBinding
+from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "MemoryRuntime",
+    "HostAdapter",
+    "MemorySession",
+    "PreparedTurn",
+    "SessionBinding",
+    "AdapterError",
+    "TokenCounter",
+    "EstimatedTokenCounter",
+    "tool_catalog",
     "Embedder",
     "HashingEmbedder",
     "Settings",

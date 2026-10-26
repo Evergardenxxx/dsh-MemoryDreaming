@@ -2,7 +2,9 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.6，加入持久事实抑制与核心字段来源**。已实现身份与关系恢复、原始事件保存、四类记忆、工作检查点、混合检索、摘要、巩固、规则冲突消解和可靠队列。遗忘会保存抑制标记、处理关联核心字段，并使在途抽取结果重新计算；核心按领域/关系独立版本化。当前 183 个回归测试通过。事实抑制不等于原文擦除，完整遗忘与真实宿主适配仍待完成。
+当前状态：**v0.7，提供 HostAdapter 与 MCP 只读接入**。在身份、关系、四类记忆、混合检索、可靠巩固及事实抑制之上，新增逐轮恢复、受控引用、来源检查、消息投递记录和可替换 token 计量。LLM 可通过 `memory_search` / `memory_read` 查询；模型不能指定用户身份或直接修改核心。当前 230 个回归测试通过。具体聊天产品的 hook、真实模型往返、语义模型及完整擦除仍待完成。
+
+接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或使用 [MCP 配置示例](examples/mcp-config.json)。配置示例尚未自动写入任何聊天应用。
 
 后续开发以这三份规格为基线，均明确区分当前实现与待实现设计：
 
@@ -12,7 +14,7 @@
 | [算法规格 v0.2](docs/algorithms-v0.2.md) | 形成、路由、时间、融合排序、预算、纠错、遗忘和核心成长 |
 | [LLM 接口协议 v1](docs/llm-interface-v1.md) | 宿主钩子、四种工具、JSON Schema、结果/错误、模型适配与样例 |
 
-早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。LLM 接口当前是设计契约，尚未实现 HTTP/MCP 服务或真实宿主适配。
+早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。LLM 契约中的只读部分已有 Python/MCP 实现，修改建议与 HTTP 服务仍未开放。
 
 ## 先跑起来
 
@@ -21,7 +23,8 @@
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部 183 个测试
+python -m unittest                # 跑全部 230 个测试
+python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 ```
 
 `demo` 会打印每一步在做什么，输出末尾会告诉你数据库文件在哪。想自己看数据，直接用 sqlite3 打开它。
@@ -51,6 +54,11 @@ memorydreaming/
 ├── config.py         配置：48 小时窗口、候选预算、token 预算、衰减与向量阈值
 ├── errors.py         自定义异常：版本冲突、恢复失败……
 ├── runtime.py        对外门面：bootstrap / retrieve / observe / checkpoint / correct / forget
+├── host.py           可信会话绑定、逐轮恢复、实际投递、只读工具
+├── references.py     随机会话引用、版本摘要、逐跳来源及遗忘检查
+├── llm.py            工具参数校验、统一回应、TokenCounter
+├── llm-tools.json    当前开放的两个只读工具定义
+├── mcp.py            MCP stdio：工具与 bootstrap 资源
 ├── consolidation.py  异步整理：任务分发 + 抽取 + 去重合并
 ├── worker.py         文件库任务心跳：独立连接续租
 ├── summarization.py  主题摘要：主题词分组、索引卡生成、卡片匹配
@@ -83,6 +91,8 @@ tests/
 ├── test_consolidation.py 抽取后续任务、去重合并
 ├── test_job_leases.py    租约、延迟重试、事务回滚、真实进程崩溃与迁移
 ├── test_fact_suppression.py  重提取防复活、片段隔离、核心字段与并发遗忘
+├── test_host.py          绑定、跨窗口恢复、来源、原话屏蔽、预算与投递
+├── test_mcp.py           MCP 往返、真实子进程、仓库外启动
 ├── test_summaries.py     主题卡生成、回源展开、失效
 ├── test_vector.py        嵌入性质、索引维护、通道接线
 ├── test_decay_time.py    衰减、时间旅行、上下文围栏
@@ -263,16 +273,16 @@ MRR：1.000
 
 这一版是**骨架**，不是成品。刻意没做的部分：
 
-- **抽取只有三条正则规则**。它证明了接口和流水线能跑通，不代表抽取质量。接模型时只需新写一个实现 `MemoryExtractor` 的类。
+- **抽取仍是有限的正则规则**，目前覆盖名字、称呼、约定和喜好。它证明了接口和流水线能跑通，不代表开放对话中的抽取质量。接模型时需实现 `MemoryExtractor`，并验证来源、模态和事实抑制规则。
 - **嵌入是字面哈希**。同义改写召回不了（见评估的观察项）。换真实模型是替换一个类，但要重新标定 `vector_min_score` 并 `reindex`。
 - **摘要抽取式生成**。读起来像清单，不是概述；主题词靠二字词频率，遇到指代会失效。
 - **冲突检测只到规则级**。单值谓词换值和否定翻转能识别，复杂表达的冲突仍需验证（「养了猫」与「对猫过敏」本身可以同时成立，不能自动视作矛盾）；`as_of` 按「记录时间 + 有效期」回放，没有记录「何时得知失效」。
 - **向量检索是暴力扫描**。本地几百上千条够用，十万条以上要换 ANN。
 - **巩固只有去重和摘要**。`propose_core`（核心成长候选）还是任务表里的类型，没有执行器。
-- **没有宿主适配层**。真正接进聊天客户端需要会话/请求钩子。
+- **具体聊天产品尚未接入**。已有进程内 HostAdapter 和 MCP 只读服务；保证首轮/压缩后自动恢复仍需产品的会话/请求 hook，尚未完成真实模型供应商往返测试。
 - **队列需要宿主持续轮询**。每次 `run_consolidation()` 会回收过期任务；库本身不会启动常驻进程。文件库可在耗时抽取时续租，内存库只有同步租约校验。向量计算仍在写事务内，接远程嵌入前需要把这一步移到事务外；跨设备同步尚未实现。
 
-事实抑制的 API、迁移和边界见 [持久事实抑制](docs/fact-suppression.md)。完整问题清单见 **[docs/open-problems.md](docs/open-problems.md)**。数据库结构已升级到 v6：增加来源片段、抑制账本、内容代次及核心字段来源，保留旧记录与版本号，并为旧 deleted 记录补充抑制标记。旧库没有的精确片段不会被凭空补造；缺少定位时采取保守隔离。
+事实抑制的 API、迁移和边界见 [持久事实抑制](docs/fact-suppression.md)。完整问题清单见 **[docs/open-problems.md](docs/open-problems.md)**。schema v6 增加来源片段、抑制账本、内容代次及核心字段来源；v7 纯新增 host_deliveries，保存实际投递与引用快照。迁移保留旧记忆与版本，不补造旧库没有的精确片段。
 
 ## 备注
 

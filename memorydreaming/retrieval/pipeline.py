@@ -135,10 +135,10 @@ class RetrievalPipeline:
         """
         # 当前摘要是可变的投影，没有历史版本。即使摘要创建得早，后续重建
         # 也可能混入 as_of 之后的内容；历史回放只使用逐条校验后的来源记忆。
-        if plan.expansion_mode != "summary_then_expand" or plan.as_of is not None:
+        if plan.expansion_mode != "summary_then_expand" or plan.as_of is not None or plan.hard_time:
             return [], []
 
-        hits = find_summaries(self._db, query.scope, plan.query_text, limit=2)
+        hits = find_summaries(self._db, query.scope, plan.query_text, limit=2, read_filter=query.read_filter)
         channel_hits: list[ChannelHit] = []
 
         for rank, hit in enumerate(hits, start=1):
@@ -167,7 +167,7 @@ class RetrievalPipeline:
             if budget <= 0:
                 continue
             memories = self._repos.memories.list_recent(
-                query.scope, since, [memory_type], budget
+                query.scope, since, [memory_type], budget, read_filter=query.read_filter,
             )
             weight = _RECENT_CHANNEL_BASE_WEIGHT + 0.4 * plan.type_scores[memory_type]
             hits.extend(
@@ -192,6 +192,7 @@ class RetrievalPipeline:
                 memory_types=[memory_type],
                 limit=budget,
                 scope=query.scope,
+                read_filter=query.read_filter,
             )
             weight = 0.5 + 0.5 * plan.type_scores[memory_type]
             hits.extend(
@@ -218,6 +219,7 @@ class RetrievalPipeline:
             plan.query_text,
             limit=self._settings.vector_candidate_limit,
             min_score=self._settings.vector_min_score,
+            read_filter=query.read_filter,
         )
 
         hits: list[ChannelHit] = []
@@ -248,6 +250,7 @@ class RetrievalPipeline:
             hint.end,
             memory_types=None,  # 时间范围内不预设类型，避免漏掉
             limit=self._settings.keyword_candidate_limit,
+            read_filter=query.read_filter,
         )
         return [
             ChannelHit(memory.memory_id, "time", rank, _TIME_CHANNEL_WEIGHT)
@@ -278,6 +281,12 @@ class RetrievalPipeline:
         for candidate in fused:
             memory = fetched.get(candidate.memory_id)
             if memory is None:
+                dropped += 1
+                continue
+            if query.read_filter is not None and (
+                (query.read_filter.activity_ids is not None and memory.scope.activity_id not in query.read_filter.activity_ids)
+                or set(memory.source_event_ids).intersection(query.read_filter.exclude_event_ids)
+            ):
                 dropped += 1
                 continue
             if self._repos.forgetting.is_suppressed(memory):

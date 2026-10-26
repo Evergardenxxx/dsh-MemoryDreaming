@@ -1,8 +1,8 @@
 # 面向 LLM 的接口协议 v1
 
-状态：**设计契约，尚未实现可调用服务**。本文固定宿主、对话 LLM、抽取 LLM 三种调用者的边界。业务架构见 [架构 v0.2](architecture-v0.2.md)，算法见 [算法 v0.2](algorithms-v0.2.md)。协议 v1 与 Python 包 v0.6、SQLite schema v6 是不同版本号。
+状态：**只读部分已实现，其余为设计契约**。本文固定宿主、对话 LLM、抽取 LLM 三种调用者的边界。业务架构见 [架构 v0.2](architecture-v0.2.md)，算法见 [算法 v0.2](algorithms-v0.2.md)。协议 v1 与 Python 包 v0.7、SQLite schema v7 是不同版本号。
 
-v0.6 / schema v6 现已提供本地 `forget_fact`、核心字段来源和作用域隔离，见 [实现说明](fact-suppression.md)；这些进展没有自动注册为模型工具。宿主绑定、受控引用和用户意图校验仍待实现，`full_forgetting` 继续为 false。
+v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` / `memory_read`，可通过 MCP stdio 调用，见 [接入指南](host-adapter.md)。修改提议、用户意图核验与执行工作流未完成；本地 `forget_fact` 不直接开放给模型，`full_forgetting` 继续为 false。
 
 机器可读文件：
 
@@ -11,7 +11,7 @@ v0.6 / schema v6 现已提供本地 `forget_fact`、核心字段来源和作用�
 - [抽取结果 Schema](contracts/extraction-response.schema.json)
 - [完整交互样例与非法参数](contracts/examples.json)
 
-这些文件是待实现适配器的契约和验证夹具，不能直接配置后就声称已有长期记忆插件。
+这些文件覆盖完整目标契约；当前 [运行时目录](../memorydreaming/llm-tools.json) 只注册两个读工具。具体聊天产品的自动生命周期和真实供应商往返需要另外接入，不能单凭 JSON 文件声称已经安装插件。
 
 ## 1. 三类调用者
 
@@ -27,9 +27,9 @@ v0.6 / schema v6 现已提供本地 `forget_fact`、核心字段来源和作用�
 
 | 入口 | 参数来源 | 输出与责任 | 当前本地 API 映射 |
 |---|---|---|---|
-| open_session | 宿主可信 binding、conversation_id、model_profile | 恢复状态、核心版本、活动目录、能力清单 | bootstrap + 新增包装层 |
-| prepare_turn | 实际用户 message_id/content/time、选定活动、deadline | 保存真实事件、检索资料、模型请求片段 | observe + retrieve + 新增排除/计量 |
-| after_delivery | 实际显示回复、delivery_state、使用的证据引用 | 保存角色事件，记录使用情况，接受可验证检查点 | observe + mark_used + checkpoint；投递状态待实现 |
+| open_session | 宿主可信 binding、conversation_id、model_profile | 恢复状态、核心版本、活动目录、能力清单 | 已有 HostAdapter.open_session；返回 session.opened，model_profile 尚未提供 |
+| prepare_turn | 实际用户 message_id/content/time、选定活动、deadline | 保存真实事件、检索资料、模型请求片段 | 已实现事件排除、可信焦点与记忆消息计量 |
+| after_delivery | 实际显示回复、delivery_state、使用的证据引用 | 保存角色事件，记录使用情况，接受可验证检查点 | 已实现 final / interrupted 投递及引用快照；检查点建议待实现 |
 | commit_change | proposal_id、实际用户请求事件、expected_version/epoch | 后端执行修改并给出精确回执 | 新服务；禁止直通本地 propose_core_update |
 | get_change_receipt | 当前绑定下的 operation_id | 已生效状态、影响数量、未完成范围 | 待实现 |
 
@@ -54,7 +54,7 @@ binding、request_id、deadline、idempotency_key、当前用户事件 ID、scop
 }
 ```
 
-这是第一版适配器的预期能力样例，**不是当前已具备的服务声明**。未完成字段保持 false 或不注册对应工具。比如 recorded/valid 时间轴、完整遗忘或提议工作流未完成时，不能自动伪装成已支持。
+这是能力结构样例；当前 HostAdapter 的 provider_mode 为 neutral，其他开关按实际计数器与实现返回。automatic_bootstrap 指宿主调用 open_session / prepare_turn 的路径，不能推导成任意 MCP 客户端已安装自动 hook。recorded/valid、完整遗忘和提议工具仍关闭。
 
 ## 3. 对话 LLM 的四个工具
 
@@ -135,7 +135,7 @@ read 中任一引用越权/不存在，整次请求返回 NOT_FOUND_OR_FORBIDDEN
 
 证据记录包含 ref、record_kind、memory_type、text、record_version、speaker、epistemic_status、modality、发生区间、valid_now、有效期和 source_refs。返回 event 原话时，memory_type 等不适用字段为 null。返回 summary 时不得把它算作独立来源；必要时 read 其 source_refs。
 
-当前结构化 Python 对象不会自动具有这套 JSON 表示。适配器需要转换枚举、UTC 时间、缺口、核心版本及引用，不能直接把 `dataclass.__dict__` 发送给模型。
+v0.7 的适配器已转换枚举、UTC 时间、缺口和受控引用。旧 Runtime 对象仍不是此协议 JSON，不能直接把 `dataclass.__dict__` 发送给模型。记忆/事件/摘要暂无修订日志，其 record_version 为 48 位内容指纹整数，不是递增业务版本；引用内部使用完整摘要与 epoch 校验，核心版本仍为真实序号。
 
 budget 约束最终序列化的工具结果，宿主另将工具描述、对话历史及输入输出预留计入整个请求。counted_tokens 为 null 表示未计量；estimated 不保证精确窗口上限；exact 必须使用目标模型的实际计数器。元数据/围栏也占预算，固定结构放不下时返回 CONTEXT_BUDGET_TOO_SMALL 并由宿主处理，不能输出破损 JSON。样例未绑定具体 tokenizer，不伪造实测数值。
 
@@ -224,4 +224,4 @@ event_id、scope、extractor_version、candidate_key、assertion_key、job token
 4. 供应商适配至少跑一次真实完整工具往返、超时降级和超预算场景。
 5. 按实际完成范围声明遗忘能力。当前只有本地事实抑制；完整擦除、宿主撤销和受控修改未完成前，不注册可直接提交的删除工具。
 
-契约样例验证与运行时回归各自独立；当前 183 项运行时测试不等于这些新接口的集成测试。
+契约夹具、实际回应和运行时回归分别验证。当前 230 项测试包含宿主与 MCP 子进程往返；它们不等于具体聊天产品 hook 或真实模型供应商的集成测试。

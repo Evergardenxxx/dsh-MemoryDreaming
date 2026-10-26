@@ -516,6 +516,14 @@ class TimeHint:
     hard: bool
 
 
+@dataclass(frozen=True)
+class ReadFilter:
+    """宿主给定的额外读取限制；None 活动表示共享记忆，空元组表示全部拒绝。"""
+
+    activity_ids: tuple[str | None, ...] | None = None
+    exclude_event_ids: tuple[str, ...] = ()
+
+
 @dataclass
 class Query:
     """一次检索请求。`retrieve()` 的入参。
@@ -532,6 +540,8 @@ class Query:
     token_budget: int | None = None
     # 时间旅行：「按 as_of 那一刻的状态来回答」。用于复盘「当时我们是怎么以为的」
     as_of: datetime | None = None
+    read_filter: ReadFilter | None = None
+    detail: str = "auto"
 
 
 @dataclass

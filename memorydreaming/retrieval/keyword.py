@@ -24,7 +24,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 
-from ..models import MemoryType, Scope
+from ..models import MemoryType, ReadFilter, Scope
 
 # 用来切分句子的标点与空白（不含中文汉字本身）
 _SPLIT_RE = re.compile(r"[\s，。！？、；：,.!?;:\"'“”‘’（）()\[\]【】《》〈〉…—\-~·]+")
@@ -304,6 +304,7 @@ class KeywordIndex:
         include_statuses: tuple[str, ...] = ("active", "superseded"),
         *,
         scope: Scope | None = None,
+        read_filter: ReadFilter | None = None,
     ) -> list[KeywordHit]:
         """按词检索，返回按「命中词数 + 相关度」排序的候选。
 
@@ -335,7 +336,7 @@ class KeywordIndex:
 
         for term in fts_terms:
             for memory_id, memory_type, score in self._search_fts(
-                term, search_scope, memory_types, limit, include_statuses
+                term, search_scope, memory_types, limit, include_statuses, read_filter
             ):
                 type_of[memory_id] = memory_type
                 hit_count[memory_id] = hit_count.get(memory_id, 0) + 1
@@ -344,7 +345,7 @@ class KeywordIndex:
 
         for term in like_terms:
             for memory_id, memory_type in self._search_like(
-                term, search_scope, memory_types, limit, include_statuses
+                term, search_scope, memory_types, limit, include_statuses, read_filter
             ):
                 type_of[memory_id] = memory_type
                 hit_count[memory_id] = hit_count.get(memory_id, 0) + 1
@@ -374,15 +375,16 @@ class KeywordIndex:
         memory_types: list[MemoryType] | None,
         limit: int,
         include_statuses: tuple[str, ...],
+        read_filter: ReadFilter | None = None,
     ) -> list[tuple[str, MemoryType, float]]:
-        from ..storage.repository import scope_sql
+        from ..storage.repository import retrieval_sql
 
         if self.tokenizer != "trigram":
             return []
 
         # MATCH 里的双引号是 FTS5 的字符串定界符，词里出现要转义
         escaped = term.replace('"', '""')
-        scope_filter, scope_params = scope_sql(scope, "m")
+        scope_filter, scope_params = retrieval_sql(scope, "m", read_filter)
         sql = f"""
             SELECT m.memory_id, m.memory_type, bm25({self.TABLE}) AS bm
             FROM {self.TABLE}
@@ -411,10 +413,11 @@ class KeywordIndex:
         memory_types: list[MemoryType] | None,
         limit: int,
         include_statuses: tuple[str, ...],
+        read_filter: ReadFilter | None = None,
     ) -> list[tuple[str, MemoryType]]:
-        from ..storage.repository import scope_sql
+        from ..storage.repository import retrieval_sql
 
-        scope_filter, scope_params = scope_sql(scope, "m")
+        scope_filter, scope_params = retrieval_sql(scope, "m", read_filter)
         sql = f"""
             SELECT m.memory_id, m.memory_type
             FROM memories m

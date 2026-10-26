@@ -28,7 +28,7 @@ from __future__ import annotations
 from datetime import datetime, tzinfo
 
 from .clock import Clock
-from .models import MemoryItem, MemoryStatus, Scope, Summary, SummaryHit, new_id
+from .models import MemoryItem, MemoryStatus, ReadFilter, Scope, Summary, SummaryHit, new_id
 from .retrieval.keyword import text_shingles
 from .storage.database import Database
 
@@ -112,6 +112,7 @@ def find_summaries(
     query_text: str,
     limit: int = 2,
     min_score: float = 0.12,
+    *, read_filter: ReadFilter | None = None,
 ) -> list[SummaryHit]:
     """按问题找最相关的索引卡。
 
@@ -122,7 +123,7 @@ def find_summaries(
     卡片数量少（几十张），所以直接全量算，不做倒排。
     """
     repos = db.repositories
-    summaries = repos.summaries.list_active(scope, limit=50)
+    summaries = repos.summaries.list_active(scope, limit=50, read_filter=read_filter)
     if not summaries:
         return []
 
