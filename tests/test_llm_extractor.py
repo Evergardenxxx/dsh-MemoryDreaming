@@ -55,6 +55,18 @@ class LLMExtractorTest(unittest.TestCase):
                 with self.assertRaises(LLMExtractionError):
                     LLMExtractor(lambda prompt, output=output: output).extract(self.event)
 
+    def test_candidate_without_source_span_is_rejected(self) -> None:
+        output = {
+            "schema_version": "1.0",
+            "candidates": [{
+                "memory_type": "semantic",
+                "body": {"subject": "用户", "predicate": "喜欢", "obj": "海边"},
+                "candidate_key": "preference:sea",
+            }],
+        }
+        with self.assertRaises(LLMExtractionError):
+            LLMExtractor(lambda prompt: output).extract(self.event)
+
 
 if __name__ == "__main__":
     unittest.main()

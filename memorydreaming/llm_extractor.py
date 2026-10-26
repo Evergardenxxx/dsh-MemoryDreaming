@@ -144,6 +144,8 @@ class LLMExtractor:
 
             span = candidate.get("source_span")
             source_span: tuple[int, int] | None = None
+            if span is None:
+                raise LLMExtractionError(f"第 {index} 个候选必须提供 source_span")
             if span is not None:
                 if (not isinstance(span, list) or len(span) != 2
                         or any(isinstance(value, bool) or not isinstance(value, int) for value in span)):
