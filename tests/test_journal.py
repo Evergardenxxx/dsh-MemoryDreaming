@@ -73,6 +73,29 @@ class JournalTest(RuntimeTestCase):
         self.assertFalse(result["valid"])
         self.assertEqual(result["error"], "entry_hash_mismatch")
 
+    def test_reusing_journal_key_with_different_payload_is_rejected(self) -> None:
+        with self.runtime.db.transaction():
+            self.repos.journal.append(
+                "test.event", scope=self.scope, entity_id="one",
+                payload={"value": 1}, now=self.clock.now(), idempotency_key="same-key",
+            )
+            with self.assertRaises(ValueError):
+                self.repos.journal.append(
+                    "test.event", scope=self.scope, entity_id="two",
+                    payload={"value": 2}, now=self.clock.now(), idempotency_key="same-key",
+                )
+
+    def test_journal_rolls_back_with_business_transaction(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with self.runtime.db.transaction():
+                self.repos.journal.append(
+                    "test.rollback", scope=self.scope, entity_id="one",
+                    payload={}, now=self.clock.now(),
+                )
+                raise RuntimeError("abort")
+
+        self.assertEqual(self.runtime.verify_journal()["checked"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1939,6 +1939,9 @@ class JournalRepository:
                 (scope_key, event_type, idempotency_key),
             ).fetchone()
             if existing is not None:
+                existing_payload = json.loads(existing["payload_json"] or "{}")
+                if existing["entity_id"] != entity_id or existing_payload != payload:
+                    raise ValueError("同一 journal 幂等键对应了不同的实体或 payload")
                 return dict(existing)
 
         row = self._conn.execute(
