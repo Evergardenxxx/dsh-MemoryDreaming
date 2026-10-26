@@ -6,7 +6,7 @@ import json
 import sys
 
 from . import __version__
-from .llm import AdapterError, dumps, tool_catalog
+from .llm import AdapterError, dumps, envelope, tool_catalog
 
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -68,7 +68,12 @@ class McpServer:
             elif method == "tools/call":
                 if not isinstance(params.get("name"), str) or not isinstance(params.get("arguments"), dict):
                     return self.error(request_id, -32602, "name and arguments are required")
-                response = self.session.call_tool(params["name"], params["arguments"])
+                if params["name"] not in {tool["name"] for tool in tool_catalog()}:
+                    error = AdapterError("UNSUPPORTED", "MCP 服务当前仅开放只读工具")
+                    response = self.session._fit(envelope(self.session._request_id(None), None,
+                        status="error", error=error.as_dict()), min(1200, self.session.adapter.tool_token_limit))
+                else:
+                    response = self.session.call_tool(params["name"], params["arguments"])
                 result = {"content": [{"type": "text", "text": dumps(response)}],
                           "isError": response["status"] == "error"}
             elif method == "resources/list":

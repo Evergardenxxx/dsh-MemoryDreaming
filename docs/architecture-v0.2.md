@@ -4,7 +4,9 @@
 
 v0.6 进展：schema v6 已实现持久事实抑制、来源片段、scope mutation epoch、核心字段来源及领域/关系版本隔离，见 [实现说明](fact-suppression.md)。以下状态表已同步；完整擦除与类型化证据组仍未实现。
 
-v0.7 进展：HostAdapter、受控引用、逐轮记忆预算和 MCP 两个只读工具已实现，schema v7 新增实际投递记录，见 [接入指南](host-adapter.md)。具体聊天产品的生命周期 hook、供应商工具往返和修改提议工作流仍待完成。
+v0.7 进展：HostAdapter、受控引用、逐轮记忆预算和 MCP 两个只读工具已实现，schema v7 新增实际投递记录，见 [接入指南](host-adapter.md)。具体聊天产品的生命周期 hook 和供应商工具往返仍待完成。
+
+v0.8 进展：schema v8 新增持久核心候选。Python 宿主显式启用字段白名单后，LLM 可提出候选；宿主审批重新校验来源/版本并原子追加核心和回执，见 [核心候选](core-proposals.md)。自动人格归纳、检查点建议及通用修改工具仍待完成。
 
 ## 1. 目标与不变量
 
@@ -57,7 +59,7 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | Consolidation Queue | extract → dedupe → summarize | 已实现租约与原子提交 |
 | Extractor | EventRecord → MemoryDraft[] | 规则版已实现，模型抽取待接入 |
 | Mutation Service | 撤回、替代、来源变化、删除 | 已实现部分纠正与事实抑制；正文擦除待实现 |
-| Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 已实现 Python 生命周期与 MCP 只读服务；产品 hook 与修改工具待接入 |
+| Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 已实现 Python 生命周期、可选核心建议与宿主审批、MCP 只读服务；产品 hook 与通用修改待接入 |
 | Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | 抑制与 scope epoch 已实现；类型化 AND/OR 组待实现 |
 | TokenCounter / Embedding Provider | 目标分词器与真实语义向量 | 可注入 TokenCounter；默认估计与哈希向量，真实模型待接入 |
 
@@ -138,12 +140,12 @@ v0.7 适配器保存用户消息后即可准备回答；该消息作为当前输
 
 ## 6. 持久模型与来源
 
-| 逻辑对象 | v0.7 落点 | 后续设计 |
+| 逻辑对象 | v0.8 落点 | 后续设计 |
 |---|---|---|
 | 原始事件 | events | 追加消息状态、内容代次及擦除状态 |
 | 实际投递 | host_deliveries；回复、用户轮次、终态与使用来源快照 | 流式增量/恢复与宿主撤销 |
 | 四类记忆 | memories + body_json + source_spans_json；抑制时计算稳定断言键 | 完整正文校验、修订记录 |
-| 身份/关系 | core_versions；领域/关系键与 field_evidence_json | 候选与生效分离、证据版本校验 |
+| 身份/关系 | core_versions + core_proposals；候选/生效分离、字段来源、审批与来源版本检查 | 长期归纳、完整修订日志及来源授权细化 |
 | 持续活动 | activities | 保持版本 CAS，检查点引用具体事件 |
 | 来源与关系 | source_event_ids + memory_links | typed evidence_refs + AND/OR 支持组 |
 | 遗忘标记 | memory_tombstones、tombstone_sources、scope_mutations、core_field_tombstones | 内容擦除、scope generation、受控重新学习 |
@@ -175,7 +177,7 @@ v0.7 已对工具业务 JSON 和宿主记忆消息整体计量并允许注入 To
 
 发布验收覆盖：新进程第一条回复前恢复身份；跨用户/关系/领域隔离；旧事原话可回源；愿望/引用/助手自述不变成用户事实；纠错保留时间线；遗忘后重提取/重启/重建不复活；过期任务不能提交；超预算与超时有明确降级；不支持工具调用的模型可依靠宿主注入获得基础记忆。
 
-v0.7 的 230 项测试验证当前工程行为，12 条固定检索题中 10 条计分、2 条同义改写观察项未通过；这不证明长期人格稳定性。新增功能需分别测证据召回、错误记忆、恢复成功率、删除生效、p95 延迟与上下文成本。
+v0.8 的 259 项测试验证当前工程行为，12 条固定检索题中 10 条计分、2 条同义改写观察项未通过；这不证明长期人格稳定性。新增功能需分别测证据召回、错误记忆、恢复成功率、删除生效、p95 延迟与上下文成本。
 
 ## 9. 参考关系
 

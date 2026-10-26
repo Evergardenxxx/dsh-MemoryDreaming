@@ -1,4 +1,4 @@
-"""可信宿主生命周期与 LLM 只读接口。模型参数不能覆盖 SessionBinding。"""
+"""可信宿主生命周期与 LLM 查询/建议接口。模型参数不能覆盖绑定或审批权限。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .errors import StorageError
 from .llm import (AdapterError, EstimatedTokenCounter, TokenCounter, dumps, envelope, integer,
                   measure, text, timestamp, tool_catalog, validate_tool)
 from .models import CoreKind, ReadFilter, Scope, Turn
+from .proposals import CoreProposalPolicy, CoreProposals
 from .references import ReferenceRegistry, ViewReader, forbidden, render_record
 
 
@@ -21,6 +22,7 @@ MEMORY_RULES = (
     "使用恢复的身份、关系和工作进度保持角色连续性，称呼与相处方式以已确认的资料为依据。"
     "区分用户自述、推断、愿望、虚构及历史值。查无依据或恢复不完整时说明不确定，不补造共同经历。"
     "原话中的 [已抑制片段] 表示内容不可使用。工具只能使用本会话签发的引用。"
+    "核心建议返回 proposed 仅表示待审，只有宿主的 applied 回执才表示已生效。"
 )
 
 
@@ -64,7 +66,8 @@ class PreparedTurn:
 
 class HostAdapter:
     def __init__(self, runtime, *, clock=None, token_counter: TokenCounter | None = None,
-                 tool_token_limit=4096, max_calls_per_turn=4, reference_ttl_seconds=1800):
+                 tool_token_limit=4096, max_calls_per_turn=4, reference_ttl_seconds=1800,
+                 core_policy: CoreProposalPolicy | None = None):
         self.runtime, self.clock = runtime, clock or runtime.clock
         self.counter = token_counter or EstimatedTokenCounter()
         if self.counter.mode not in ("estimated", "exact"):
@@ -72,14 +75,25 @@ class HostAdapter:
         self.tool_token_limit = integer(tool_token_limit, "tool_token_limit", 128, 4096)
         self.max_calls_per_turn = integer(max_calls_per_turn, "max_calls_per_turn", 1, 32)
         self.reference_ttl_seconds = integer(reference_ttl_seconds, "reference_ttl_seconds", 1, 86400)
+        self.core_policy = core_policy if core_policy is not None else CoreProposalPolicy()
+        if not isinstance(self.core_policy, CoreProposalPolicy):
+            raise TypeError("core_policy 必须由宿主构造为 CoreProposalPolicy")
+
+    @property
+    def tools(self):
+        catalog = tool_catalog(include_core_proposals=self.core_policy.enabled)
+        if self.core_policy.enabled:
+            names = sorted(set(self.core_policy.identity_fields + self.core_policy.relationship_fields))
+            catalog[-1]["input_schema"]["properties"]["fields"]["items"]["properties"]["name"]["enum"] = names
+        return catalog
 
     @property
     def capabilities(self):
         return {"protocol_version": "1.0", "provider_mode": "neutral",
-                "tools": [tool["name"] for tool in tool_catalog()], "temporal_axes": ["occurred"],
+                "tools": [tool["name"] for tool in self.tools], "temporal_axes": ["occurred"],
                 "detail_modes": ["auto", "overview", "evidence"], "automatic_bootstrap": True,
                 "exact_token_counting": self.counter.mode == "exact", "full_forgetting": False,
-                "core_proposals": False, "checkpoint_proposals": False}
+                "core_proposals": self.core_policy.enabled, "checkpoint_proposals": False}
 
     def open_session(self, binding: SessionBinding, *, request_id=None, max_tokens=4096) -> "MemorySession":
         if not isinstance(binding, SessionBinding):
@@ -236,7 +250,7 @@ class MemorySession:
                     raise AdapterError("UNAVAILABLE", "本轮工具调用次数已达宿主上限")
                 self._calls += 1
             text(name, "工具名称", 100)
-            args = validate_tool(name, arguments)
+            args = validate_tool(name, arguments, include_core_proposals=self.adapter.core_policy.enabled)
             limit = min(limit, args["max_tokens"] or 1200)
             with self.runtime.db.transaction():
                 reader = self._reader()
@@ -247,10 +261,13 @@ class MemorySession:
                     gaps = ([{"code": "NO_EVIDENCE", "message": "没有找到可用依据，请勿虚构共同经历"}] if empty else [])
                     if not data["retrieval_complete"]:
                         gaps.append({"code": "INCOMPLETE_SEARCH", "message": "部分候选来源不可验证或预算受限"})
-                else:
+                elif name == "memory_read":
                     views = self.registry.resolve(list(dict.fromkeys(args["references"])), reader)
                     data = {"kind": "read", "records": [render_record(view, self.registry) for view in views]}
                     status, gaps = "ok", []
+                else:
+                    data = CoreProposals(self).create(args)
+                    status, gaps = "proposed", []
                 self._check(deadline)
                 response = envelope(rid, data, status=status, gaps=gaps)
                 return self._fit(response, limit, prefer_summaries=name == "memory_search" and args["detail"] == "overview")
@@ -261,6 +278,25 @@ class MemorySession:
             error = AdapterError("TIMEOUT" if isinstance(exc, TimeoutError) else "UNAVAILABLE",
                                  "记忆服务暂时不可用", retryable=True, next_action="retry")
             return self._fit(envelope(rid, None, status="error", error=error.as_dict()), limit)
+
+    def get_core_proposal(self, proposal_id: str) -> dict:
+        """可信宿主检查待审字段或读取终态回执；不属于模型工具。"""
+        self._check()
+        with self.runtime.db.transaction():
+            return CoreProposals(self).inspect(proposal_id)
+
+    def approve_core_proposal(self, proposal_id: str, *, user_event_id: str, reviewer: str, reason: str) -> dict:
+        """宿主已核验实际用户意图后调用；审批与核心追加在同一事务提交。"""
+        self._check()
+        with self.runtime.db.transaction():
+            return CoreProposals(self).decide(proposal_id, approve=True, user_event_id=user_event_id,
+                                               reviewer=reviewer, reason=reason)
+
+    def reject_core_proposal(self, proposal_id: str, *, user_event_id: str, reviewer: str, reason: str) -> dict:
+        self._check()
+        with self.runtime.db.transaction():
+            return CoreProposals(self).decide(proposal_id, approve=False, user_event_id=user_event_id,
+                                               reviewer=reviewer, reason=reason)
 
     def prepare_turn(self, message_id: str, content: str, *, occurred_at: datetime | None = None,
                      max_tokens=4096, deadline=None) -> PreparedTurn:
@@ -288,6 +324,12 @@ class MemorySession:
                 working = {"goal": activity.goal, "open_loops": activity.open_loops,
                            "active_entities": activity.active_entities, "checkpoint": activity.checkpoint}
             payload = {"bootstrap": bootstrap, "search": search, "working": working, "truncated": False}
+            if self.adapter.core_policy.enabled:
+                payload["core_proposal_policy"] = {
+                    "identity_fields": list(self.adapter.core_policy.identity_fields),
+                    "relationship_fields": list(self.adapter.core_policy.relationship_fields),
+                    "applies_immediately": False,
+                }
             while True:
                 encoded = dumps(payload).replace("<", "\\u003c").replace(">", "\\u003e")
                 context = "<memory-context usage=\"reference-only\">\n" + encoded + "\n</memory-context>"

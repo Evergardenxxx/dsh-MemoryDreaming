@@ -310,3 +310,27 @@ CREATE TABLE IF NOT EXISTS host_deliveries (
     evidence_refs_json TEXT NOT NULL DEFAULT '[]',
     evidence_complete INTEGER NOT NULL DEFAULT 1 CHECK(evidence_complete IN (0,1))
 );
+
+-- 核心建议与生效记录分开；终态记录用于幂等审批和回执查询。
+CREATE TABLE IF NOT EXISTS core_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL UNIQUE,
+    scope_key TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    request_event_id TEXT NOT NULL REFERENCES events(event_id),
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('identity','relationship')),
+    expected_version INTEGER NOT NULL,
+    target_revision TEXT NOT NULL,
+    fields_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending_validation','applied','rejected','invalidated')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    decision_code TEXT,
+    reviewer TEXT,
+    decision_reason TEXT,
+    decided_at TEXT,
+    applied_version INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_core_proposals_scope ON core_proposals(scope_key,state,expires_at);

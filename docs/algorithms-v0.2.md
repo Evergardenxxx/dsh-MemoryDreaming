@@ -251,7 +251,7 @@ invalidate affected accepted records outside live
 
 计数实现为 O(V+E)，只评估受影响闭包及必要外部根。循环依赖没有外部有效支持时不会凭互相引用存活。当前实现仅支持 memory→memory 的近似 OR 来源传播，不具备上述完整类型与支持组能力。
 
-## H. 受控核心成长（目标）
+## H. 受控核心成长（候选与审批已实现，自动归纳仍为目标）
 
 ```text
 evidence → core_change_candidate → policy/explicit feedback → accepted revision
@@ -259,7 +259,27 @@ evidence → core_change_candidate → policy/explicit feedback → accepted rev
 
 用户明确称呼/设定可在字段白名单内经可信宿主应用；从长期互动推测的个性变化先留候选，不因反复访问而自动成为核心。字段逐项引用证据版本，写入使用 expected_version 条件更新，冲突后重新读取再判断。删除字段的依据时同步撤回或由其他有效来源重建该字段。
 
-v0.5 `propose_core_update` 实际直接合并并应用补丁，不等于候选队列；必须拆开后才可暴露 LLM 修改建议工具。核心中的关系角色不能被推导成未经用户陈述的现实生物关系。
+v0.8 增加持久 core_proposals 和可选 memory_core_propose。算法如下：
+
+```text
+propose(trusted_current_event, core_reference, field_patches):
+    require current event is a saved user message in this conversation
+    verify core reference, field allowlist and user evidence
+    snapshot core version/revision and every evidence revision/epoch
+    deduplicate(scope, current event, target snapshot, normalized patches, reason)
+    persist pending_validation with fixed expiry; do not mutate core
+
+approve(trusted_host, proposal_id, actual_user_event_id):
+    begin write transaction
+    require binding and authorization event match
+    recheck allowlist, expiry, core snapshot and evidence snapshots
+    on mismatch: persist invalidated receipt; do not mutate core
+    otherwise: merge patch under expected_version, append core and applied receipt atomically
+```
+
+默认关闭建议工具；宿主启用后在工具 Schema 和记忆资料块提供字段白名单。模型不提供审批身份或实际用户事件 ID。幂等重试不延长有效期，不重复追加版本；默认 24 小时、每绑定最多 64 个未过期待审项。具体边界见 [核心候选说明](core-proposals.md)。
+
+原 `propose_core_update` 保留为可信本地直写兼容入口，明确名称为 `apply_core_update`，均不注册为模型工具。自动从多轮互动归纳人格候选未实现；核心中的关系角色不能被推导成未经用户陈述的现实生物关系。
 
 ## I. 可靠队列（当前）
 

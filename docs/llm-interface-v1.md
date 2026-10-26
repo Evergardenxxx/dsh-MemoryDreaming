@@ -1,8 +1,8 @@
 # 面向 LLM 的接口协议 v1
 
-状态：**只读部分已实现，其余为设计契约**。本文固定宿主、对话 LLM、抽取 LLM 三种调用者的边界。业务架构见 [架构 v0.2](architecture-v0.2.md)，算法见 [算法 v0.2](algorithms-v0.2.md)。协议 v1 与 Python 包 v0.7、SQLite schema v7 是不同版本号。
+状态：**查询与核心候选/审批已实现，其余为设计契约**。本文固定宿主、对话 LLM、抽取 LLM 三种调用者的边界。业务架构见 [架构 v0.2](architecture-v0.2.md)，算法见 [算法 v0.2](algorithms-v0.2.md)。协议 v1 与 Python 包 v0.8、SQLite schema v8 是不同版本号。
 
-v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` / `memory_read`，可通过 MCP stdio 调用，见 [接入指南](host-adapter.md)。修改提议、用户意图核验与执行工作流未完成；本地 `forget_fact` 不直接开放给模型，`full_forgetting` 继续为 false。
+v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` / `memory_read`，可通过 MCP stdio 调用，见 [接入指南](host-adapter.md)。v0.8 增加可选 `memory_core_propose` 与带外宿主审批，见 [核心候选](core-proposals.md)。它采用结构化字段补丁，补充原通用修改目标契约。通用纠错/删除、检查点建议仍未完成；`full_forgetting` 为 false。
 
 机器可读文件：
 
@@ -11,7 +11,7 @@ v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` /
 - [抽取结果 Schema](contracts/extraction-response.schema.json)
 - [完整交互样例与非法参数](contracts/examples.json)
 
-这些文件覆盖完整目标契约；当前 [运行时目录](../memorydreaming/llm-tools.json) 只注册两个读工具。具体聊天产品的自动生命周期和真实供应商往返需要另外接入，不能单凭 JSON 文件声称已经安装插件。
+这些文件覆盖完整目标契约；当前 [运行时目录](../memorydreaming/llm-tools.json) 默认注册两个读工具，Python 宿主显式启用 CoreProposalPolicy 后增加一个核心建议工具。MCP 继续只读。具体聊天产品的自动生命周期和真实供应商往返需要另外接入，不能单凭 JSON 文件声称已经安装插件。
 
 ## 1. 三类调用者
 
@@ -30,8 +30,8 @@ v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` /
 | open_session | 宿主可信 binding、conversation_id、model_profile | 恢复状态、核心版本、活动目录、能力清单 | 已有 HostAdapter.open_session；返回 session.opened，model_profile 尚未提供 |
 | prepare_turn | 实际用户 message_id/content/time、选定活动、deadline | 保存真实事件、检索资料、模型请求片段 | 已实现事件排除、可信焦点与记忆消息计量 |
 | after_delivery | 实际显示回复、delivery_state、使用的证据引用 | 保存角色事件，记录使用情况，接受可验证检查点 | 已实现 final / interrupted 投递及引用快照；检查点建议待实现 |
-| commit_change | proposal_id、实际用户请求事件、expected_version/epoch | 后端执行修改并给出精确回执 | 新服务；禁止直通本地 propose_core_update |
-| get_change_receipt | 当前绑定下的 operation_id | 已生效状态、影响数量、未完成范围 | 待实现 |
+| approve_core_proposal / reject_core_proposal | proposal_id、实际用户请求事件、审批者与原因 | 原子追加核心及回执，或拒绝/失效回执 | v0.8 已实现核心子集；通用 commit_change 待实现 |
+| get_core_proposal | 当前绑定下的 proposal_id | 待审字段或终态回执 | v0.8 已实现；终态不返回旧补丁 |
 
 binding、request_id、deadline、idempotency_key、当前用户事件 ID、scope generation 和可用预算在带外请求上下文中由宿主注入。LLM 不能通过改写 JSON 覆盖这些值。同一个请求在传输层重试保留 request_id/idempotency_key；新意图才创建新键。工具建议写入的幂等键由宿主基于本轮、规范化参数和工具调用 ID 分配，防止网络重试生成多份建议。
 
@@ -54,14 +54,15 @@ binding、request_id、deadline、idempotency_key、当前用户事件 ID、scop
 }
 ```
 
-这是能力结构样例；当前 HostAdapter 的 provider_mode 为 neutral，其他开关按实际计数器与实现返回。automatic_bootstrap 指宿主调用 open_session / prepare_turn 的路径，不能推导成任意 MCP 客户端已安装自动 hook。recorded/valid、完整遗忘和提议工具仍关闭。
+这是默认能力结构样例；HostAdapter 的 provider_mode 为 neutral，core_proposals 与 tools 随字段白名单配置变化。automatic_bootstrap 指宿主调用 open_session / prepare_turn 的路径，不能推导成任意 MCP 客户端已安装自动 hook。recorded/valid、完整遗忘、检查点及通用修改仍关闭。
 
-## 3. 对话 LLM 的四个工具
+## 3. 对话 LLM 的工具
 
 | 工具 | LLM 填写 | 结果 | 使用时机 |
 |---|---|---|---|
 | memory_search | 自然语言 query、activity_ref、可选时间范围、detail、数量与 token 上限 | 证据、摘要引用、缺口、执行完整性 | 当前资料不足，需查过去偏好、约定、经历或步骤 |
 | memory_read | 先前结果签发的 references 与 token 上限 | 来源原话或对应版本的资料 | 用户问原话、时间冲突、摘要不足或需核实来源 |
+| memory_core_propose | 核心 target_ref、字段 name/value/evidence_refs、reason、max_tokens | 持久 pending_validation 候选 | v0.8 Python 宿主显式启用后，本轮用户要求修改已有核心字段 |
 | memory_checkpoint_propose | activity_ref、expected_version、目标、未完事项、证据引用 | pending_validation 的 proposal | 持续活动出现真实、已保存的新进度 |
 | memory_request_change | 操作、target_refs、替换内容、原因、证据引用 | pending_validation 的 proposal | 本轮用户要求纠错、遗忘或修改核心设定 |
 
@@ -104,7 +105,9 @@ read 中任一引用越权/不存在，整次请求返回 NOT_FOUND_OR_FORBIDDEN
 
 真正生效由宿主另发 `data.kind=change_receipt`：携带 operation_id、state、applied、effective_at、影响数量、erasure_level 和 remaining_work。它与 proposal 明确分开；完整样例包含“建议遗忘 → 宿主应用 → 仅逻辑抑制回执”。最终话术以操作的实际回执为准，例如 logical_suppressed 不能被改述为原始消息和备份都已擦除。
 
-用户已明确授权、目标清楚时，宿主可以直接处理建议并返回生效回执，不要求每项操作都额外确认；需要澄清的是确有歧义的范围。模型工具本身仍不持有最终执行权限。原有 Python `propose_core_update` 直接应用补丁，必须与这里的提议接口分开。
+用户已明确授权、目标清楚时，宿主可以直接处理建议并返回生效回执，不要求每项操作都额外确认；需要澄清的是确有歧义的范围。模型工具本身仍不持有最终执行权限。原有 Python `propose_core_update` 保留直写兼容，明确名称为 `apply_core_update`；候选与宿主审批已独立实现。
+
+`memory_core_propose` 使用字段数组，不将 replacement_text 自由文本解释成任意补丁。每个 value 为最多 1000 字符的非空字符串；最多 12 个不重复字段，逐字段核验白名单和最多 10 个用户来源引用。本轮用户事件由宿主自动绑定，模型不能提供审批者或授权事件 ID。有效期、来源变化、遗忘、版本冲突、审批幂等和回执语义见 [核心候选指南](core-proposals.md)。上表的 memory_request_change 和 memory_checkpoint_propose 仍不注册。
 
 ## 4. 统一结果
 
@@ -219,9 +222,9 @@ event_id、scope、extractor_version、candidate_key、assertion_key、job token
 发布前最低要求：
 
 1. bootstrap 在真实宿主第一条模型回复前完成，重开窗口保持同一绑定。
-2. 四种工具的 JSON 样例与非法参数均通过验证；回执、提议与真正生效明确区分。
+2. 已实现工具的 JSON 样例与非法参数均通过验证；未实现工具不注册，回执、提议与真正生效明确区分。
 3. 每个按引用读取、来源展开、修改入口都有跨用户/关系/领域的拒绝用例。
 4. 供应商适配至少跑一次真实完整工具往返、超时降级和超预算场景。
 5. 按实际完成范围声明遗忘能力。当前只有本地事实抑制；完整擦除、宿主撤销和受控修改未完成前，不注册可直接提交的删除工具。
 
-契约夹具、实际回应和运行时回归分别验证。当前 230 项测试包含宿主与 MCP 子进程往返；它们不等于具体聊天产品 hook 或真实模型供应商的集成测试。
+契约夹具、实际回应和运行时回归分别验证。当前 259 项测试包含宿主、MCP 子进程及核心候选/审批；它们不等于具体聊天产品 hook 或真实模型供应商的集成测试。

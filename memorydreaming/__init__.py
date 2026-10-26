@@ -50,8 +50,9 @@ from .retrieval.embedding import Embedder, HashingEmbedder
 from .runtime import MemoryRuntime
 from .host import HostAdapter, MemorySession, PreparedTurn, SessionBinding
 from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
+from .proposals import CoreProposalPolicy
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "MemoryRuntime",
@@ -59,6 +60,7 @@ __all__ = [
     "MemorySession",
     "PreparedTurn",
     "SessionBinding",
+    "CoreProposalPolicy",
     "AdapterError",
     "TokenCounter",
     "EstimatedTokenCounter",

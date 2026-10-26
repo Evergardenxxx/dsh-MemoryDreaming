@@ -1,4 +1,4 @@
-"""协议中立的只读工具、参数校验与可替换 token 计量。"""
+"""协议中立的查询/建议工具、参数校验与可替换 token 计量。"""
 
 from __future__ import annotations
 
@@ -39,9 +39,10 @@ def dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def tool_catalog() -> list[dict]:
+def tool_catalog(*, include_core_proposals=False) -> list[dict]:
     """每次返回新对象，调用方可转换供应商格式而不修改全局定义。"""
-    return json.loads(Path(__file__).with_name("llm-tools.json").read_text(encoding="utf-8"))["tools"]
+    tools = json.loads(Path(__file__).with_name("llm-tools.json").read_text(encoding="utf-8"))["tools"]
+    return tools if include_core_proposals else tools[:2]
 
 
 def invalid(message: str) -> None:
@@ -72,8 +73,8 @@ def timestamp(value: Any) -> datetime:
     return result
 
 
-def validate_tool(name: str, arguments: Any) -> dict:
-    schemas = {tool["name"]: tool["input_schema"] for tool in tool_catalog()}
+def validate_tool(name: str, arguments: Any, *, include_core_proposals=False) -> dict:
+    schemas = {tool["name"]: tool["input_schema"] for tool in tool_catalog(include_core_proposals=include_core_proposals)}
     if name not in schemas:
         raise AdapterError("UNSUPPORTED", "该工具尚未开放")
     schema = schemas[name]
@@ -82,6 +83,28 @@ def validate_tool(name: str, arguments: Any) -> dict:
     args = dict(arguments)
     if args["max_tokens"] is not None:
         integer(args["max_tokens"], "max_tokens", 128, 4096)
+    if name == "memory_core_propose":
+        ref = args["target_ref"]
+        if not isinstance(ref, str) or not re.fullmatch(r"mref_[A-Za-z0-9_-]{1,128}", ref):
+            invalid("target_ref 必须为当前核心的 mref 引用")
+        text(args["reason"], "reason", 1000)
+        fields = args["fields"]
+        if not isinstance(fields, list) or not 1 <= len(fields) <= 12:
+            invalid("fields 必须包含 1..12 个字段")
+        names = set()
+        for field in fields:
+            if not isinstance(field, dict) or set(field) != {"name", "value", "evidence_refs"}:
+                invalid("字段必须只包含 name / value / evidence_refs")
+            text(field["name"], "name", 100)
+            text(field["value"], "value", 1000)
+            if field["name"] in names:
+                invalid("字段名不可重复")
+            names.add(field["name"])
+            refs = field["evidence_refs"]
+            if (not isinstance(refs, list) or len(refs) > 10
+                    or any(not isinstance(ref, str) or not re.fullmatch(r"mref_[A-Za-z0-9_-]{1,128}", ref) for ref in refs)):
+                invalid("evidence_refs 必须为最多 10 个 mref 引用")
+        return args
     if name == "memory_read":
         refs = args["references"]
         if not isinstance(refs, list) or not 1 <= len(refs) <= 10:

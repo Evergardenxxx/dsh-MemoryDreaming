@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memorydreaming"
-version = "0.7.0"
+version = "0.8.0"
 description = "面向长期陪伴角色的持久记忆引擎：身份、关系、共同经历可跨窗口恢复"
 readme = "README.md"
 requires-python = ">=3.10"          # 用到了 X | None 这种新式类型标注

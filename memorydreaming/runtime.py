@@ -356,7 +356,16 @@ class MemoryRuntime:
         evidence_ids: list[str] | None = None,
         field_evidence_ids: dict[str, list[str]] | None = None,
     ) -> CoreSnapshot:
-        """提出并应用一次核心变更。
+        """兼容旧版的可信本地直写入口；不会创建待审建议，勿注册为模型工具。"""
+        return self.apply_core_update(scope, kind, patch, change_reason, expected_version,
+                                      evidence_ids, field_evidence_ids)
+
+    def apply_core_update(
+        self, scope: Scope, kind: CoreKind | str, patch: dict[str, Any], change_reason: str,
+        expected_version: int | None = None, evidence_ids: list[str] | None = None,
+        field_evidence_ids: dict[str, list[str]] | None = None,
+    ) -> CoreSnapshot:
+        """可信本地宿主直接应用一次核心变更；模型建议应走 CoreProposals 审批。
 
         这里是「补丁合并」语义：patch 里出现的键覆盖旧值，没出现的保持不变。
         版本号由后端计算，调用方只需声明「我是基于哪个版本改的」。
