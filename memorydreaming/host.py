@@ -490,9 +490,11 @@ class MemorySession:
             activity_version = None
 
         source_event_id = self.current_event_id
-        key = idempotency_key or request_id
+        key = idempotency_key
         if key is None:
-            key = f"{self.binding.conversation_id}:{activity_id or '-'}:{activity_version or 0}:{source_event_id or '-'}"
+            state_hash = hashlib.sha256(dumps(briefing).encode("utf-8")).hexdigest()[:24]
+            key = f"compress:{self.binding.conversation_id}:{activity_id or '-'}:"
+            key += f"{source_event_id or '-'}:{activity_version or 0}:{state_hash}"
         existing = self.runtime.get_handoff(
             Scope(self.binding.user_id, self.binding.character_id, self.binding.relationship_id,
                   activity_id, self.binding.domain), key,

@@ -64,6 +64,15 @@ class HandoffTests(RuntimeTestCase):
             "询问继续哪件事",
         )
 
+    def test_implicit_compression_key_is_stable_across_duplicate_lifecycle_events(self):
+        session = self.adapter.open_session(
+            SessionBinding("u1", "c1", "r1", "window-implicit")
+        )
+        first = session.pre_compress({"handoff_note": "等待选择"})
+        second = session.pre_compress({"handoff_note": "等待选择"})
+        self.assertTrue(second["data"]["duplicate"])
+        self.assertEqual(first["data"]["handoff_id"], second["data"]["handoff_id"])
+
     def test_prepare_turn_trims_large_handoff_before_failing_budget(self):
         session = self.adapter.open_session(self.binding)
         session.pre_compress(
