@@ -87,6 +87,16 @@ class BridgeTest(RuntimeTestCase):
         response = json.loads(output.getvalue())
         self.assertEqual(response["error"]["code"], "PARSE_ERROR")
 
+    def test_prefetch_bridge_op_warms_without_exposing_memory_body(self):
+        server = BridgeServer(self.runtime, user_id="u1", character_id="c1", relationship_id="r1")
+        response = server.handle({
+            "id": "prefetch-1", "op": "prefetch", "conversation_id": "window-1",
+            "query": "海边", "detail": "auto", "max_items": 12, "max_tokens": 1200,
+        })
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["data"]["cached"], True)
+        self.assertNotIn("evidence", response["data"])
+
     def test_actual_cli_bridge_subprocess_keeps_stdout_as_jsonl(self):
         requests = [
             {"id": 1, "op": "bootstrap", "conversation_id": "cli-window"},

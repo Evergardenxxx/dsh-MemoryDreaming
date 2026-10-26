@@ -6,8 +6,9 @@ import json
 import hashlib
 import secrets
 import sqlite3
+from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .clock import ensure_utc
 from .errors import StorageError, VersionConflict
@@ -65,10 +66,24 @@ class PreparedTurn:
     truncated: bool
 
 
+@dataclass
+class _SearchCacheEntry:
+    """会话内检索缓存只保存受控引用，不复制正文。"""
+
+    key: str
+    epoch: int
+    event_id: str | None
+    expires_at: datetime
+    memory_refs: tuple[str, ...]
+    summary_refs: tuple[str, ...]
+    retrieval_complete: bool
+
+
 class HostAdapter:
     def __init__(self, runtime, *, clock=None, token_counter: TokenCounter | None = None,
                  tool_token_limit=4096, max_calls_per_turn=4, reference_ttl_seconds=1800,
-                 core_policy: CoreProposalPolicy | None = None):
+                 core_policy: CoreProposalPolicy | None = None,
+                 retrieval_cache_ttl_seconds=30, retrieval_cache_capacity=32):
         self.runtime, self.clock = runtime, clock or runtime.clock
         self.counter = token_counter or EstimatedTokenCounter()
         if self.counter.mode not in ("estimated", "exact"):
@@ -76,6 +91,10 @@ class HostAdapter:
         self.tool_token_limit = integer(tool_token_limit, "tool_token_limit", 128, 4096)
         self.max_calls_per_turn = integer(max_calls_per_turn, "max_calls_per_turn", 1, 32)
         self.reference_ttl_seconds = integer(reference_ttl_seconds, "reference_ttl_seconds", 1, 86400)
+        self.retrieval_cache_ttl_seconds = integer(retrieval_cache_ttl_seconds,
+                                                   "retrieval_cache_ttl_seconds", 1, 3600)
+        self.retrieval_cache_capacity = integer(retrieval_cache_capacity,
+                                                "retrieval_cache_capacity", 1, 256)
         self.core_policy = core_policy if core_policy is not None else CoreProposalPolicy()
         if not isinstance(self.core_policy, CoreProposalPolicy):
             raise TypeError("core_policy 必须由宿主构造为 CoreProposalPolicy")
@@ -95,7 +114,8 @@ class HostAdapter:
                 "detail_modes": ["auto", "overview", "evidence"], "automatic_bootstrap": True,
                 "exact_token_counting": self.counter.mode == "exact", "full_forgetting": False,
                 "core_proposals": self.core_policy.enabled, "checkpoint_proposals": False,
-                "pre_compress_handoff": True}
+                "pre_compress_handoff": True, "session_retrieval_cache": True,
+                "host_prefetch": True}
 
     def open_session(self, binding: SessionBinding, *, request_id=None, max_tokens=4096) -> "MemorySession":
         if not isinstance(binding, SessionBinding):
@@ -114,10 +134,12 @@ class MemorySession:
         self.current_event_id: str | None = None
         self._calls = 0
         self._closed = False
+        self._search_cache: OrderedDict[str, _SearchCacheEntry] = OrderedDict()
 
     def close(self):
         self._closed = True
         self.registry = ReferenceRegistry(self.clock)
+        self._search_cache.clear()
 
     def _check(self, deadline=None):
         if self._closed:
@@ -244,6 +266,41 @@ class MemorySession:
             focus = self.registry.resolve([args["activity_ref"]], reader, activity=True)[0].target
         activities = (None, focus) if focus else (None,)
         interval = args["time_range"]
+        cache_key = dumps({
+            "query": args["query"], "activity_ref": args["activity_ref"],
+            "time_range": interval, "detail": args["detail"],
+            "max_items": args["max_items"], "max_tokens": args["max_tokens"],
+            "event_id": self.current_event_id,
+        })
+        cached = self._search_cache.get(cache_key)
+        if cached is not None:
+            now = self.clock.now()
+            epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
+            if (cached.event_id == self.current_event_id and cached.epoch == epoch
+                    and cached.expires_at > now):
+                try:
+                    evidence_views = self.registry.resolve(list(cached.memory_refs), reader)
+                    summary_views = self.registry.resolve(list(cached.summary_refs), reader)
+                    evidence = [render_record(view, self.registry) for view in evidence_views]
+                    summaries = []
+                    for view in summary_views:
+                        if any(source.kind == "memory"
+                               and self.runtime.db.repositories.memories.get(source.target).scope.activity_id
+                               not in activities for source in view.sources):
+                            continue
+                        summary_payload = json.loads(view.data["text"])
+                        summaries.append({
+                            "ref": self.registry.issue(view),
+                            "title": summary_payload["title"],
+                            "text": summary_payload["digest"],
+                            "source_refs": [self.registry.issue(source) for source in view.sources[:20]],
+                        })
+                    self._search_cache.move_to_end(cache_key)
+                    return {"kind": "search", "evidence": evidence, "summaries": summaries,
+                            "retrieval_complete": cached.retrieval_complete}
+                except (AdapterError, KeyError, json.JSONDecodeError):
+                    self._search_cache.pop(cache_key, None)
+
         result = self.runtime.retrieve(
             args["query"], self.binding.scope,
             time_range=(timestamp(interval["start"]), timestamp(interval["end"])) if interval else None,
@@ -271,8 +328,41 @@ class MemorySession:
             summaries.append({"ref": self.registry.issue(view), "title": hit.summary.topic, "text": hit.summary.digest,
                               "source_refs": [self.registry.issue(source) for source in view.sources[:20]]})
         incomplete = incomplete or any("预算" in gap for gap in result.gaps)
+        retrieval_complete = not incomplete
+        self._search_cache[cache_key] = _SearchCacheEntry(
+            key=cache_key,
+            epoch=self.runtime.db.repositories.forgetting.epoch(self.binding.scope),
+            event_id=self.current_event_id,
+            expires_at=self.clock.now() + timedelta(seconds=self.adapter.retrieval_cache_ttl_seconds),
+            memory_refs=tuple(item["ref"] for item in evidence),
+            summary_refs=tuple(item["ref"] for item in summaries),
+            retrieval_complete=retrieval_complete,
+        )
+        self._search_cache.move_to_end(cache_key)
+        while len(self._search_cache) > self.adapter.retrieval_cache_capacity:
+            self._search_cache.popitem(last=False)
         return {"kind": "search", "evidence": evidence, "summaries": summaries,
-                "retrieval_complete": not incomplete}
+                "retrieval_complete": retrieval_complete}
+
+    def prefetch(self, query: str, *, detail: str = "auto", max_items: int = 12,
+                 max_tokens: int = 1200) -> dict:
+        """由可信宿主预热会话缓存，不把候选正文返回给模型。
+
+        这是一个轻量的 host hook；它不会创建事件、增加使用次数或改变
+        事实，只让下一次相同查询复用已验证引用。真正的线程调度由宿主决定。
+        """
+        self._check()
+        text(query, "query", 4000)
+        if detail not in ("auto", "overview", "evidence"):
+            raise AdapterError("INVALID_ARGUMENT", "detail 必须为 auto / overview / evidence")
+        max_items = integer(max_items, "max_items", 1, 20)
+        max_tokens = integer(max_tokens, "max_tokens", 128, 4096)
+        args = {"query": query, "activity_ref": None, "time_range": None,
+                "detail": detail, "max_items": max_items, "max_tokens": max_tokens}
+        with self.runtime.db.transaction():
+            self._search(args, self._reader())
+        return {"status": "ok", "cached": True, "query": query,
+                "ttl_seconds": self.adapter.retrieval_cache_ttl_seconds}
 
     def call_tool(self, name: str, arguments: dict, *, request_id=None, deadline=None, max_tokens=None) -> dict:
         rid = self._request_id(request_id)
@@ -352,7 +442,7 @@ class MemorySession:
             reader = self._reader()
             bootstrap = self._bootstrap_data(reader)
             search = self._search({"query": content, "activity_ref": None, "time_range": None,
-                                   "detail": "auto", "max_items": 12}, reader)
+                                   "detail": "auto", "max_items": 12, "max_tokens": 4096}, reader)
             working = None
             if self.binding.selected_activity_id:
                 activity = self.runtime.db.repositories.activities.get(self.binding.selected_activity_id)

@@ -49,7 +49,7 @@ v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段�
 从 cogmem-agent、Celiums-memory 和 cognitive-memory 纳入的后续待办（其中低信息检索门控已先实现）：
 
 - `trivial query` retrieval gate：已实现对“你好/好的”等完整短语跳过检索，但不能跳过核心恢复或事件保存；后续用中文对话集校准误判边界。
-- 会话内检索缓存和后台 prefetch：缓存只保存候选 ID/已验证版本，遗忘或代次变化后必须失效；不能缓存可绕过权限的正文。
+- 会话内检索缓存和后台 prefetch：已实现受 TTL、scope mutation epoch、当前事件和引用 revision 约束的会话缓存；`session.prefetch()` / JSONL `prefetch` 只预热候选引用，不返回正文。真正的后台调度、跨进程缓存和指标仍待加入。
 - recall reinforcement：把“被实际使用过”与事实真实性分开记录，只调整检索强度，不提高证据等级。
 - memory health / summary health / confidence / gaps：`MemoryRuntime.memory_health()` 已输出按类型/状态计数、陈旧摘要、失败任务、无来源推断和开放循环；置信度校准、历史趋势与 UI 仍待加入，健康分数不能被模型当作事实概率。
 - durable journal 与 hash chain：为事件、检查点、整理任务和 handoff 提供可校验的操作链；哈希链不能代替作用域权限和删除账本。

@@ -320,7 +320,7 @@ return only the short briefing under a separate result budget
 
 这些机制已纳入待办，但不改变当前证据边界：
 
-1. **检索门控与缓存**：规则判断低信息输入；命中门控时跳过搜索，仍保存事件。会话缓存只缓存 `(query, scope, mutation_epoch, source_revision)` 对应的候选 ID，遗忘或版本变化立即失效；后台 prefetch 不向模型自动塞入正文。
+1. **检索门控与缓存**：规则判断低信息输入；命中门控时跳过搜索，仍保存事件。当前会话缓存只缓存 `(query, scope, mutation_epoch, current_event, source_revision)` 对应的受控引用，TTL 到期、遗忘代次变化、原记录 revision 变化或引用过期都会回退到完整检索；`prefetch()` 只预热缓存，不向模型自动塞入正文。跨进程共享缓存仍待实现。
 2. **召回强化与健康度**：被宿主确认实际使用的记忆可增加 retrieval strength/access count；它不能改变 epistemic status、来源数或事实置信度。健康报告分别统计 stale 摘要、缺来源候选、低置信推断和未覆盖 open loop。
 3. **持久 journal 与派生物代次**：事件、检查点、整理任务、handoff 追加 hash 链；摘要、向量和图索引保存 source digest 与 algorithm version，源变化后依次经历 active → stale → withdrawn/rolled_back。
 4. **可移植备份**：导出 manifest、作用域和源摘要；导入先 dry-run，应用遗忘账本和 generation 校验后才切换，输出残留报告。

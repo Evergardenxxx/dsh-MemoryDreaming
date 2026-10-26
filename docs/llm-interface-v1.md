@@ -50,7 +50,10 @@ binding、request_id、deadline、idempotency_key、当前用户事件 ID、scop
   "exact_token_counting": false,
   "full_forgetting": false,
   "core_proposals": false,
-  "checkpoint_proposals": false
+  "checkpoint_proposals": false,
+  "pre_compress_handoff": true,
+  "session_retrieval_cache": true,
+  "host_prefetch": true
 }
 ```
 

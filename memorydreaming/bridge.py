@@ -81,6 +81,14 @@ class BridgeServer:
                     max_tokens=request.get("max_tokens") or self.max_tokens,
                 )
                 return self._ok(request_id, result)
+            if op == "prefetch":
+                session = self._session(request["conversation_id"])
+                result = session.prefetch(
+                    request["query"], detail=request.get("detail", "auto"),
+                    max_items=request.get("max_items", 12),
+                    max_tokens=request.get("max_tokens") or self.max_tokens,
+                )
+                return self._ok(request_id, result)
             if op == "close_session":
                 conversation_id = text(request["conversation_id"], "conversation_id", 200)
                 session = self.sessions.pop(conversation_id, None)

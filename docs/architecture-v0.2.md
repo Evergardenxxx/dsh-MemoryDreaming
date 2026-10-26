@@ -64,6 +64,7 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 已实现 Python 生命周期、pre-compress handoff、可选核心建议与宿主审批、MCP 只读服务；产品 hook 与通用修改待接入 |
 | Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | 抑制与 scope epoch 已实现；类型化 AND/OR 组待实现 |
 | Health / Observability | 记忆、摘要、队列和工作循环的健康摘要 | `MemoryRuntime.memory_health()` 已实现无正文指标；趋势、告警和 UI 待实现 |
+| Session Cache / Prefetch | 会话级候选缓存与宿主预取 | 已实现 TTL、作用域代次、事件和引用 revision 校验；跨进程缓存与调度待实现 |
 | TokenCounter / Embedding Provider | 目标分词器与真实语义向量 | 可注入 TokenCounter；默认估计与哈希向量，真实模型待接入 |
 
 ## 3. 核心与四类记忆
