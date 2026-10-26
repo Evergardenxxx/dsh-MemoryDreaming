@@ -1,0 +1,21 @@
+{
+  "name": "@local/memorydreaming",
+  "version": "0.8.0",
+  "private": true,
+  "description": "Persistent identity and long-term memory tools for DeepSeek Harness",
+  "type": "module",
+  "exports": {
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

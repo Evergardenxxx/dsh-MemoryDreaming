@@ -4,7 +4,13 @@
 
 当前状态：**v0.8，增加核心候选与宿主审批**。在跨窗口恢复和 MCP 只读服务之上，Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。默认仍只开放 `memory_search` / `memory_read`。当前 259 个回归测试通过。具体聊天产品的 hook、真实模型往返、语义模型及完整擦除仍待完成。
 
-接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或使用 [MCP 配置示例](examples/mcp-config.json)。配置示例尚未自动写入任何聊天应用。
+接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或使用 [MCP 配置示例](examples/mcp-config.json)。DeepSeek Harness 的配置型 bundle 位于 [`integrations/deepseek-harness`](integrations/deepseek-harness)，会把 stdio MCP 服务注册为 `memory_search` / `memory_read` 工具。
+
+### DeepSeek Harness 接入
+
+bundle 使用固定的会话绑定（`u1 / c1 / r1`）和独立数据库 `.memorydreaming/deepseek-harness.db`，因此切换聊天窗口不会改变记忆引擎的身份边界。安装或更新时应通过 Harness 的插件管理器安装 `integrations/deepseek-harness` 目录；应用重启后，模型工具名为 `mcp__memorydreaming__memory_search` 和 `mcp__memorydreaming__memory_read`。MCP 服务的 stdout 只输出 JSON-RPC，诊断写入 stderr。
+
+当前接入提供只读检索和 bootstrap 资源。逐轮 `observe`、整理队列和核心候选审批仍需要宿主生命周期适配，不能仅靠 MCP 连接自动完成。
 
 受控修改见 [核心候选与审批](docs/core-proposals.md)，可运行 [重启后审批示例](examples/core_proposal.py)。
 
