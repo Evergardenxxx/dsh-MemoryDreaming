@@ -171,6 +171,63 @@ def _memory_from_row(row: sqlite3.Row) -> MemoryItem:
     )
 
 
+def _memory_snapshot(item: MemoryItem) -> dict[str, Any]:
+    """只保存事实状态所需字段；访问次数等召回强化也保留，便于完整回放。"""
+    return {
+        "memory_id": item.memory_id,
+        "memory_type": item.memory_type.value,
+        "schema_version": item.schema_version,
+        "body": item.body,
+        "source_event_ids": list(item.source_event_ids),
+        "source_spans": item.source_spans,
+        "source_speaker": item.source_speaker,
+        "epistemic_status": item.epistemic_status.value,
+        "modality": item.modality.value,
+        "occurred_start": to_utc_iso(item.occurred_start),
+        "occurred_end": to_utc_iso(item.occurred_end),
+        "occurred_precision": item.occurred_precision,
+        "valid_from": to_utc_iso(item.valid_from),
+        "valid_to": to_utc_iso(item.valid_to),
+        "supersedes_id": item.supersedes_id,
+        "status": item.status.value,
+        "importance": item.importance,
+        "retrieval_strength": item.retrieval_strength,
+        "last_used_at": to_utc_iso(item.last_used_at),
+        "access_count": item.access_count,
+        "recorded_at": to_utc_iso(item.recorded_at),
+        "updated_at": to_utc_iso(item.recorded_at),
+    }
+
+
+def _memory_from_snapshot(
+    snapshot: dict[str, Any], scope: Scope, revision: int | None = None,
+) -> MemoryItem:
+    return MemoryItem(
+        memory_id=str(snapshot["memory_id"]), memory_type=MemoryType(snapshot["memory_type"]),
+        scope=scope, body=dict(snapshot.get("body") or {}),
+        source_event_ids=list(snapshot.get("source_event_ids") or []),
+        source_spans=dict(snapshot.get("source_spans") or {}),
+        source_speaker=snapshot.get("source_speaker"),
+        epistemic_status=EpistemicStatus(snapshot["epistemic_status"]),
+        modality=Modality(snapshot["modality"]),
+        occurred_start=from_utc_iso(snapshot.get("occurred_start")),
+        occurred_end=from_utc_iso(snapshot.get("occurred_end")),
+        occurred_precision=snapshot.get("occurred_precision", "unknown"),
+        valid_from=from_utc_iso(snapshot.get("valid_from")),
+        valid_to=from_utc_iso(snapshot.get("valid_to")),
+        supersedes_id=snapshot.get("supersedes_id"),
+        status=MemoryStatus(snapshot["status"]),
+        schema_version=int(snapshot.get("schema_version", 1)),
+        system_revision=revision,
+        importance=float(snapshot.get("importance", 0.5)),
+        retrieval_strength=float(snapshot.get("retrieval_strength", 0.5)),
+        last_used_at=from_utc_iso(snapshot.get("last_used_at")),
+        access_count=int(snapshot.get("access_count", 0)),
+        recorded_at=from_utc_iso(snapshot.get("recorded_at")) or ensure_utc(datetime.min),
+        body_text=body_to_text(MemoryType(snapshot["memory_type"]), dict(snapshot.get("body") or {})),
+    )
+
+
 def _activity_from_row(row: sqlite3.Row) -> Activity:
     return Activity(
         activity_id=row["activity_id"],
@@ -492,7 +549,10 @@ class MemoryRepository:
                 json.dumps(item.source_spans, ensure_ascii=False),
             ),
         )
-        return item if cursor.rowcount > 0 else None
+        if cursor.rowcount > 0:
+            self._record_revision(item.memory_id, "insert", item.recorded_at)
+            return item
+        return None
 
     def get(self, memory_id: str) -> MemoryItem | None:
         row = self._conn.execute(
@@ -509,6 +569,102 @@ class MemoryRepository:
             list(memory_ids),
         ).fetchall()
         return {row["memory_id"]: _memory_from_row(row) for row in rows}
+
+    def history(self, memory_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """返回按系统时间倒序的修订摘要；snapshot 是内部完整状态。"""
+        rows = self._conn.execute(
+            "SELECT * FROM memory_revisions WHERE memory_id=? ORDER BY revision DESC LIMIT ?",
+            (memory_id, limit),
+        ).fetchall()
+        return [
+            {
+                "revision": row["revision"], "revision_id": row["revision_id"],
+                "operation": json.loads(row["snapshot_json"]).get("operation", ""),
+                "system_from": row["system_from"], "system_to": row["system_to"],
+                "status": row["status"], "valid_from": row["valid_from"], "valid_to": row["valid_to"],
+                "snapshot": json.loads(row["snapshot_json"]),
+            }
+            for row in rows
+        ]
+
+    def at(
+        self,
+        memory_id: str,
+        knowledge_at: datetime,
+        *,
+        fact_at: datetime | None = None,
+    ) -> MemoryItem | None:
+        """按系统知识时间恢复一条记忆，再按事实时间检查有效期。"""
+        moment = to_utc_iso(knowledge_at)
+        row = self._conn.execute(
+            """
+            SELECT * FROM memory_revisions
+            WHERE memory_id=? AND system_from <= ?
+              AND (system_to IS NULL OR system_to > ?)
+            ORDER BY revision DESC LIMIT 1
+            """,
+            (memory_id, moment, moment),
+        ).fetchone()
+        if row is None:
+            return None
+        scope = Scope(row["user_id"], row["character_id"], row["relationship_id"],
+                      row["activity_id"], row["domain"])
+        item = _memory_from_snapshot(json.loads(row["snapshot_json"]), scope, row["revision"])
+        if fact_at is not None and not item.is_current(fact_at):
+            return None
+        return item
+
+    def list_at(
+        self,
+        scope: Scope,
+        knowledge_at: datetime,
+        *,
+        fact_at: datetime | None = None,
+        memory_types: list[MemoryType] | None = None,
+        read_filter: ReadFilter | None = None,
+        limit: int = 200,
+    ) -> list[MemoryItem]:
+        """按系统时间恢复每条记忆的唯一版本，供双时间回放使用。"""
+        visible, params = scope_sql(scope, "r")
+        rows = self._conn.execute(
+            "SELECT * FROM memory_revisions r WHERE " + visible
+            + " AND r.system_from <= ? AND (r.system_to IS NULL OR r.system_to > ?)"
+            + " ORDER BY r.memory_id, r.revision DESC",
+            [*params, to_utc_iso(knowledge_at), to_utc_iso(knowledge_at)],
+        ).fetchall()
+        result: list[MemoryItem] = []
+        seen: set[str] = set()
+        for row in rows:
+            if row["memory_id"] in seen:
+                continue
+            seen.add(row["memory_id"])
+            if memory_types and MemoryType(row["memory_type"]) not in memory_types:
+                continue
+            item = _memory_from_snapshot(
+                json.loads(row["snapshot_json"]),
+                Scope(row["user_id"], row["character_id"], row["relationship_id"],
+                      row["activity_id"], row["domain"]),
+                row["revision"],
+            )
+            if item.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED):
+                continue
+            if fact_at is not None:
+                # 事实轴只判断有效期。修订快照中的 ``superseded`` 表示
+                # 当前投影已被新版本取代，但在 fact_at 这个过去时刻它
+                # 可能仍是有效值。
+                if item.valid_from is not None and item.valid_from > fact_at:
+                    continue
+                if item.valid_to is not None and item.valid_to <= fact_at:
+                    continue
+            if read_filter is not None and (
+                (read_filter.activity_ids is not None and item.scope.activity_id not in read_filter.activity_ids)
+                or set(item.source_event_ids).intersection(read_filter.exclude_event_ids)
+            ):
+                continue
+            result.append(item)
+            if len(result) >= limit:
+                break
+        return result
 
     def list_recent(
         self,
@@ -601,10 +757,12 @@ class MemoryRepository:
         return int(row["n"])
 
     def update_status(self, memory_id: str, status: MemoryStatus, now: datetime) -> None:
-        self._conn.execute(
+        cursor = self._conn.execute(
             "UPDATE memories SET status = ?, updated_at = ? WHERE memory_id = ?",
             (status.value, to_utc_iso(now), memory_id),
         )
+        if cursor.rowcount:
+            self._record_revision(memory_id, f"status:{status.value}", now)
         SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
     def close_validity(
@@ -618,10 +776,12 @@ class MemoryRepository:
 
         「当时正确、现在改变」用它：记录仍然可查，只是不再是当前值。
         """
-        self._conn.execute(
+        cursor = self._conn.execute(
             "UPDATE memories SET valid_to = ?, status = ?, updated_at = ? WHERE memory_id = ?",
             (to_utc_iso(valid_to), status.value, to_utc_iso(now), memory_id),
         )
+        if cursor.rowcount:
+            self._record_revision(memory_id, "close_validity", now)
         SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
     def mark_used(self, memory_ids: Sequence[str], now: datetime) -> None:
@@ -655,6 +815,7 @@ class MemoryRepository:
             (to_utc_iso(now), memory_id),
         )
         if cursor.rowcount:
+            self._record_revision(memory_id, "delete", now)
             SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
         return cursor.rowcount > 0
 
@@ -750,7 +911,41 @@ class MemoryRepository:
         self._conn.execute(
             f"UPDATE memories SET {', '.join(assignments)} WHERE memory_id = ?", params
         )
+        self._record_revision(memory_id, "content", now)
         SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
+
+    def _record_revision(self, memory_id: str, operation: str, now: datetime) -> None:
+        item = self.get(memory_id)
+        if item is None:
+            return
+        previous = self._conn.execute(
+            "SELECT revision FROM memory_revisions WHERE memory_id=? ORDER BY revision DESC LIMIT 1",
+            (memory_id,),
+        ).fetchone()
+        next_revision = int(previous["revision"]) + 1 if previous else 1
+        self._conn.execute(
+            "UPDATE memory_revisions SET system_to=? WHERE memory_id=? AND system_to IS NULL",
+            (to_utc_iso(now), memory_id),
+        )
+        snapshot = _memory_snapshot(item)
+        snapshot["operation"] = operation
+        self._conn.execute(
+            """
+            INSERT INTO memory_revisions (
+                revision_id, memory_id, revision, user_id, character_id, relationship_id,
+                activity_id, domain, memory_type, status, valid_from, valid_to,
+                snapshot_json, system_from, system_to, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                new_id("mrev"), memory_id, next_revision, item.scope.user_id,
+                item.scope.character_id, item.scope.relationship_id, item.scope.activity_id,
+                item.scope.domain, item.memory_type.value, item.status.value,
+                to_utc_iso(item.valid_from), to_utc_iso(item.valid_to),
+                json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                to_utc_iso(now), None, to_utc_iso(now),
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2042,6 +2237,41 @@ class JournalRepository:
             expected_sequence += 1
         return {"valid": True, "checked": len(rows),
                 "head_sequence": len(rows), "head_hash": previous}
+
+    def redact_scope(self, scope: Scope, *, now: datetime, reason: str = "", generation: int | None = None) -> int:
+        """擦除作用域审计载荷并重建链，不删除审计行。"""
+        visible, params = scope_sql(scope)
+        rows = self._conn.execute(
+            "SELECT * FROM journal_entries WHERE " + visible + " ORDER BY sequence ASC", params
+        ).fetchall()
+        if not rows:
+            return 0
+        reason_digest = hashlib.sha256(reason.encode("utf-8")).hexdigest()
+        for row in rows:
+            payload: dict[str, Any] = {"redacted": True, "reason_digest": reason_digest}
+            if generation is not None:
+                payload["purge_generation"] = generation
+            self._conn.execute(
+                "UPDATE journal_entries SET entity_id=NULL, idempotency_key=NULL, payload_json=? WHERE journal_id=?",
+                (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")), row["journal_id"]),
+            )
+
+        previous = self.GENESIS
+        all_rows = self._conn.execute("SELECT * FROM journal_entries ORDER BY sequence ASC").fetchall()
+        for row in all_rows:
+            material = self._entry_material(
+                journal_id=row["journal_id"], sequence=int(row["sequence"]),
+                scope_key=row["scope_key"], event_type=row["event_type"],
+                entity_id=row["entity_id"], payload_json=row["payload_json"],
+                prev_hash=previous, created_at=row["created_at"],
+            )
+            entry_hash = hashlib.sha256(material.encode("utf-8")).hexdigest()
+            self._conn.execute(
+                "UPDATE journal_entries SET prev_hash=?, entry_hash=? WHERE journal_id=?",
+                (previous, entry_hash, row["journal_id"]),
+            )
+            previous = entry_hash
+        return len(rows)
 
 
 # ---------------------------------------------------------------------------

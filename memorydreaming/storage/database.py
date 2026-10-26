@@ -45,7 +45,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 10：上下文压缩/窗口结束的持久 handoff 交接记录。
 # 版本 11：摘要保存来源指纹和生成算法版本。
 # 版本 12：追加式 durable journal/hash-chain 审计链。
-SCHEMA_VERSION = "12"
+# 版本 13：记忆系统时间修订日志与作用域物理清除账本。
+SCHEMA_VERSION = "13"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -188,6 +189,8 @@ class Database:
                     self._migrate_summary_metadata()
                 for statement in self._statements(sql):
                     self._conn.execute(statement)
+                if version < 13:
+                    self._migrate_memory_revisions()
                 if self.meta_get("forgetting_hmac_key") is None:
                     self.meta_set("forgetting_hmac_key", secrets.token_hex(32))
                 if version < 6:
@@ -202,6 +205,41 @@ class Database:
 
         # 关键词索引依赖 memories 表存在，必须放在建表之后
         KeywordIndex(self._conn).ensure_index()
+
+    def _migrate_memory_revisions(self) -> None:
+        """为旧库当前投影补一条 revision=1，避免历史查询误报完整历史。"""
+        rows = self._conn.execute("SELECT * FROM memories").fetchall()
+        for row in rows:
+            snapshot = {
+                "memory_id": row["memory_id"], "memory_type": row["memory_type"],
+                "schema_version": row["schema_version"], "body": json.loads(row["body_json"]),
+                "source_event_ids": json.loads(row["source_event_ids_json"] or "[]"),
+                "source_spans": json.loads(row["source_spans_json"] or "{}"),
+                "source_speaker": row["source_speaker"], "epistemic_status": row["epistemic_status"],
+                "modality": row["modality"], "occurred_start": row["occurred_start"],
+                "occurred_end": row["occurred_end"], "occurred_precision": row["occurred_precision"],
+                "valid_from": row["valid_from"], "valid_to": row["valid_to"],
+                "supersedes_id": row["supersedes_id"], "status": row["status"],
+                "importance": row["importance"], "retrieval_strength": row["retrieval_strength"],
+                "last_used_at": row["last_used_at"], "access_count": row["access_count"],
+                "recorded_at": row["recorded_at"], "updated_at": row["updated_at"],
+            }
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO memory_revisions (
+                    revision_id, memory_id, revision, user_id, character_id, relationship_id,
+                    activity_id, domain, memory_type, status, valid_from, valid_to,
+                    snapshot_json, system_from, system_to, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    f"{row['memory_id']}:r1", row["memory_id"], 1, row["user_id"],
+                    row["character_id"], row["relationship_id"], row["activity_id"], row["domain"],
+                    row["memory_type"], row["status"], row["valid_from"], row["valid_to"],
+                    json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    row["recorded_at"], None, row["recorded_at"],
+                ),
+            )
 
     def _table_exists(self, name: str) -> bool:
         return self._conn.execute(

@@ -32,12 +32,14 @@ TABLES = (
     "events",
     "forgotten_events",
     "memories",
+    "memory_revisions",
     "memory_links",
     "summaries",
     "consolidation_jobs",
     "memory_tombstones",
     "tombstone_sources",
     "scope_mutations",
+    "scope_purges",
     "core_field_tombstones",
     "host_deliveries",
     "core_proposals",
@@ -52,12 +54,14 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "events": ("event_id",),
     "forgotten_events": ("event_id",),
     "memories": ("memory_id",),
+    "memory_revisions": ("revision_id",),
     "memory_links": ("link_id",),
     "summaries": ("summary_id",),
     "consolidation_jobs": ("job_id",),
     "memory_tombstones": ("tombstone_id",),
     "tombstone_sources": ("tombstone_id", "event_id", "span_start", "span_end"),
     "scope_mutations": ("scope_key",),
+    "scope_purges": ("scope_key",),
     "core_field_tombstones": ("scope_key", "kind", "field_key"),
     "host_deliveries": ("event_id",),
     "core_proposals": ("proposal_id",),
@@ -269,6 +273,19 @@ def validate_snapshot(db: Database, snapshot: dict[str, Any]) -> dict[str, Any]:
                 errors.append({"code": "GENERATION_MISMATCH", "message": "作用域遗忘代次已变化，阻止直接导入"})
         except (KeyError, TypeError, ValueError):
             errors.append({"code": "INVALID_SCOPE", "message": "快照作用域字段无效"})
+
+    # 目标库的 purge marker 是单调的防复活屏障。即使旧快照的表摘要和
+    # forgetting key 都匹配，只要其中包含已经清除作用域的正文，就必须拒绝。
+    purge_rows = db.connection.execute("SELECT * FROM scope_purges").fetchall()
+    snapshot_rows = [row for table, rows in tables.items() if table != "scope_purges"
+                     for row in rows if isinstance(row, dict)]
+    for marker in purge_rows:
+        marker_scope = Scope(marker["user_id"], marker["character_id"], marker["relationship_id"],
+                              marker["activity_id"], marker["domain"])
+        for row in snapshot_rows:
+            if _row_scope_matches(row, marker_scope):
+                errors.append({"code": "PURGED_SCOPE", "message": "快照包含已物理清除作用域的数据，阻止重新导入"})
+                break
 
     for table in TABLES:
         for row in tables.get(table, []):

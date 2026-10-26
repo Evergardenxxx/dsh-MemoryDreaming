@@ -209,6 +209,31 @@ CREATE INDEX IF NOT EXISTS idx_memories_recorded
 CREATE INDEX IF NOT EXISTS idx_memories_activity
     ON memories (activity_id, memory_type);
 
+-- 记忆的系统时间修订日志。当前 memories 行是最新投影；这里保留每次
+-- 内容/效力/状态变化前后的快照，使 knowledge_at 与 fact_at 可以分开查询。
+CREATE TABLE IF NOT EXISTS memory_revisions (
+    revision_id    TEXT PRIMARY KEY,
+    memory_id      TEXT NOT NULL,
+    revision       INTEGER NOT NULL,
+    user_id        TEXT NOT NULL,
+    character_id   TEXT NOT NULL,
+    relationship_id TEXT,
+    activity_id    TEXT,
+    domain         TEXT NOT NULL DEFAULT 'real',
+    memory_type    TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    valid_from     TEXT,
+    valid_to       TEXT,
+    snapshot_json  TEXT NOT NULL,
+    system_from    TEXT NOT NULL,
+    system_to      TEXT,
+    created_at     TEXT NOT NULL,
+    UNIQUE(memory_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_revisions_lookup
+    ON memory_revisions (user_id, character_id, domain, memory_id, system_from DESC);
+
 -- ----------------------------------------------------------------------------
 -- 记忆之间的链接：支持、派生、取代、组成
 -- ----------------------------------------------------------------------------
@@ -331,6 +356,22 @@ CREATE TABLE IF NOT EXISTS scope_mutations (
     scope_key TEXT PRIMARY KEY,
     epoch INTEGER NOT NULL DEFAULT 0
 );
+
+-- 作用域级物理清除账本。它不复制被清除正文，只记录代次与原因摘要，
+-- 供旧快照导入预检阻止已经清除的作用域重新上线。
+CREATE TABLE IF NOT EXISTS scope_purges (
+    scope_key       TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    character_id    TEXT NOT NULL,
+    relationship_id TEXT,
+    activity_id     TEXT,
+    domain          TEXT NOT NULL DEFAULT 'real',
+    purge_generation INTEGER NOT NULL,
+    reason          TEXT NOT NULL DEFAULT '',
+    purged_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scope_purges_identity
+    ON scope_purges (user_id, character_id, domain, purged_at DESC);
 CREATE TABLE IF NOT EXISTS core_field_tombstones (
     scope_key TEXT NOT NULL,
     kind TEXT NOT NULL,

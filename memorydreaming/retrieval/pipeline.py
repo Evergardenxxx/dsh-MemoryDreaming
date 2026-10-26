@@ -86,16 +86,20 @@ class RetrievalPipeline:
                 gaps=[],
             )
 
-        # 0) 摘要优先：主题宽泛或久远的问题，先给索引卡，再回源展开。
+        # 双时间回放必须走修订日志。当前摘要、FTS、向量都是「最新投影」，
+        # 若混入历史查询会把未来才知道的内容泄露给过去，因此历史通道只
+        # 使用逐条恢复的修订快照和可解释的关键词/时间匹配。
         summary_hits, summary_channels = self._summary_stage(plan, query)
-
-        # 1) 多通道取候选。各通道相互独立，只共享同一份查询计划。
         hits: list[ChannelHit] = []
         hits.extend(summary_channels)
-        hits.extend(self._recent_channel(plan, query, now))
-        hits.extend(self._keyword_channel(plan, query))
-        hits.extend(self._vector_channel(plan, query))
-        hits.extend(self._time_channel(plan, query))
+        if plan.knowledge_at is not None:
+            hits.extend(self._historical_keyword_channel(plan, query))
+            hits.extend(self._time_channel(plan, query))
+        else:
+            hits.extend(self._recent_channel(plan, query, now))
+            hits.extend(self._keyword_channel(plan, query))
+            hits.extend(self._vector_channel(plan, query))
+            hits.extend(self._time_channel(plan, query))
 
         # 2) 融合排序
         fused = fuse(hits, k=self._settings.rrf_k)
@@ -147,7 +151,8 @@ class RetrievalPipeline:
         """
         # 当前摘要是可变的投影，没有历史版本。即使摘要创建得早，后续重建
         # 也可能混入 as_of 之后的内容；历史回放只使用逐条校验后的来源记忆。
-        if plan.expansion_mode != "summary_then_expand" or plan.as_of is not None or plan.hard_time:
+        if (plan.expansion_mode != "summary_then_expand" or plan.knowledge_at is not None
+                or plan.fact_at is not None or plan.hard_time):
             return [], []
 
         hits = find_summaries(self._db, query.scope, plan.query_text, limit=2, read_filter=query.read_filter)
@@ -212,6 +217,32 @@ class RetrievalPipeline:
                 for rank, result in enumerate(results, start=1)
             )
         return hits
+
+    def _historical_keyword_channel(self, plan: QueryPlan, query: Query) -> list[ChannelHit]:
+        """在 knowledge_at 轴上检索修订快照。
+
+        修订表是事实底座，不能复用当前 FTS；这里用同一套分词器做小规模
+        扫描，保证历史查询的语义清晰。规模扩大后可以为 revisions 增加按
+        revision 的离线索引，而不改变接口。
+        """
+        memories = self._repos.memories.list_at(
+            query.scope, plan.knowledge_at or self._clock.now(), fact_at=plan.fact_at,
+            read_filter=query.read_filter, limit=max(self._settings.keyword_candidate_limit * 8, 200),
+        )
+        keywords = set(plan.keywords)
+        hits: list[ChannelHit] = []
+        for memory in memories:
+            if plan.per_type_budget.get(memory.memory_type, 0) <= 0:
+                continue
+            text = memory.body_text.lower()
+            overlap = sum(1 for keyword in keywords if keyword.lower() in text)
+            if keywords and overlap == 0:
+                continue
+            # 关键词交集决定是否入选，rank 由交集大小稳定排序。
+            hits.append(ChannelHit(memory.memory_id, "historical_keyword", 1, 0.8 + min(0.2, overlap * 0.05)))
+        hits.sort(key=lambda hit: (-hit.weight, hit.memory_id))
+        return [ChannelHit(hit.memory_id, hit.channel, rank, hit.weight)
+                for rank, hit in enumerate(hits[:self._settings.keyword_candidate_limit], start=1)]
 
     def _vector_channel(self, plan: QueryPlan, query: Query) -> list[ChannelHit]:
         """向量通道：找「意思接近但用词不同」的记忆。
@@ -286,7 +317,14 @@ class RetrievalPipeline:
         if not fused:
             return [], 0
 
-        fetched = self._repos.memories.fetch_many([candidate.memory_id for candidate in fused])
+        if plan.knowledge_at is not None:
+            historical = self._repos.memories.list_at(
+                query.scope, plan.knowledge_at, fact_at=plan.fact_at,
+                read_filter=query.read_filter, limit=max(len(fused), 1) * 4,
+            )
+            fetched = {item.memory_id: item for item in historical}
+        else:
+            fetched = self._repos.memories.fetch_many([candidate.memory_id for candidate in fused])
         items: list[RetrievedItem] = []
         dropped = 0
 
@@ -352,7 +390,7 @@ class RetrievalPipeline:
                 dropped += 1
                 continue
 
-            valid_now = memory.is_current(now)
+            valid_now = self._fact_visible(memory, plan.fact_at or now)
             note = ""
             if memory.status is MemoryStatus.SUPERSEDED:
                 # 被新版本取代：仍然可查（方便解释「以前是怎么样的」），但不算当前值。
@@ -446,11 +484,14 @@ class RetrievalPipeline:
 
     @staticmethod
     def _exists_at(memory: MemoryItem, plan: QueryPlan) -> bool:
-        """这条记忆在 plan.as_of 那一刻是否已经存在且有效。"""
-        moment = plan.as_of
-        if moment is None:
-            return True
-        if memory.recorded_at > moment:
+        """兼容旧投影的存在性检查；修订回放本身已按 knowledge_at 选版本。"""
+        moment = plan.knowledge_at
+        return moment is None or memory.recorded_at <= moment
+
+    @staticmethod
+    def _fact_visible(memory: MemoryItem, moment: datetime) -> bool:
+        """事实时间只检查有效期，不能把当前 superseded 状态误当成历史无效。"""
+        if memory.status in (MemoryStatus.RETRACTED, MemoryStatus.DELETED):
             return False
         if memory.valid_from is not None and memory.valid_from > moment:
             return False

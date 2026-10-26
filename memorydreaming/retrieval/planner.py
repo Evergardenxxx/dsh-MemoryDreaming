@@ -137,6 +137,12 @@ class QueryPlanner:
             for memory_type, score in type_scores.items()
         }
 
+        # ``as_of`` 是旧 API 的兼容别名：它同时冻结系统知识轴和事实有效轴。
+        # 新 API 可以只冻结其中一条轴，例如只问「现在系统知道的、在 2020 年
+        # 仍然成立的偏好」。
+        knowledge_at = query.knowledge_at or query.as_of
+        fact_at = query.fact_at or query.as_of
+
         return QueryPlan(
             query_text=query.text,
             type_scores=type_scores,
@@ -151,7 +157,9 @@ class QueryPlanner:
             max_items=query.max_items or self._settings.max_context_items,
             token_budget=query.token_budget or self._settings.context_token_budget,
             as_of=query.as_of,
-            skip_retrieval=(query.time_range is None and query.as_of is None and is_trivial_query(query.text)),
+            knowledge_at=knowledge_at,
+            fact_at=fact_at,
+            skip_retrieval=(query.time_range is None and knowledge_at is None and fact_at is None and is_trivial_query(query.text)),
             generated_at=now,
         )
 

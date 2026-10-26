@@ -310,6 +310,8 @@ class MemoryItem:
     supersedes_id: str | None = None
     status: MemoryStatus = MemoryStatus.ACTIVE
     schema_version: int = 1
+    # 系统时间修订序号；旧库迁移后至少为 1，当前投影读取时可为 None。
+    system_revision: int | None = None
 
     # --- 权重 ---
     importance: float = 0.5            # 值得记住的程度
@@ -585,6 +587,10 @@ class Query:
     token_budget: int | None = None
     # 时间旅行：「按 as_of 那一刻的状态来回答」。用于复盘「当时我们是怎么以为的」
     as_of: datetime | None = None
+    # 双时间查询：knowledge_at 是系统当时知道的版本，fact_at 是事实发生/有效时间。
+    # as_of 仍保留为兼容别名，传入时两条轴同时使用。
+    knowledge_at: datetime | None = None
+    fact_at: datetime | None = None
     read_filter: ReadFilter | None = None
     detail: str = "auto"
 
@@ -612,6 +618,8 @@ class QueryPlan:
     max_items: int = 12
     token_budget: int = 1800
     as_of: datetime | None = None
+    knowledge_at: datetime | None = None
+    fact_at: datetime | None = None
     # 低信息输入（问候、确认、告别）只保存事件，不触发记忆检索。
     skip_retrieval: bool = False
     generated_at: datetime = field(default_factory=utcnow)
@@ -756,6 +764,7 @@ class ForgetResult:
     conservative_event_ids: list[str] = field(default_factory=list)
     forgotten_event_ids: list[str] = field(default_factory=list)
     erasure_level: str = "logical_suppressed"
+    residuals: list[str] = field(default_factory=list)
 
 
 @dataclass

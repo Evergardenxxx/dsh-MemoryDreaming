@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import replace
 from datetime import datetime
+import json
 from typing import Any
 
 from .clock import Clock, SystemClock, load_timezone
@@ -57,7 +58,7 @@ from .retrieval.pipeline import RetrievalPipeline
 from .retrieval.vector import VectorIndex
 from .summarization import build_summaries
 from .storage.database import Database
-from .storage.repository import scope_sql
+from .storage.repository import scope_sql, _scope_key
 from .portability import preflight_snapshot_file, write_snapshot
 from .worker import ConsolidationWorker
 
@@ -219,6 +220,8 @@ class MemoryRuntime:
         token_budget: int | None = None,
         as_of: datetime | None = None,
         *, read_filter: ReadFilter | None = None,
+        knowledge_at: datetime | None = None,
+        fact_at: datetime | None = None,
         detail: str = "auto",
     ) -> RetrievalResult:
         """检索证据。返回结果自带检索轨迹与缺口说明。
@@ -226,6 +229,8 @@ class MemoryRuntime:
         as_of 是「时间旅行」：给一个过去的时刻，只返回那一刻已经存在、
         并且当时有效的记忆。复盘「我们当时是怎么以为的」时用得上。
         """
+        if as_of is not None and (knowledge_at is not None or fact_at is not None):
+            raise ValueError("as_of 不能与 knowledge_at/fact_at 同时传入")
         query = Query(
             text=query_text,
             scope=scope,
@@ -234,10 +239,26 @@ class MemoryRuntime:
             max_items=max_items,
             token_budget=token_budget,
             as_of=as_of,
+            knowledge_at=knowledge_at,
+            fact_at=fact_at,
             read_filter=read_filter,
             detail=detail,
         )
         return self._pipeline.run(query)
+
+    def memory_history(self, memory_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """读取一条记忆的系统时间修订日志（不注入模型上下文）。"""
+        return self._repos.memories.history(memory_id, limit=limit)
+
+    def memory_at(
+        self,
+        memory_id: str,
+        knowledge_at: datetime,
+        *,
+        fact_at: datetime | None = None,
+    ) -> MemoryItem | None:
+        """按双时间轴恢复单条记忆，供审计/回放工具使用。"""
+        return self._repos.memories.at(memory_id, knowledge_at, fact_at=fact_at)
 
     # -- 3. 观察（保存原始对话） -------------------------------------------
 
@@ -718,6 +739,143 @@ class MemoryRuntime:
                 raise ValueError("兼容 forget 入口一次只能指定一个 event_id，且不能同时指定 memory_id")
             return self.forget_event(selector.event_ids[0], scope=selector.scope, reason=selector.reason)
         return self.forget_fact(selector)
+
+    def forget_scope(self, scope: Scope, *, reason: str = "用户要求清除作用域") -> ForgetResult:
+        """物理清除一个作用域及其子活动，并留下不可逆的代次标记。
+
+        这是 ``logical_suppressed`` 之上的主动擦除等级：主库正文、派生索引、
+        handoff、核心投影和修订日志都会移除；HMAC 密钥与 hash-chain 骨架保留。
+        已经投递给模型的上下文无法从宿主撤回，外部备份也只能通过导入预检拒绝
+        旧代次，仍需用户单独删除。
+        """
+        now = self._clock.now()
+
+        def matches(row: Any) -> bool:
+            return (
+                row.get("user_id") == scope.user_id
+                and row.get("character_id") == scope.character_id
+                and row.get("domain", "real") == scope.domain
+                and (scope.relationship_id is None or row.get("relationship_id") == scope.relationship_id)
+                and (scope.activity_id is None or row.get("activity_id") == scope.activity_id)
+            )
+
+        def key_scope(value: Any) -> Scope | None:
+            try:
+                user, character, relationship, activity, domain = json.loads(value)
+                candidate = Scope(str(user), str(character), relationship, activity, str(domain))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+            return candidate if matches({
+                "user_id": candidate.user_id, "character_id": candidate.character_id,
+                "relationship_id": candidate.relationship_id, "activity_id": candidate.activity_id,
+                "domain": candidate.domain,
+            }) else None
+
+        conn = self._db.connection
+        affected: set[Scope] = {scope}
+        explicit_tables = (
+            "activities", "session_handoffs", "events", "memories", "memory_revisions",
+            "summaries", "consolidation_jobs",
+        )
+        for table in explicit_tables:
+            rows = conn.execute(f"SELECT user_id, character_id, relationship_id, activity_id, domain FROM {table}").fetchall()
+            for row in rows:
+                raw = dict(row)
+                if matches(raw):
+                    affected.add(Scope(raw["user_id"], raw["character_id"], raw.get("relationship_id"),
+                                       raw.get("activity_id"), raw.get("domain", "real")))
+        for row in conn.execute("SELECT user_id, character_id, relationship_id, domain FROM core_versions").fetchall():
+            raw = dict(row)
+            if matches(raw):
+                affected.add(Scope(raw["user_id"], raw["character_id"], raw.get("relationship_id"),
+                                   None, raw.get("domain", "real")))
+        key_tables = ("forgotten_events", "memory_tombstones", "session_handoffs",
+                      "scope_mutations", "core_field_tombstones", "core_proposals", "scope_purges")
+        for table in key_tables:
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if "scope_key" not in columns:
+                continue
+            for row in conn.execute(f"SELECT scope_key FROM {table}").fetchall():
+                candidate = key_scope(row["scope_key"])
+                if candidate is not None:
+                    affected.add(candidate)
+        scope_keys = {_scope_key(item) for item in affected}
+
+        with self._db.transaction():
+            # 先擦除 journal 载荷，再删除正文。重算后追加 purge receipt，链仍可验证。
+            self._repos.journal.redact_scope(scope, now=now, reason=reason)
+
+            def delete_scoped(table: str, alias: str = "") -> int:
+                visible, params = scope_sql(scope, alias)
+                cursor = conn.execute(f"DELETE FROM {table} WHERE {visible}", params)
+                return cursor.rowcount
+
+            memory_ids = [row[0] for row in conn.execute(
+                "SELECT memory_id FROM memories WHERE " + scope_sql(scope)[0], scope_sql(scope)[1]
+            ).fetchall()]
+            event_ids = [row[0] for row in conn.execute(
+                "SELECT event_id FROM events WHERE " + scope_sql(scope)[0], scope_sql(scope)[1]
+            ).fetchall()]
+            handoff_ids = [row[0] for row in conn.execute(
+                "SELECT handoff_id FROM session_handoffs WHERE " + scope_sql(scope)[0], scope_sql(scope)[1]
+            ).fetchall()]
+            tombstone_ids = [row[0] for row in conn.execute(
+                "SELECT tombstone_id FROM memory_tombstones WHERE scope_key IN (" +
+                ",".join("?" for _ in scope_keys) + ")", list(scope_keys)
+            ).fetchall()] if scope_keys else []
+
+            if event_ids:
+                conn.execute("DELETE FROM host_deliveries WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
+                conn.execute("DELETE FROM core_proposals WHERE request_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
+                conn.execute("DELETE FROM tombstone_sources WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
+                conn.execute("DELETE FROM forgotten_events WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
+            if memory_ids:
+                placeholders = ",".join("?" for _ in memory_ids)
+                conn.execute(f"DELETE FROM memory_links WHERE from_memory_id IN ({placeholders}) OR to_memory_id IN ({placeholders})", [*memory_ids, *memory_ids])
+                conn.execute(f"DELETE FROM memory_vectors WHERE memory_id IN ({placeholders})", memory_ids)
+            if tombstone_ids:
+                conn.execute("DELETE FROM tombstone_sources WHERE tombstone_id IN (" + ",".join("?" for _ in tombstone_ids) + ")", tombstone_ids)
+
+            for table in ("memory_revisions", "memories", "summaries", "consolidation_jobs",
+                          "session_handoffs", "events", "activities"):
+                delete_scoped(table)
+            if scope_keys:
+                placeholders = ",".join("?" for _ in scope_keys)
+                for table in ("core_field_tombstones", "core_proposals", "memory_tombstones", "scope_purges"):
+                    conn.execute(f"DELETE FROM {table} WHERE scope_key IN ({placeholders})", list(scope_keys))
+                conn.execute(f"DELETE FROM core_versions WHERE scope_key IN ({placeholders})", list(scope_keys))
+
+            # scope_mutations 是缓存代次的一部分：保留空元数据行并递增，
+            # 让其他进程/旧 session 的缓存立即失效。
+            old_epochs = {
+                row["scope_key"]: int(row["epoch"])
+                for row in conn.execute("SELECT scope_key, epoch FROM scope_mutations").fetchall()
+                if row["scope_key"] in scope_keys
+            }
+            if scope_keys:
+                placeholders = ",".join("?" for _ in scope_keys)
+                conn.execute(f"DELETE FROM scope_mutations WHERE scope_key IN ({placeholders})", list(scope_keys))
+                for key in scope_keys:
+                    next_epoch = old_epochs.get(key, 0) + 1
+                    conn.execute("INSERT INTO scope_mutations(scope_key, epoch) VALUES (?,?)", (key, next_epoch))
+                    raw = json.loads(key)
+                    item_scope = Scope(raw[0], raw[1], raw[2], raw[3], raw[4])
+                    conn.execute(
+                        "INSERT INTO scope_purges(scope_key,user_id,character_id,relationship_id,activity_id,domain,purge_generation,reason,purged_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (key, item_scope.user_id, item_scope.character_id, item_scope.relationship_id,
+                         item_scope.activity_id, item_scope.domain, next_epoch, reason[:500], now.isoformat()),
+                    )
+            self._repos.journal.append(
+                "scope.purged", scope=scope, payload={"redacted": True, "scope_count": len(scope_keys)},
+                now=now, idempotency_key=f"scope-purge:{_scope_key(scope)}:{now.isoformat()}",
+            )
+
+        return ForgetResult(
+            deleted_ids=sorted(memory_ids), forgotten_event_ids=sorted(event_ids),
+            erasure_level="active_store_purged",
+            note="已物理清除本地作用域主数据、派生索引和修订日志。",
+            residuals=["当前模型上下文无法撤回", "外部备份需单独清理或重新导出"],
+        )
 
     def forget_event(
         self,
