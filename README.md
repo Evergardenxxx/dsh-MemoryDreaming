@@ -4,7 +4,15 @@
 
 当前状态：**v0.5，加入可恢复的巩固任务队列**。已实现身份与关系恢复、原始事件保存、四类记忆、持久工作检查点、混合检索、主题摘要、去重巩固、规则冲突消解、可用性衰减、简化历史查询、纠错与逻辑删除。任务支持租约、心跳、崩溃回收和延迟重试，结果与完成确认原子提交。当前 156 个回归测试通过；完整遗忘和宿主适配尚未完成。
 
-设计提案见 [长期记忆引擎架构草案 v0.1](docs/memory-engine-architecture-v0.1.md)；正确性修复见 [代码审查记录](docs/review-2026-10-26.md)；队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)；后续顺序和源码参考见 [待解决问题](docs/open-problems.md)。
+后续开发以这三份规格为基线，均明确区分当前实现与待实现设计：
+
+| 文档 | 内容 |
+|---|---|
+| [系统架构 v0.2](docs/architecture-v0.2.md) | 核心与四类记忆、作用域、生命周期、模块边界及演进顺序 |
+| [算法规格 v0.2](docs/algorithms-v0.2.md) | 形成、路由、时间、融合排序、预算、纠错、遗忘和核心成长 |
+| [LLM 接口协议 v1](docs/llm-interface-v1.md) | 宿主钩子、四种工具、JSON Schema、结果/错误、模型适配与样例 |
+
+早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。LLM 接口当前是设计契约，尚未实现 HTTP/MCP 服务或真实宿主适配。
 
 ## 先跑起来
 

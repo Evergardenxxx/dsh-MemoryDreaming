@@ -1,0 +1,680 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:memorydreaming:extraction:1:response",
+  "title": "单个原始事件的 LLM 抽取结果；来源身份与版本由后端绑定",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "drafts": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/working_draft"
+          },
+          {
+            "$ref": "#/$defs/episodic_draft"
+          },
+          {
+            "$ref": "#/$defs/semantic_draft"
+          },
+          {
+            "$ref": "#/$defs/procedural_draft"
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "drafts"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "source_span": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "quote"
+      ],
+      "additionalProperties": false
+    },
+    "working_body": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "open_loops": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "maxItems": 20
+        },
+        "active_entities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "maxItems": 20
+        },
+        "checkpoint_note": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "goal",
+        "open_loops",
+        "active_entities",
+        "checkpoint_note"
+      ],
+      "additionalProperties": false
+    },
+    "working_draft": {
+      "type": "object",
+      "properties": {
+        "memory_type": {
+          "const": "working"
+        },
+        "body": {
+          "$ref": "#/$defs/working_body"
+        },
+        "epistemic_status": {
+          "type": "string",
+          "enum": [
+            "explicit_setting",
+            "user_report",
+            "observed_interaction",
+            "inferred"
+          ]
+        },
+        "modality": {
+          "type": "string",
+          "enum": [
+            "occurred",
+            "intention",
+            "hypothetical",
+            "quoted",
+            "fictional"
+          ]
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span"
+        },
+        "occurred": {
+          "type": "object",
+          "properties": {
+            "start": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "end": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "precision": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "day",
+                "week",
+                "month",
+                "year",
+                "coarse",
+                "unknown"
+              ]
+            }
+          },
+          "required": [
+            "start",
+            "end",
+            "precision"
+          ],
+          "additionalProperties": false
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "importance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "memory_type",
+        "body",
+        "epistemic_status",
+        "modality",
+        "source_span",
+        "occurred",
+        "valid_from",
+        "valid_to",
+        "importance"
+      ],
+      "additionalProperties": false
+    },
+    "episodic_body": {
+      "type": "object",
+      "properties": {
+        "what_happened": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "maxItems": 20
+        },
+        "context": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "outcome": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "what_happened",
+        "participants",
+        "context",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "episodic_draft": {
+      "type": "object",
+      "properties": {
+        "memory_type": {
+          "const": "episodic"
+        },
+        "body": {
+          "$ref": "#/$defs/episodic_body"
+        },
+        "epistemic_status": {
+          "type": "string",
+          "enum": [
+            "explicit_setting",
+            "user_report",
+            "observed_interaction",
+            "inferred"
+          ]
+        },
+        "modality": {
+          "type": "string",
+          "enum": [
+            "occurred",
+            "intention",
+            "hypothetical",
+            "quoted",
+            "fictional"
+          ]
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span"
+        },
+        "occurred": {
+          "type": "object",
+          "properties": {
+            "start": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "end": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "precision": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "day",
+                "week",
+                "month",
+                "year",
+                "coarse",
+                "unknown"
+              ]
+            }
+          },
+          "required": [
+            "start",
+            "end",
+            "precision"
+          ],
+          "additionalProperties": false
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "importance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "memory_type",
+        "body",
+        "epistemic_status",
+        "modality",
+        "source_span",
+        "occurred",
+        "valid_from",
+        "valid_to",
+        "importance"
+      ],
+      "additionalProperties": false
+    },
+    "semantic_body": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "predicate": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "obj": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "scope_note": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "subject",
+        "predicate",
+        "obj",
+        "scope_note"
+      ],
+      "additionalProperties": false
+    },
+    "semantic_draft": {
+      "type": "object",
+      "properties": {
+        "memory_type": {
+          "const": "semantic"
+        },
+        "body": {
+          "$ref": "#/$defs/semantic_body"
+        },
+        "epistemic_status": {
+          "type": "string",
+          "enum": [
+            "explicit_setting",
+            "user_report",
+            "observed_interaction",
+            "inferred"
+          ]
+        },
+        "modality": {
+          "type": "string",
+          "enum": [
+            "occurred",
+            "intention",
+            "hypothetical",
+            "quoted",
+            "fictional"
+          ]
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span"
+        },
+        "occurred": {
+          "type": "object",
+          "properties": {
+            "start": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "end": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "precision": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "day",
+                "week",
+                "month",
+                "year",
+                "coarse",
+                "unknown"
+              ]
+            }
+          },
+          "required": [
+            "start",
+            "end",
+            "precision"
+          ],
+          "additionalProperties": false
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "importance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "memory_type",
+        "body",
+        "epistemic_status",
+        "modality",
+        "source_span",
+        "occurred",
+        "valid_from",
+        "valid_to",
+        "importance"
+      ],
+      "additionalProperties": false
+    },
+    "procedural_body": {
+      "type": "object",
+      "properties": {
+        "trigger": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "maxItems": 20
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "maxItems": 20
+        },
+        "exceptions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "maxItems": 20
+        },
+        "expected_outcome": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "supporting_examples": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "trigger",
+        "preconditions",
+        "steps",
+        "exceptions",
+        "expected_outcome",
+        "supporting_examples"
+      ],
+      "additionalProperties": false
+    },
+    "procedural_draft": {
+      "type": "object",
+      "properties": {
+        "memory_type": {
+          "const": "procedural"
+        },
+        "body": {
+          "$ref": "#/$defs/procedural_body"
+        },
+        "epistemic_status": {
+          "type": "string",
+          "enum": [
+            "explicit_setting",
+            "user_report",
+            "observed_interaction",
+            "inferred"
+          ]
+        },
+        "modality": {
+          "type": "string",
+          "enum": [
+            "occurred",
+            "intention",
+            "hypothetical",
+            "quoted",
+            "fictional"
+          ]
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span"
+        },
+        "occurred": {
+          "type": "object",
+          "properties": {
+            "start": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "end": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "precision": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "day",
+                "week",
+                "month",
+                "year",
+                "coarse",
+                "unknown"
+              ]
+            }
+          },
+          "required": [
+            "start",
+            "end",
+            "precision"
+          ],
+          "additionalProperties": false
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "importance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "memory_type",
+        "body",
+        "epistemic_status",
+        "modality",
+        "source_span",
+        "occurred",
+        "valid_from",
+        "valid_to",
+        "importance"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

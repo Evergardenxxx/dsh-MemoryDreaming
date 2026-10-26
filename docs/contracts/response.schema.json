@@ -1,0 +1,895 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:memorydreaming:protocol:1:response",
+  "title": "MemoryDreaming response envelope — design contract",
+  "type": "object",
+  "properties": {
+    "protocol_version": {
+      "const": "1.0"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "partial",
+        "not_found",
+        "proposed",
+        "error"
+      ]
+    },
+    "data": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/search_data"
+        },
+        {
+          "$ref": "#/$defs/read_data"
+        },
+        {
+          "$ref": "#/$defs/proposal_data"
+        },
+        {
+          "$ref": "#/$defs/bootstrap_data"
+        },
+        {
+          "$ref": "#/$defs/change_receipt_data"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "limit_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "counted_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "count_mode": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "estimated",
+            "unavailable"
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "limit_tokens",
+        "counted_tokens",
+        "count_mode",
+        "truncated"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "count_mode": {
+                "const": "exact"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "counted_tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "required": [
+    "protocol_version",
+    "request_id",
+    "status",
+    "data",
+    "gaps",
+    "warnings",
+    "error",
+    "budget"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "error"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "null"
+          },
+          "error": {
+            "$ref": "#/$defs/error"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "error": {
+            "type": "null"
+          },
+          "data": {
+            "not": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "proposed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/proposal_data"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "proposal"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "proposed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "not_found"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/search_data"
+              },
+              {
+                "properties": {
+                  "evidence": {
+                    "maxItems": 0
+                  },
+                  "summaries": {
+                    "maxItems": 0
+                  },
+                  "retrieval_complete": {
+                    "const": true
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "time_span": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "precision": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "day",
+            "week",
+            "month",
+            "year",
+            "coarse",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "precision"
+      ],
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^mref_[A-Za-z0-9_-]+$"
+        },
+        "record_kind": {
+          "type": "string",
+          "enum": [
+            "event",
+            "memory",
+            "summary",
+            "core_version"
+          ]
+        },
+        "memory_type": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "working",
+                "episodic",
+                "semantic",
+                "procedural"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "text": {
+          "type": "string"
+        },
+        "speaker": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "user",
+                "character",
+                "system"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "epistemic_status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "explicit_setting",
+                "user_report",
+                "observed_interaction",
+                "inferred"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modality": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "occurred",
+                "intention",
+                "hypothetical",
+                "quoted",
+                "fictional"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurred": {
+          "$ref": "#/$defs/time_span"
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_now": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^mref_[A-Za-z0-9_-]+$"
+          },
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "ref",
+        "record_kind",
+        "memory_type",
+        "record_version",
+        "text",
+        "speaker",
+        "epistemic_status",
+        "modality",
+        "occurred",
+        "valid_from",
+        "valid_to",
+        "valid_now",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^mref_[A-Za-z0-9_-]+$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^mref_[A-Za-z0-9_-]+$"
+          },
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "ref",
+        "title",
+        "text",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "search_data": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "search"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record"
+          },
+          "maxItems": 20
+        },
+        "summaries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/summary"
+          },
+          "maxItems": 5
+        },
+        "retrieval_complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "evidence",
+        "summaries",
+        "retrieval_complete"
+      ],
+      "additionalProperties": false
+    },
+    "read_data": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "read"
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record"
+          },
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "kind",
+        "records"
+      ],
+      "additionalProperties": false
+    },
+    "proposal_data": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "proposal"
+        },
+        "proposal_id": {
+          "type": "string",
+          "pattern": "^proposal_[A-Za-z0-9_-]+$"
+        },
+        "state": {
+          "const": "pending_validation"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "checkpoint",
+            "correct_fact",
+            "forget_fact",
+            "forget_event",
+            "forget_scope",
+            "update_core"
+          ]
+        },
+        "applied": {
+          "const": false
+        }
+      },
+      "required": [
+        "kind",
+        "proposal_id",
+        "state",
+        "operation",
+        "applied"
+      ],
+      "additionalProperties": false
+    },
+    "core_field": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^mref_[A-Za-z0-9_-]+$"
+          },
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "name",
+        "value",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "activity": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^aref_[A-Za-z0-9_-]+$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "paused",
+            "closed"
+          ]
+        }
+      },
+      "required": [
+        "ref",
+        "label",
+        "version",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "bootstrap_data": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "bootstrap"
+        },
+        "binding_ref": {
+          "type": "string",
+          "pattern": "^binding_[A-Za-z0-9_-]+$"
+        },
+        "identity_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^mref_[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relationship_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^mref_[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "core_versions": {
+          "type": "object",
+          "properties": {
+            "identity": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "relationship": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            }
+          },
+          "required": [
+            "identity",
+            "relationship"
+          ],
+          "additionalProperties": false
+        },
+        "identity_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/core_field"
+          }
+        },
+        "relationship_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/core_field"
+          }
+        },
+        "activities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/activity"
+          }
+        },
+        "selected_activity_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^aref_[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recovery_status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "incomplete"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "binding_ref",
+        "identity_ref",
+        "relationship_ref",
+        "core_versions",
+        "identity_fields",
+        "relationship_fields",
+        "activities",
+        "selected_activity_ref",
+        "recovery_status"
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND_OR_FORBIDDEN",
+            "STALE_REFERENCE",
+            "VERSION_CONFLICT",
+            "RECOVERY_INCOMPLETE",
+            "CONTEXT_BUDGET_TOO_SMALL",
+            "UNSUPPORTED",
+            "TIMEOUT",
+            "UNAVAILABLE",
+            "NEEDS_CLARIFICATION"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "next_action": {
+          "type": "string",
+          "enum": [
+            "retry",
+            "refine_query",
+            "rebootstrap",
+            "refresh_reference",
+            "clarify",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "next_action"
+      ],
+      "additionalProperties": false
+    },
+    "change_receipt_data": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "change_receipt"
+        },
+        "operation_id": {
+          "type": "string",
+          "pattern": "^operation_[A-Za-z0-9_-]+$"
+        },
+        "proposal_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^proposal_[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "checkpoint",
+            "correct_fact",
+            "forget_fact",
+            "forget_event",
+            "forget_scope",
+            "update_core"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "applied",
+            "partial",
+            "not_applied"
+          ]
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "effective_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "erasure_level": {
+          "type": "string",
+          "enum": [
+            "not_applicable",
+            "logical_suppressed",
+            "active_store_purged",
+            "backup_pending",
+            "incomplete"
+          ]
+        },
+        "affected": {
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "memories": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "core_fields": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "activities": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "events",
+            "memories",
+            "core_fields",
+            "activities"
+          ],
+          "additionalProperties": false
+        },
+        "remaining_work": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "operation_id",
+        "proposal_id",
+        "operation",
+        "state",
+        "applied",
+        "effective_at",
+        "erasure_level",
+        "affected",
+        "remaining_work"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

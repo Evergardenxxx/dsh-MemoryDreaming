@@ -1,0 +1,240 @@
+{
+  "protocol_version": "1.0",
+  "status": "design_only",
+  "description": "协议中立的工具定义；尚未提供可执行的 HTTP/MCP 服务。宿主注入可信身份，不接受 LLM 指定用户、角色或领域。",
+  "tools": [
+    {
+      "name": "memory_search",
+      "execution": "read",
+      "description": "查找与当前问题相关的历史证据。结果可能为空或不完整；排序分数不表示事实真实性。用户身份和作用域由宿主绑定。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "activity_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^aref_[A-Za-z0-9_-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "time_range": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "axis": {
+                    "type": "string",
+                    "enum": [
+                      "occurred",
+                      "recorded",
+                      "valid"
+                    ]
+                  },
+                  "start": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "end": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "axis",
+                  "start",
+                  "end"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "overview",
+              "evidence"
+            ]
+          },
+          "max_items": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 20
+          },
+          "max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 128,
+            "maximum": 4096
+          }
+        },
+        "required": [
+          "query",
+          "activity_ref",
+          "time_range",
+          "detail",
+          "max_items",
+          "max_tokens"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory_read",
+      "execution": "read",
+      "description": "展开上次结果提供的证据或摘要引用，检查原话、说话者和来源。只能使用当前绑定下宿主签发的引用；过期引用需要重新查找。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^mref_[A-Za-z0-9_-]+$"
+            },
+            "maxItems": 10,
+            "minItems": 1
+          },
+          "max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 128,
+            "maximum": 4096
+          }
+        },
+        "required": [
+          "references",
+          "max_tokens"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory_checkpoint_propose",
+      "execution": "proposal",
+      "description": "根据实际已保存的对话提出活动进度更新。返回 proposed 仅表示建议已记录，不能宣称检查点已经生效。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "activity_ref": {
+            "type": "string",
+            "pattern": "^aref_[A-Za-z0-9_-]+$"
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "goal": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "open_loops": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "maxItems": 20
+          },
+          "checkpoint_note": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^mref_[A-Za-z0-9_-]+$"
+            },
+            "maxItems": 20,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "activity_ref",
+          "expected_version",
+          "goal",
+          "open_loops",
+          "checkpoint_note",
+          "evidence_refs"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory_request_change",
+      "execution": "proposal",
+      "description": "提出纠错、遗忘或核心更新建议。由宿主核验当前用户意图与范围后执行；proposed 不表示已删除或已修改。范围含糊时说明需要澄清。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "correct_fact",
+              "forget_fact",
+              "forget_event",
+              "forget_scope",
+              "update_core"
+            ]
+          },
+          "target_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^mref_[A-Za-z0-9_-]+$"
+            },
+            "maxItems": 20
+          },
+          "replacement_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^mref_[A-Za-z0-9_-]+$"
+            },
+            "maxItems": 20
+          }
+        },
+        "required": [
+          "operation",
+          "target_refs",
+          "replacement_text",
+          "reason",
+          "evidence_refs"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

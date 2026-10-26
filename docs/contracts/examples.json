@@ -1,0 +1,534 @@
+{
+  "description": "仅为设计契约样例；引用与结果是固定夹具，不代表数据库中已有这些记录；budget 计数未测量。",
+  "host_bootstrap_response": {
+    "protocol_version": "1.0",
+    "request_id": "req_example_001",
+    "status": "ok",
+    "data": {
+      "kind": "bootstrap",
+      "binding_ref": "binding_current",
+      "identity_ref": "mref_core_identity",
+      "relationship_ref": "mref_core_relationship",
+      "core_versions": {
+        "identity": 1,
+        "relationship": 2
+      },
+      "identity_fields": [
+        {
+          "name": "角色名",
+          "value": "小梦",
+          "source_refs": [
+            "mref_setting_name"
+          ]
+        }
+      ],
+      "relationship_fields": [
+        {
+          "name": "相处设定",
+          "value": "用户明确设定为父女角色关系",
+          "source_refs": [
+            "mref_user_setting"
+          ]
+        },
+        {
+          "name": "称呼",
+          "value": "爸爸",
+          "source_refs": [
+            "mref_user_setting"
+          ]
+        }
+      ],
+      "activities": [
+        {
+          "ref": "aref_story",
+          "label": "睡前故事",
+          "version": 2,
+          "status": "active"
+        }
+      ],
+      "selected_activity_ref": "aref_story",
+      "recovery_status": "complete"
+    },
+    "gaps": [],
+    "warnings": [],
+    "error": null,
+    "budget": {
+      "limit_tokens": 1200,
+      "counted_tokens": null,
+      "count_mode": "unavailable",
+      "truncated": false
+    }
+  },
+  "tool_cases": [
+    {
+      "name": "lookup_relationship_preference",
+      "tool": "memory_search",
+      "arguments": {
+        "query": "你记得我希望怎么称呼我吗？",
+        "time_range": null,
+        "detail": "evidence",
+        "max_items": 4,
+        "max_tokens": 1200,
+        "activity_ref": null
+      },
+      "response": {
+        "protocol_version": "1.0",
+        "request_id": "req_example_001",
+        "status": "ok",
+        "data": {
+          "kind": "search",
+          "evidence": [
+            {
+              "ref": "mref_fact_address",
+              "record_kind": "memory",
+              "memory_type": "semantic",
+              "record_version": 1,
+              "text": "用户明确希望在当前角色关系中被称呼为“爸爸”。",
+              "speaker": "user",
+              "epistemic_status": "explicit_setting",
+              "modality": "occurred",
+              "occurred": {
+                "start": "2026-10-25T13:00:00Z",
+                "end": null,
+                "precision": "exact"
+              },
+              "valid_from": "2026-10-25T13:00:00Z",
+              "valid_to": null,
+              "valid_now": true,
+              "source_refs": [
+                "mref_user_setting"
+              ]
+            }
+          ],
+          "summaries": [],
+          "retrieval_complete": true
+        },
+        "gaps": [],
+        "warnings": [],
+        "error": null,
+        "budget": {
+          "limit_tokens": 1200,
+          "counted_tokens": null,
+          "count_mode": "unavailable",
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "read_actual_source",
+      "tool": "memory_read",
+      "arguments": {
+        "references": [
+          "mref_user_setting"
+        ],
+        "max_tokens": 800
+      },
+      "response": {
+        "protocol_version": "1.0",
+        "request_id": "req_example_001",
+        "status": "ok",
+        "data": {
+          "kind": "read",
+          "records": [
+            {
+              "ref": "mref_user_setting",
+              "record_kind": "event",
+              "memory_type": null,
+              "record_version": 1,
+              "text": "我们按父女角色相处吧，你以后叫我爸爸。",
+              "speaker": "user",
+              "epistemic_status": null,
+              "modality": "occurred",
+              "occurred": {
+                "start": "2026-10-25T13:00:00Z",
+                "end": null,
+                "precision": "exact"
+              },
+              "valid_from": null,
+              "valid_to": null,
+              "valid_now": null,
+              "source_refs": []
+            }
+          ]
+        },
+        "gaps": [],
+        "warnings": [],
+        "error": null,
+        "budget": {
+          "limit_tokens": 800,
+          "counted_tokens": null,
+          "count_mode": "unavailable",
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "checkpoint_is_only_proposed",
+      "tool": "memory_checkpoint_propose",
+      "arguments": {
+        "activity_ref": "aref_story",
+        "expected_version": 2,
+        "goal": "继续睡前故事",
+        "open_loops": [
+          "下一次从第三章继续"
+        ],
+        "checkpoint_note": "本轮已讲完第二章",
+        "evidence_refs": [
+          "mref_delivered_reply"
+        ]
+      },
+      "response": {
+        "protocol_version": "1.0",
+        "request_id": "req_example_001",
+        "status": "proposed",
+        "data": {
+          "kind": "proposal",
+          "proposal_id": "proposal_checkpoint_001",
+          "state": "pending_validation",
+          "operation": "checkpoint",
+          "applied": false
+        },
+        "gaps": [],
+        "warnings": [],
+        "error": null,
+        "budget": {
+          "limit_tokens": 1200,
+          "counted_tokens": null,
+          "count_mode": "unavailable",
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "forget_is_only_proposed",
+      "tool": "memory_request_change",
+      "arguments": {
+        "operation": "forget_fact",
+        "target_refs": [
+          "mref_fact_address"
+        ],
+        "replacement_text": null,
+        "reason": "用户本轮明确要求不要继续记住这个称呼。",
+        "evidence_refs": []
+      },
+      "response": {
+        "protocol_version": "1.0",
+        "request_id": "req_example_001",
+        "status": "proposed",
+        "data": {
+          "kind": "proposal",
+          "proposal_id": "proposal_forget_001",
+          "state": "pending_validation",
+          "operation": "forget_fact",
+          "applied": false
+        },
+        "gaps": [],
+        "warnings": [],
+        "error": null,
+        "budget": {
+          "limit_tokens": 1200,
+          "counted_tokens": null,
+          "count_mode": "unavailable",
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "no_evidence_is_not_disproof",
+      "tool": "memory_search",
+      "arguments": {
+        "query": "去年第一次一起去海边时说了什么？",
+        "time_range": null,
+        "detail": "evidence",
+        "max_items": 4,
+        "max_tokens": 1200,
+        "activity_ref": null
+      },
+      "response": {
+        "protocol_version": "1.0",
+        "request_id": "req_example_001",
+        "status": "not_found",
+        "data": {
+          "kind": "search",
+          "evidence": [],
+          "summaries": [],
+          "retrieval_complete": true
+        },
+        "gaps": [
+          {
+            "code": "NO_EVIDENCE",
+            "message": "没有找到支持共同去过海边的历史证据；不能推断事情从未发生，也不能编造原话。"
+          }
+        ],
+        "warnings": [],
+        "error": null,
+        "budget": {
+          "limit_tokens": 1200,
+          "counted_tokens": null,
+          "count_mode": "unavailable",
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "stale_reference_requires_new_search",
+      "tool": "memory_read",
+      "arguments": {
+        "references": [
+          "mref_old_epoch"
+        ],
+        "max_tokens": 800
+      },
+      "response": {
+        "protocol_version": "1.0",
+        "request_id": "req_example_001",
+        "status": "error",
+        "data": null,
+        "gaps": [],
+        "warnings": [],
+        "error": {
+          "code": "STALE_REFERENCE",
+          "message": "引用已失效，请重新查询。",
+          "retryable": false,
+          "next_action": "refresh_reference"
+        },
+        "budget": {
+          "limit_tokens": 800,
+          "counted_tokens": null,
+          "count_mode": "unavailable",
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "budget_limited_result_is_partial",
+      "tool": "memory_search",
+      "arguments": {
+        "query": "以前我们有哪些睡前习惯？",
+        "time_range": null,
+        "detail": "overview",
+        "max_items": 4,
+        "max_tokens": 512,
+        "activity_ref": null
+      },
+      "response": {
+        "protocol_version": "1.0",
+        "request_id": "req_example_001",
+        "status": "partial",
+        "data": {
+          "kind": "search",
+          "evidence": [],
+          "summaries": [],
+          "retrieval_complete": false
+        },
+        "gaps": [
+          {
+            "code": "BUDGET_TRUNCATED",
+            "message": "预算不足以展示证据，请缩小问题或申请更多预算。"
+          }
+        ],
+        "warnings": [],
+        "error": null,
+        "budget": {
+          "limit_tokens": 512,
+          "counted_tokens": null,
+          "count_mode": "unavailable",
+          "truncated": true
+        }
+      }
+    },
+    {
+      "name": "explicit_local_day_remains_hard_constraint",
+      "tool": "memory_search",
+      "arguments": {
+        "query": "请查10月3日睡前故事的原话",
+        "time_range": {
+          "axis": "occurred",
+          "start": "2026-10-02T16:00:00Z",
+          "end": "2026-10-03T16:00:00Z"
+        },
+        "detail": "evidence",
+        "max_items": 4,
+        "max_tokens": 1200,
+        "activity_ref": "aref_story"
+      },
+      "response": {
+        "protocol_version": "1.0",
+        "request_id": "req_example_001",
+        "status": "not_found",
+        "data": {
+          "kind": "search",
+          "evidence": [],
+          "summaries": [],
+          "retrieval_complete": true
+        },
+        "gaps": [
+          {
+            "code": "NO_EVIDENCE",
+            "message": "没有找到该活动在上海时区10月3日的证据；没有改查最近两天。"
+          }
+        ],
+        "warnings": [],
+        "error": null,
+        "budget": {
+          "limit_tokens": 1200,
+          "counted_tokens": null,
+          "count_mode": "unavailable",
+          "truncated": false
+        }
+      }
+    }
+  ],
+  "extraction_cases": [
+    {
+      "name": "two_preferences_one_event",
+      "source_event": {
+        "event_id": "evt_example",
+        "speaker": "user",
+        "content": "我喜欢猫。我喜欢狗。",
+        "recorded_at": "2026-10-25T13:00:00Z"
+      },
+      "response": {
+        "schema_version": "1.0",
+        "drafts": [
+          {
+            "memory_type": "semantic",
+            "body": {
+              "subject": "用户",
+              "predicate": "喜欢",
+              "obj": "猫",
+              "scope_note": ""
+            },
+            "epistemic_status": "user_report",
+            "modality": "occurred",
+            "source_span": {
+              "start": 0,
+              "end": 4,
+              "quote": "我喜欢猫"
+            },
+            "occurred": {
+              "start": null,
+              "end": null,
+              "precision": "unknown"
+            },
+            "valid_from": null,
+            "valid_to": null,
+            "importance": 0.5
+          },
+          {
+            "memory_type": "semantic",
+            "body": {
+              "subject": "用户",
+              "predicate": "喜欢",
+              "obj": "狗",
+              "scope_note": ""
+            },
+            "epistemic_status": "user_report",
+            "modality": "occurred",
+            "source_span": {
+              "start": 5,
+              "end": 9,
+              "quote": "我喜欢狗"
+            },
+            "occurred": {
+              "start": null,
+              "end": null,
+              "precision": "unknown"
+            },
+            "valid_from": null,
+            "valid_to": null,
+            "importance": 0.5
+          }
+        ]
+      }
+    }
+  ],
+  "invalid_tool_arguments": [
+    {
+      "name": "model_cannot_select_user",
+      "tool": "memory_search",
+      "arguments": {
+        "query": "你记得我希望怎么称呼我吗？",
+        "time_range": null,
+        "detail": "evidence",
+        "max_items": 4,
+        "max_tokens": 1200,
+        "user_id": "another-user",
+        "activity_ref": null
+      }
+    },
+    {
+      "name": "budget_must_be_positive",
+      "tool": "memory_search",
+      "arguments": {
+        "query": "你记得我希望怎么称呼我吗？",
+        "time_range": null,
+        "detail": "evidence",
+        "max_items": 4,
+        "max_tokens": 0,
+        "activity_ref": null
+      }
+    },
+    {
+      "name": "read_needs_issued_references",
+      "tool": "memory_read",
+      "arguments": {
+        "references": [
+          "mem_database_primary_key"
+        ],
+        "max_tokens": 800
+      }
+    },
+    {
+      "name": "no_unknown_proposal_operation",
+      "tool": "memory_request_change",
+      "arguments": {
+        "operation": "execute_python",
+        "target_refs": [
+          "mref_fact_address"
+        ],
+        "replacement_text": null,
+        "reason": "用户本轮明确要求不要继续记住这个称呼。",
+        "evidence_refs": []
+      }
+    }
+  ],
+  "host_change_receipt_response": {
+    "protocol_version": "1.0",
+    "request_id": "req_host_apply_001",
+    "status": "ok",
+    "data": {
+      "kind": "change_receipt",
+      "operation_id": "operation_forget_001",
+      "proposal_id": "proposal_forget_001",
+      "operation": "forget_fact",
+      "state": "applied",
+      "applied": true,
+      "effective_at": "2026-10-26T10:00:00Z",
+      "erasure_level": "logical_suppressed",
+      "affected": {
+        "events": 0,
+        "memories": 1,
+        "core_fields": 1,
+        "activities": 0
+      },
+      "remaining_work": [
+        "未擦除原始消息正文；本回执只表示该断言与旧来源重提取已被抑制。"
+      ]
+    },
+    "gaps": [],
+    "warnings": [
+      {
+        "code": "LOGICAL_SUPPRESSION_ONLY",
+        "message": "请勿将本回执描述为从所有正文和备份中擦除。"
+      }
+    ],
+    "error": null,
+    "budget": {
+      "limit_tokens": 1200,
+      "counted_tokens": null,
+      "count_mode": "unavailable",
+      "truncated": false
+    }
+  }
+}
