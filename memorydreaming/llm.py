@@ -39,10 +39,18 @@ def dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def tool_catalog(*, include_core_proposals=False) -> list[dict]:
+def tool_catalog(*, include_core_proposals=False, include_change_proposals=False) -> list[dict]:
     """每次返回新对象，调用方可转换供应商格式而不修改全局定义。"""
     tools = json.loads(Path(__file__).with_name("llm-tools.json").read_text(encoding="utf-8"))["tools"]
-    return tools if include_core_proposals else tools[:2]
+    selected = tools if include_core_proposals else tools[:2]
+    if include_change_proposals:
+        names = {tool["name"] for tool in selected}
+        selected = [tool for tool in tools if tool["name"] in names
+                    or tool["name"] in {"memory_checkpoint_propose", "memory_request_change"}]
+    else:
+        selected = [tool for tool in selected
+                    if tool["name"] not in {"memory_checkpoint_propose", "memory_request_change"}]
+    return selected
 
 
 def invalid(message: str) -> None:
@@ -73,8 +81,12 @@ def timestamp(value: Any) -> datetime:
     return result
 
 
-def validate_tool(name: str, arguments: Any, *, include_core_proposals=False) -> dict:
-    schemas = {tool["name"]: tool["input_schema"] for tool in tool_catalog(include_core_proposals=include_core_proposals)}
+def validate_tool(name: str, arguments: Any, *, include_core_proposals=False,
+                  include_change_proposals=False) -> dict:
+    schemas = {tool["name"]: tool["input_schema"] for tool in tool_catalog(
+        include_core_proposals=include_core_proposals,
+        include_change_proposals=include_change_proposals,
+    )}
     if name not in schemas:
         raise AdapterError("UNSUPPORTED", "该工具尚未开放")
     schema = schemas[name]
@@ -92,7 +104,7 @@ def validate_tool(name: str, arguments: Any, *, include_core_proposals=False) ->
             timestamp(args["knowledge_at"])
         if args["fact_at"] is not None:
             timestamp(args["fact_at"])
-    if args["max_tokens"] is not None:
+    if "max_tokens" in args and args["max_tokens"] is not None:
         integer(args["max_tokens"], "max_tokens", 128, 4096)
     if name == "memory_core_propose":
         ref = args["target_ref"]
@@ -122,6 +134,39 @@ def validate_tool(name: str, arguments: Any, *, include_core_proposals=False) ->
             invalid("references 必须包含 1..10 项")
         if any(not isinstance(ref, str) or not re.fullmatch(r"mref_[A-Za-z0-9_-]{1,128}", ref) for ref in refs):
             invalid("references 必须为先前结果提供的 mref 引用")
+        return args
+    if name == "memory_checkpoint_propose":
+        text(args["activity_ref"], "activity_ref", 150)
+        integer(args["expected_version"], "expected_version", 1, 2**31 - 1)
+        if not isinstance(args["goal"], str) or len(args["goal"]) > 1000:
+            invalid("goal 必须为不超过 1000 字符的字符串")
+        if (not isinstance(args["open_loops"], list) or len(args["open_loops"]) > 20
+                or any(not isinstance(value, str) or len(value) > 1000 for value in args["open_loops"])):
+            invalid("open_loops 必须为最多 20 项的短字符串列表")
+        if not isinstance(args["checkpoint_note"], str) or len(args["checkpoint_note"]) > 2000:
+            invalid("checkpoint_note 必须为不超过 2000 字符的字符串")
+        if (not isinstance(args["evidence_refs"], list) or not args["evidence_refs"]
+                or len(args["evidence_refs"]) > 20):
+            invalid("evidence_refs 必须为 1..20 项")
+        if any(not isinstance(ref, str) or not re.fullmatch(r"mref_[A-Za-z0-9_-]{1,128}", ref)
+               for ref in args["evidence_refs"]):
+            invalid("evidence_refs 必须为当前资料引用")
+        return args
+    if name == "memory_request_change":
+        if args["operation"] not in ("correct_fact", "forget_fact", "forget_event", "forget_scope"):
+            invalid("不支持的变更操作")
+        if (not isinstance(args["target_refs"], list) or len(args["target_refs"]) > 20
+                or any(not isinstance(ref, str) or not re.fullmatch(r"mref_[A-Za-z0-9_-]{1,128}", ref)
+                       for ref in args["target_refs"])):
+            invalid("target_refs 必须为最多 20 项当前资料引用")
+        if args["replacement_text"] is not None and (
+                not isinstance(args["replacement_text"], str) or len(args["replacement_text"]) > 2000):
+            invalid("replacement_text 必须为不超过 2000 字符的字符串或 null")
+        text(args["reason"], "reason", 1000)
+        if (not isinstance(args["evidence_refs"], list) or len(args["evidence_refs"]) > 20
+                or any(not isinstance(ref, str) or not re.fullmatch(r"mref_[A-Za-z0-9_-]{1,128}", ref)
+                       for ref in args["evidence_refs"])):
+            invalid("evidence_refs 必须为最多 20 项当前资料引用")
         return args
     text(args["query"], "query")
     ref = args["activity_ref"]

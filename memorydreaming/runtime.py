@@ -879,7 +879,8 @@ class MemoryRuntime:
                 affected.add(Scope(raw["user_id"], raw["character_id"], raw.get("relationship_id"),
                                    None, raw.get("domain", "real")))
         key_tables = ("forgotten_events", "memory_tombstones", "session_handoffs",
-                      "scope_mutations", "core_field_tombstones", "core_proposals", "scope_purges")
+                      "scope_mutations", "core_field_tombstones", "core_proposals",
+                      "change_proposals", "scope_purges")
         for table in key_tables:
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if "scope_key" not in columns:
@@ -916,6 +917,7 @@ class MemoryRuntime:
             if event_ids:
                 conn.execute("DELETE FROM host_deliveries WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM core_proposals WHERE request_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
+                conn.execute("DELETE FROM change_proposals WHERE request_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM tombstone_sources WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM forgotten_events WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
             if memory_ids:
@@ -930,7 +932,8 @@ class MemoryRuntime:
                 delete_scoped(table)
             if scope_keys:
                 placeholders = ",".join("?" for _ in scope_keys)
-                for table in ("core_field_tombstones", "core_proposals", "memory_tombstones", "scope_purges"):
+                for table in ("core_field_tombstones", "core_proposals", "change_proposals",
+                              "memory_tombstones", "scope_purges"):
                     conn.execute(f"DELETE FROM {table} WHERE scope_key IN ({placeholders})", list(scope_keys))
                 conn.execute(f"DELETE FROM core_versions WHERE scope_key IN ({placeholders})", list(scope_keys))
 

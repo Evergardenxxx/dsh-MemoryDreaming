@@ -457,3 +457,27 @@ CREATE TABLE IF NOT EXISTS core_proposals (
     applied_version INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_core_proposals_scope ON core_proposals(scope_key,state,expires_at);
+
+-- 一般事实/遗忘/检查点提议。模型只能创建 pending_validation，可信宿主
+-- 必须再次核对本轮真实用户事件、引用版本和作用域后才能执行。
+CREATE TABLE IF NOT EXISTS change_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL UNIQUE,
+    scope_key TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    request_event_id TEXT NOT NULL REFERENCES events(event_id),
+    operation TEXT NOT NULL CHECK(operation IN ('correct_fact','forget_fact','forget_event','forget_scope','checkpoint')),
+    target_refs_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending_validation','applied','rejected','invalidated')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    decision_code TEXT,
+    reviewer TEXT,
+    decision_reason TEXT,
+    decided_at TEXT,
+    receipt_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_change_proposals_scope ON change_proposals(scope_key,state,expires_at);

@@ -249,6 +249,41 @@
       }
     },
     {
+      "name": "memory_checkpoint_propose",
+      "execution": "proposal",
+      "description": "根据实际已保存的对话提出活动进度更新。返回 proposed 仅表示建议已记录，不能宣称检查点已经生效。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "activity_ref": { "type": "string", "pattern": "^aref_[A-Za-z0-9_-]+$" },
+          "expected_version": { "type": "integer", "minimum": 1 },
+          "goal": { "type": "string", "maxLength": 1000 },
+          "open_loops": { "type": "array", "items": { "type": "string", "maxLength": 1000 }, "maxItems": 20 },
+          "checkpoint_note": { "type": "string", "maxLength": 2000 },
+          "evidence_refs": { "type": "array", "items": { "type": "string", "pattern": "^mref_[A-Za-z0-9_-]+$" }, "maxItems": 20, "minItems": 1 }
+        },
+        "required": ["activity_ref", "expected_version", "goal", "open_loops", "checkpoint_note", "evidence_refs"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory_request_change",
+      "execution": "proposal",
+      "description": "提出纠错、遗忘或作用域清除建议。由宿主核验当前用户意图与范围后执行；proposed 不表示已删除或已修改。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "operation": { "type": "string", "enum": ["correct_fact", "forget_fact", "forget_event", "forget_scope"] },
+          "target_refs": { "type": "array", "items": { "type": "string", "pattern": "^mref_[A-Za-z0-9_-]+$" }, "maxItems": 20 },
+          "replacement_text": { "type": ["string", "null"], "maxLength": 2000 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "evidence_refs": { "type": "array", "items": { "type": "string", "pattern": "^mref_[A-Za-z0-9_-]+$" }, "maxItems": 20 }
+        },
+        "required": ["operation", "target_refs", "replacement_text", "reason", "evidence_refs"],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "memory_core_propose",
       "execution": "proposal",
       "description": "建议修改已存在的身份或关系核心。仅记录待审核候选，不立即生效；只有可信宿主核验本轮用户意图并批准后才改变核心。字段须在宿主白名单内。本轮真实用户消息由宿主自动绑定为来源，其他依据只使用现有引用。",

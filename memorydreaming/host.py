@@ -15,7 +15,7 @@ from .errors import StorageError, VersionConflict
 from .llm import (AdapterError, EstimatedTokenCounter, TokenCounter, dumps, envelope, integer,
                   measure, text, timestamp, tool_catalog, validate_tool)
 from .models import CoreKind, ReadFilter, Scope, Turn
-from .proposals import CoreProposalPolicy, CoreProposals
+from .proposals import ChangeProposals, CoreProposalPolicy, CoreProposals
 from .references import ReferenceRegistry, ViewReader, forbidden, render_record
 
 
@@ -101,7 +101,10 @@ class HostAdapter:
 
     @property
     def tools(self):
-        catalog = tool_catalog(include_core_proposals=self.core_policy.enabled)
+        catalog = tool_catalog(
+            include_core_proposals=self.core_policy.enabled,
+            include_change_proposals=(self.core_policy.change_proposals or self.core_policy.checkpoint_proposals),
+        )
         if self.core_policy.enabled:
             names = sorted(set(self.core_policy.identity_fields + self.core_policy.relationship_fields))
             catalog[-1]["input_schema"]["properties"]["fields"]["items"]["properties"]["name"]["enum"] = names
@@ -114,7 +117,9 @@ class HostAdapter:
                 "temporal_axes": ["occurred", "knowledge_at", "fact_at"],
                 "detail_modes": ["auto", "overview", "evidence"], "automatic_bootstrap": True,
                 "exact_token_counting": self.counter.mode == "exact", "full_forgetting": False,
-                "core_proposals": self.core_policy.enabled, "checkpoint_proposals": False,
+                "core_proposals": self.core_policy.enabled,
+                "change_proposals": self.core_policy.change_proposals,
+                "checkpoint_proposals": self.core_policy.checkpoint_proposals,
                 "pre_compress_handoff": True, "session_retrieval_cache": True,
                 "host_prefetch": True}
 
@@ -379,8 +384,13 @@ class MemorySession:
                     raise AdapterError("UNAVAILABLE", "本轮工具调用次数已达宿主上限")
                 self._calls += 1
             text(name, "工具名称", 100)
-            args = validate_tool(name, arguments, include_core_proposals=self.adapter.core_policy.enabled)
-            limit = min(limit, args["max_tokens"] or 1200)
+            args = validate_tool(
+                name, arguments,
+                include_core_proposals=self.adapter.core_policy.enabled,
+                include_change_proposals=(self.adapter.core_policy.change_proposals
+                                          or self.adapter.core_policy.checkpoint_proposals),
+            )
+            limit = min(limit, args.get("max_tokens") or 1200)
             with self.runtime.db.transaction():
                 reader = self._reader()
                 if name == "memory_search":
@@ -394,6 +404,9 @@ class MemorySession:
                     views = self.registry.resolve(list(dict.fromkeys(args["references"])), reader)
                     data = {"kind": "read", "records": [render_record(view, self.registry) for view in views]}
                     status, gaps = "ok", []
+                elif name in ("memory_checkpoint_propose", "memory_request_change"):
+                    data = ChangeProposals(self).create(name, args)
+                    status, gaps = "proposed", []
                 else:
                     data = CoreProposals(self).create(args)
                     status, gaps = "proposed", []
@@ -426,6 +439,27 @@ class MemorySession:
         with self.runtime.db.transaction():
             return CoreProposals(self).decide(proposal_id, approve=False, user_event_id=user_event_id,
                                                reviewer=reviewer, reason=reason)
+
+    def get_change_proposal(self, proposal_id: str) -> dict:
+        self._check()
+        with self.runtime.db.transaction():
+            return ChangeProposals(self).inspect(proposal_id)
+
+    def approve_change_proposal(self, proposal_id: str, *, user_event_id: str,
+                                reviewer: str, reason: str) -> dict:
+        self._check()
+        with self.runtime.db.transaction():
+            return ChangeProposals(self).decide(proposal_id, approve=True,
+                                                user_event_id=user_event_id,
+                                                reviewer=reviewer, reason=reason)
+
+    def reject_change_proposal(self, proposal_id: str, *, user_event_id: str,
+                               reviewer: str, reason: str) -> dict:
+        self._check()
+        with self.runtime.db.transaction():
+            return ChangeProposals(self).decide(proposal_id, approve=False,
+                                                user_event_id=user_event_id,
+                                                reviewer=reviewer, reason=reason)
 
     def prepare_turn(self, message_id: str, content: str, *, occurred_at: datetime | None = None,
                      max_tokens=4096, deadline=None) -> PreparedTurn:

@@ -44,6 +44,7 @@ TABLES = (
     "core_field_tombstones",
     "host_deliveries",
     "core_proposals",
+    "change_proposals",
     "journal_entries",
 )
 DERIVED_TABLES = ("memory_vectors", "memories_fts")
@@ -67,6 +68,7 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "core_field_tombstones": ("scope_key", "kind", "field_key"),
     "host_deliveries": ("event_id",),
     "core_proposals": ("proposal_id",),
+    "change_proposals": ("proposal_id",),
     "journal_entries": ("journal_id",),
 }
 
@@ -333,7 +335,7 @@ _IMPORT_ORDER = (
     "memory_revisions", "memory_links", "summaries", "consolidation_jobs",
     "forgotten_events", "scope_mutations", "scope_purges", "memory_tombstones",
     "tombstone_sources", "core_field_tombstones", "health_snapshots", "host_deliveries",
-    "core_proposals", "journal_entries",
+    "core_proposals", "change_proposals", "journal_entries",
 )
 
 

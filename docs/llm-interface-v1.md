@@ -2,7 +2,7 @@
 
 状态：**查询与核心候选/审批已实现，其余为设计契约**。本文固定宿主、对话 LLM、抽取 LLM 三种调用者的边界。业务架构见 [架构 v0.2](architecture-v0.2.md)，算法见 [算法 v0.2](algorithms-v0.2.md)。协议 v1 与 Python 包 v0.8、SQLite schema v8 是不同版本号。
 
-v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` / `memory_read`，可通过 MCP stdio 调用，见 [接入指南](host-adapter.md)。v0.8 增加可选 `memory_core_propose` 与带外宿主审批，见 [核心候选](core-proposals.md)。`memory_search` 现在支持可选 `knowledge_at` / `fact_at` 双时间查询。通用纠错/删除、检查点建议仍未完成；`full_forgetting` 为 false。
+v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` / `memory_read`，可通过 MCP stdio 调用，见 [接入指南](host-adapter.md)。v0.8 增加可选 `memory_core_propose` 与带外宿主审批，后续增加了可选 `memory_request_change` / `memory_checkpoint_propose` 提议。`memory_search` 现在支持可选 `knowledge_at` / `fact_at` 双时间查询；提议仍不会自动生效，`full_forgetting` 为 false。
 
 机器可读文件：
 
@@ -11,14 +11,14 @@ v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` /
 - [抽取结果 Schema](contracts/extraction-response.schema.json)
 - [完整交互样例与非法参数](contracts/examples.json)
 
-这些文件覆盖完整目标契约；当前 [运行时目录](../memorydreaming/llm-tools.json) 默认注册两个读工具，Python 宿主显式启用 CoreProposalPolicy 后增加一个核心建议工具。MCP 继续只读。具体聊天产品的自动生命周期和真实供应商往返需要另外接入，不能单凭 JSON 文件声称已经安装插件。
+这些文件覆盖完整目标契约；当前 [运行时目录](../memorydreaming/llm-tools.json) 默认注册两个读工具，Python 宿主显式启用 CoreProposalPolicy 后按策略增加提议工具。MCP 继续只读。具体聊天产品的自动生命周期和真实供应商往返需要另外接入，不能单凭 JSON 文件声称已经安装插件。
 
 ## 1. 三类调用者
 
 | 调用者 | 可执行动作 | 不由其决定的内容 |
 |---|---|---|
 | 可信宿主 | 绑定身份、恢复、保存实际消息、装配上下文、执行已授权修改、投递回执 | 不将未发送草稿或模型推测伪装成用户原话 |
-| 对话 LLM | memory_search、memory_read；提出检查点/记忆修改建议 | 不能指定 user_id/character_id/domain，不能直接提交删除或核心变更 |
+| 对话 LLM | memory_search、memory_read；在宿主策略开启时提出检查点/记忆修改建议 | 不能指定 user_id/character_id/domain，不能直接提交删除或核心变更 |
 | 后台抽取 LLM | 从当前绑定事件返回结构化候选 | 不能创建事件 ID、用户身份、任务 token 或自行应用候选 |
 
 搜索工具之外，宿主必须支持会话/请求钩子。第一条回复前恢复身份，并在每轮或压缩后重新注入最小核心；模型是否主动调用工具不决定基本连续性。
