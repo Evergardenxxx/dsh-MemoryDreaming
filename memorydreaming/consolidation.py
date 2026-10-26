@@ -25,7 +25,7 @@ from datetime import tzinfo, timezone
 from typing import Any, Protocol
 
 from .clock import Clock, ensure_utc
-from .errors import JobLeaseLost
+from .errors import JobLeaseLost, SourceRevisionChanged
 from .models import (
     EpistemicStatus,
     EventRecord,
@@ -93,6 +93,8 @@ class ConsolidationReport:
     failed: int = 0           # 失败任务数
     recovered: int = 0        # 回收的失联任务（含达到上限的任务）
     lease_lost: int = 0       # 已失去提交权，交给新持有者或下一批恢复
+    suppressed: int = 0       # 因持久遗忘标记隔离的候选
+    stale_results: int = 0    # 计算期间内容代次变化，丢弃并重新排队
     errors: list[str] = field(default_factory=list)
 
 
@@ -155,9 +157,10 @@ def run_pending_jobs(
         job = claimed[0]
         report.claimed += 1
         try:
-            created = duplicates = merged = summarized = 0
+            created = duplicates = merged = summarized = suppressed = 0
             # 抽取可调用外部模型，不能在等待网络时持有 SQLite 写锁。
             with JobHeartbeat(db, job, clock, lease_seconds):
+                epoch = repos.forgetting.epoch(job.scope)
                 event = None
                 drafts: list[MemoryDraft] = []
                 if job.job_type == "extract":
@@ -170,8 +173,10 @@ def run_pending_jobs(
 
                 with db.transaction():
                     repos.jobs.assert_owned(job.job_id, job.claim_token, clock.now())
+                    if repos.forgetting.epoch(job.scope) != epoch:
+                        raise SourceRevisionChanged("抽取期间发生遗忘，旧候选已丢弃")
                     if job.job_type == "extract":
-                        created, duplicates = _run_extract(
+                        created, duplicates, suppressed = _run_extract(
                             db, event, drafts, extractor.version, clock, vector_index,
                         )
                         _enqueue_follow_up(db, job, clock, max_attempts)
@@ -180,12 +185,23 @@ def run_pending_jobs(
                         _enqueue_summarize(db, job, clock, max_attempts)
                     elif job.job_type == "summarize":
                         summarized = build_summaries(db, job.scope, clock, tz)
+                    if repos.forgetting.epoch(job.scope) != epoch:
+                        raise SourceRevisionChanged("提交前内容代次变化")
                     repos.jobs.complete(job.job_id, job.claim_token, clock.now())
             # 只有事务真正提交后才把结果计入报告。
             report.created += created
             report.duplicates += duplicates
             report.merged += merged
             report.summarized += summarized
+            report.suppressed += suppressed
+        except SourceRevisionChanged as exc:
+            report.stale_results += 1
+            report.errors.append(f"{job.job_id}: {exc}")
+            try:
+                with db.transaction():
+                    repos.jobs.release(job.job_id, job.claim_token, clock.now())
+            except JobLeaseLost:
+                report.lease_lost += 1
         except JobLeaseLost as exc:
             report.lease_lost += 1
             report.errors.append(f"{job.job_id}: {exc}")
@@ -216,16 +232,25 @@ def _run_extract(
     extractor_version: str,
     clock: Clock,
     vector_index: VectorIndex | None,
-) -> tuple[int, int]:
-    """执行一个抽取任务，返回 (新建条数, 幂等跳过条数)。"""
+) -> tuple[int, int, int]:
+    """写入合法候选，返回 (新建条数, 幂等跳过条数, 抑制条数)。"""
     repos = db.repositories
     created = 0
     duplicates = 0
+    suppressed = 0
     now = clock.now()
 
     with db.transaction():
-        for draft in drafts:
-            memory = _build_memory(draft, event, clock)
+        memories = [_build_memory(draft, event, clock) for draft in drafts]
+        # 相同断言的新来源也须记录，防止以后从这条消息换格式抽取而复活。
+        # 先处理整批来源，使区间不明时的保守隔离不受候选顺序影响。
+        for memory in memories:
+            if repos.forgetting.assertion_tombstone(memory) is not None:
+                repos.forgetting.suppress(memory, now)
+        for draft, memory in zip(drafts, memories):
+            if repos.forgetting.is_suppressed(memory):
+                suppressed += 1
+                continue
 
             # 写时冲突消解：先把「这条新事实会让哪条旧事实过期」找出来。
             # 注意顺序——必须先算冲突、再插入，这样新记录能带上 supersedes_id。
@@ -258,7 +283,7 @@ def _run_extract(
             if vector_index is not None:
                 vector_index.index_memory(memory, now)
 
-    return created, duplicates
+    return created, duplicates, suppressed
 
 
 def _find_conflicts(repos, candidate: MemoryItem) -> list[MemoryItem]:
@@ -393,12 +418,20 @@ def _build_memory(draft: MemoryDraft, event: EventRecord, clock: Clock) -> Memor
     来源字段在这里补齐：抽取器只需要关心「内容是什么」，
     「谁说的、哪条事件、什么时候记的」由引擎统一填，避免每个抽取器各写一套。
     """
+    spans: dict[str, list[list[int]]] = {}
+    if draft.source_span is not None:
+        start, end = draft.source_span
+        if (isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int)
+                or not isinstance(end, int) or not 0 <= start < end <= len(event.content)):
+            raise ValueError("候选来源片段不是有效的 Unicode 码点区间")
+        spans[event.event_id] = [[start, end]]
     return MemoryItem(
         memory_id=new_id("mem"),
         memory_type=draft.memory_type,
         scope=event.scope,
         body=dict(draft.body),
         source_event_ids=[event.event_id],
+        source_spans=spans,
         source_speaker=draft.source_speaker or event.speaker,
         epistemic_status=draft.epistemic_status,
         modality=draft.modality,
@@ -440,6 +473,8 @@ def _run_dedupe(
     # 防止把不同活动的工作状态、意愿和真实经历合为同一条。
     partitions: dict[tuple[Any, ...], list[MemoryItem]] = {}
     for memory in memories:
+        if repos.forgetting.is_suppressed(memory):
+            continue
         key: tuple[Any, ...] = (
             memory.scope, memory.memory_type, memory.modality,
             memory.source_speaker, memory.epistemic_status,
@@ -464,6 +499,13 @@ def _run_dedupe(
     for group in clusters:
         canonical, duplicates = _choose_canonical(group)
         body, importance, sources = _merge_group(canonical, duplicates)
+        spans: dict[str, list[list[int]]] = {}
+        for item in group:
+            for event_id, intervals in item.source_spans.items():
+                target = spans.setdefault(event_id, [])
+                for interval in intervals:
+                    if interval not in target:
+                        target.append(interval)
 
         with db.transaction():
             repos.memories.update_content(
@@ -472,6 +514,7 @@ def _run_dedupe(
                 now,
                 importance=importance,
                 source_event_ids=sources,
+                source_spans=spans,
             )
             for duplicate in duplicates:
                 repos.memories.update_status(duplicate.memory_id, MemoryStatus.SUPERSEDED, now)

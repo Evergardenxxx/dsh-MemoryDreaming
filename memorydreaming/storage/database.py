@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
 from ..errors import StorageError
-from ..models import Scope
+from ..clock import utcnow
+from ..assertions import core_scope_key
+from ..models import CoreKind, Scope
 from ..retrieval.keyword import KeywordIndex
 from .repository import Repositories, _scope_key, build_repositories
 
@@ -35,7 +38,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 3：新增 summaries（主题摘要）。同样是纯新增表，无需迁移。
 # 版本 4：事件幂等按作用域隔离，摘要/任务持久保存完整作用域。
 # 版本 5：任务租约、提交凭证和延迟重试。
-SCHEMA_VERSION = "5"
+# 版本 6：断言抑制、来源片段、内容代次及作用域独立的核心字段来源。
+SCHEMA_VERSION = "6"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -172,8 +176,18 @@ class Database:
                     self._migrate_scope_schema(sql)
                 if version < 5 and self._table_exists("consolidation_jobs"):
                     self._migrate_job_leases()
+                if version < 6:
+                    self._migrate_forgetting(sql)
                 for statement in self._statements(sql):
                     self._conn.execute(statement)
+                if self.meta_get("forgetting_hmac_key") is None:
+                    self.meta_set("forgetting_hmac_key", secrets.token_hex(32))
+                if version < 6:
+                    # 旧版已删除的事实也不能通过换抽取器版本复活。
+                    for row in self._conn.execute("SELECT memory_id FROM memories WHERE status = 'deleted'").fetchall():
+                        item = self.repositories.memories.get(row["memory_id"])
+                        self.repositories.forgetting.suppress(item, item.recorded_at)
+                    self.repositories.forgetting.redact_cores(utcnow())
                 self.meta_set("schema_version", SCHEMA_VERSION)
         except sqlite3.Error as exc:  # 通常是磁盘不可写或文件损坏
             raise StorageError(f"初始化数据库失败：{exc}") from exc
@@ -202,6 +216,36 @@ class Database:
             "WHERE available_at = '1970-01-01T00:00:00.000000+00:00'"
         )
         # 旧 running 没有所有权凭证；下一次领取时按失联任务回收。
+
+    def _migrate_forgetting(self, sql: str) -> None:
+        if self._table_exists("memories"):
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(memories)")}
+            if "source_spans_json" not in columns:
+                self._conn.execute("ALTER TABLE memories ADD COLUMN source_spans_json TEXT NOT NULL DEFAULT '{}'")
+        if not self._table_exists("core_versions"):
+            return
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(core_versions)")}
+        if "scope_key" in columns:
+            return
+        replacement = self._create_migration_table(sql, "core_versions")
+        rows = self._conn.execute("SELECT * FROM core_versions").fetchall()
+        for row in rows:
+            kind = CoreKind(row["kind"])
+            scope = Scope(row["user_id"], row["character_id"], row["relationship_id"])
+            payload = json.loads(row["payload_json"])
+            evidence = json.loads(row["evidence_ids_json"])
+            fields = {key: evidence for key in payload}
+            self._conn.execute(
+                f"INSERT INTO {replacement} (scope_key,user_id,character_id,kind,core_version,relationship_id,"
+                "domain,payload_json,evidence_ids_json,field_evidence_json,change_reason,status,effective_from,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (core_scope_key(scope, kind), scope.user_id, scope.character_id, kind.value,
+                 row["core_version"], scope.relationship_id if kind is CoreKind.RELATIONSHIP else None,
+                 "real", row["payload_json"], row["evidence_ids_json"], json.dumps(fields, ensure_ascii=False),
+                 row["change_reason"], row["status"], row["effective_from"], row["created_at"]),
+            )
+        self._conn.execute("DROP TABLE core_versions")
+        self._conn.execute(f"ALTER TABLE {replacement} RENAME TO core_versions")
 
     @staticmethod
     def _statements(sql: str) -> list[str]:

@@ -58,6 +58,9 @@ class VectorIndex:
         # body_text 是给检索用的扁平串，会把「用户提到的约定，尚未完成」这类
         # 模板话术也算进向量，稀释真正的内容。render() 是按类型组织过的正文，
         # 更接近人读到的句子，向量更集中。
+        if memory.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED) or self._repos.forgetting.is_suppressed(memory):
+            self.delete(memory.memory_id)
+            return False
         text = memory.render(400).strip()
         if not text:
             return False
@@ -107,6 +110,9 @@ class VectorIndex:
         hits: list[VectorHit] = []
 
         for memory_id, memory_type, blob in rows:
+            memory = self._repos.memories.get(memory_id)
+            if memory is None or self._repos.forgetting.is_suppressed(memory):
+                continue
             stored = array("f")
             stored.frombytes(blob)
             # 维度不一致说明索引是旧模型留下的（换 dim 却没重建），跳过而不是报错
@@ -135,7 +141,7 @@ class VectorIndex:
         )
         memories = [
             memory for memory in memories
-            if not (
+            if not self._repos.forgetting.is_suppressed(memory) and not (
                 memory.status is MemoryStatus.SUPERSEDED
                 and self._repos.links.has_relation(memory.memory_id, LinkRelation.PART_OF)
             )

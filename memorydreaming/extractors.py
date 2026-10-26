@@ -135,10 +135,11 @@ _UNSAFE_CONTEXT = re.compile(
 )
 
 
-def _declarative_clauses(content: str) -> Iterator[str]:
+def _declarative_clauses(content: str) -> Iterator[tuple[str, int]]:
     """拒绝引述、假设和疑问句，然后分出简单陈述，避免跨说话者归因。"""
     for sentence in re.finditer(r"[^。！？!?；;\n]+[。！？!?；;]?", content):
         text = sentence.group().strip()
+        sentence_start = sentence.start() + len(sentence.group()) - len(sentence.group().lstrip())
         if _UNSAFE_CONTEXT.search(text):
             continue
         if text.endswith(("?", "？")) or re.search(r"(?:吗|么|呢)[。！!]?$", text):
@@ -146,7 +147,8 @@ def _declarative_clauses(content: str) -> Iterator[str]:
         for clause in re.finditer(r"[^，,]+", text.rstrip("。！？!?；;")):
             normalized = clause.group().strip()
             if normalized:
-                yield normalized
+                start = sentence_start + clause.start() + len(clause.group()) - len(clause.group().lstrip())
+                yield normalized, start
 
 
 class RuleBasedExtractor:
@@ -160,11 +162,12 @@ class RuleBasedExtractor:
             return []
 
         drafts: list[MemoryDraft] = []
-        for clause_index, clause in enumerate(_declarative_clauses(event.content)):
+        for clause_index, (clause, clause_start) in enumerate(_declarative_clauses(event.content)):
             for pattern, builder in _RULES:
                 for match in pattern.finditer(clause):
                     draft = builder(match)
                     # 一条消息可包含多个同类型陈述；键由原文中的稳定位置区分。
                     draft.candidate_key += f":{clause_index}:{match.start()}"
+                    draft.source_span = (clause_start + match.start(), clause_start + match.end())
                     drafts.append(draft)
         return drafts

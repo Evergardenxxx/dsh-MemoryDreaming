@@ -318,9 +318,18 @@ class MemoryItem:
     # --- 其他 ---
     recorded_at: datetime = field(default_factory=utcnow)
     body_text: str = ""                # 检索投影，入库时一并保存
+    source_spans: dict[str, list[list[int]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # 调用方可以显式给 body_text（例如从数据库读出时），否则自动生成
+        for event_id, intervals in self.source_spans.items():
+            if event_id not in self.source_event_ids or not isinstance(intervals, list):
+                raise ValueError("来源片段必须属于已声明的事件")
+            for interval in intervals:
+                if (not isinstance(interval, (list, tuple)) or len(interval) != 2
+                        or any(isinstance(value, bool) or not isinstance(value, int) for value in interval)
+                        or not 0 <= interval[0] < interval[1]):
+                    raise ValueError("来源片段必须为有效的 Unicode 码点区间")
         if not self.body_text:
             self.body_text = body_to_text(self.memory_type, self.body)
 
@@ -424,6 +433,9 @@ class CoreSnapshot:
     created_at: datetime = field(default_factory=utcnow)
     evidence_ids: list[str] = field(default_factory=list)
     status: str = "active"
+
+    # 每个字段单独引用来源；旧库无法细分时沿用该版本的粗粒度来源。
+    field_evidence_ids: dict[str, list[str]] = field(default_factory=dict)
 
     def get(self, key: str, default: Any = None) -> Any:
         """读核心字段的快捷方法，例如 core.get("display_name")。"""
@@ -681,6 +693,10 @@ class ForgetResult:
     deleted_ids: list[str] = field(default_factory=list)
     invalidated_derived: list[str] = field(default_factory=list)
     note: str = ""
+    tombstone_ids: list[str] = field(default_factory=list)
+    core_fields_removed: list[str] = field(default_factory=list)
+    conservative_event_ids: list[str] = field(default_factory=list)
+    erasure_level: str = "logical_suppressed"
 
 
 @dataclass
@@ -704,3 +720,4 @@ class MemoryDraft:
     valid_to: datetime | None = None
     importance: float = 0.5
     source_speaker: str | None = None
+    source_span: tuple[int, int] | None = None

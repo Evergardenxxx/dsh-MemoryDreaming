@@ -49,6 +49,8 @@ python -m memorydreaming --db my.db jobs
 
 `consolidate` 报告增加 recovered（回收数，包含因上限转为 failed 的任务）和 lease_lost（失去提交权）。failed 是本批记录的执行失败数，包含已安排重试的尝试；最终失败总量请看 `jobs.failed`。本批出现 failed/lease_lost 时 CLI 返回 1，便于脚本识别异常。没有就绪任务返回成功，不会忙等到退避结束。
 
+v0.6 增加 suppressed（被遗忘账本隔离的候选）和 stale_results（计算期间内容代次变化，结果丢弃重排）。worker 在计算前记录精确 scope epoch，写入与完成前复核；仍有租约时释放过时任务，不消耗这次尝试。stale_results 本身不算执行失败；下一批对存续原文重新抽取，并再次检查每条候选。机制见 [事实抑制](fact-suppression.md)。
+
 ## 迁移和边界
 
 数据库结构 v5 从 v4 原子增加字段与索引，保留任务 ID、payload、状态和尝试次数。旧任务默认最多尝试 3 次；没有 token/lease 的旧 running 行按失联任务回收。重复打开不会再次改写租约或重置尝试次数，较新结构仍被拒绝。

@@ -280,6 +280,9 @@ class RetrievalPipeline:
             if memory is None:
                 dropped += 1
                 continue
+            if self._repos.forgetting.is_suppressed(memory):
+                dropped += 1
+                continue
 
             # 已被撤回或删除的记忆不再作为证据；它们只应出现在审计视图里
             if memory.status in (MemoryStatus.RETRACTED, MemoryStatus.DELETED):

@@ -2,6 +2,8 @@
 
 日期：2026-10-26。代码基线：v0.5.0 / `48cf876`，SQLite schema v5。本文是后续开发的设计基线，**不表示所有模块已实现**。算法见 [算法规格](algorithms-v0.2.md)，调用契约见 [LLM 接口协议](llm-interface-v1.md)。v0.1 保留为早期提案与开源参考记录。
 
+v0.6 进展：schema v6 已实现持久事实抑制、来源片段、scope mutation epoch、核心字段来源及领域/关系版本隔离，见 [实现说明](fact-suppression.md)。以下状态表已同步；完整擦除、类型化证据组和宿主/LLM 适配仍未实现。
+
 ## 1. 目标与不变量
 
 让同一角色在窗口关闭、上下文压缩、进程重启和更换模型后，恢复身份、关系、共同经历及未完事项。连续性来自持久状态及宿主恢复过程，模型每次只接收当前需要的一小部分记忆。
@@ -48,13 +50,13 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | 模块 | 输入与输出 | 当前状态 |
 |---|---|---|
 | Runtime / Repositories | Python 数据类型与 SQLite 事务 | 已实现 |
-| Core Resolver | bootstrap、核心版本、活动目录 | 已实现基础版；核心键仍偏粗 |
+| Core Resolver | bootstrap、核心版本、活动目录 | 已实现领域/关系核心键与字段来源；统一预算待实现 |
 | Retriever | Query → 证据、摘要、缺口、轨迹 | 已实现规则路由与混合检索 |
 | Consolidation Queue | extract → dedupe → summarize | 已实现租约与原子提交 |
 | Extractor | EventRecord → MemoryDraft[] | 规则版已实现，模型抽取待接入 |
-| Mutation Service | 撤回、替代、来源变化、删除 | 已实现部分纠正与逻辑删除 |
+| Mutation Service | 撤回、替代、来源变化、删除 | 已实现部分纠正与事实抑制；正文擦除待实现 |
 | Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 本次规定契约，尚未实现 |
-| Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | 待实现 |
+| Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | 抑制与 scope epoch 已实现；类型化 AND/OR 组待实现 |
 | TokenCounter / Embedding Provider | 目标分词器与真实语义向量 | 待实现；当前为启发式计量和哈希向量 |
 
 ## 3. 核心与四类记忆
@@ -90,7 +92,7 @@ SessionBinding（宿主创建，不由 LLM 填写）
 
 目标核心键：身份 `(user_id, character_id, domain)`；关系 `(user_id, character_id, relationship_id, domain)`；活动按完整作用域与活动 ID 定位。身份核心可在同一领域的多个关系间共享，关系称呼与约定单独版本化。
 
-当前本地 `Scope.relationship_id=None`、`activity_id=None` 有宽范围查询语义，核心仓储也尚未按关系/领域独立维护版本。**不能把这一语义直接透传给外部 LLM。** 新适配器必须采用显式默认关系、受控活动目录及逐项复核；多关系/多世界核心的发布依赖键迁移和隔离测试。迁移无法确定归属的记录保持不可见或等待重新归属。
+当前本地记忆/活动查询中 `Scope.relationship_id=None`、`activity_id=None` 有宽范围查询语义。v0.6 核心仓储已按关系/领域独立维护版本，核心读取中的 None 关系仅表示默认关系。**不能把宽范围查询语义直接透传给外部 LLM。** 新适配器必须采用显式默认关系、受控活动目录及逐项复核。旧版核心未保存领域，迁移默认 real；多世界旧库在宿主上线前须核实归属，不能推断出已丢失的领域。
 
 LLM 仅能传回宿主签发的 `mref_...` / `aref_...` 引用。引用绑定主体、作用域、记录版本、来源可见性和撤销代次；过期或跨会话绑定的引用须重新查询。跨新窗口可以签发新引用，不要求旧引用永久有效。
 
@@ -134,15 +136,15 @@ sequenceDiagram
 
 ## 6. 持久模型与来源
 
-| 逻辑对象 | v0.5 落点 | 后续设计 |
+| 逻辑对象 | v0.6 落点 | 后续设计 |
 |---|---|---|
 | 原始事件 | events | 追加消息状态、内容代次及擦除状态 |
-| 四类记忆 | memories + body_json | 校验类型正文、稳定断言键、修订记录 |
-| 身份/关系 | core_versions | 细化作用域键、字段级来源、候选与生效分离 |
+| 四类记忆 | memories + body_json + source_spans_json；抑制时计算稳定断言键 | 完整正文校验、修订记录 |
+| 身份/关系 | core_versions；领域/关系键与 field_evidence_json | 候选与生效分离、证据版本校验 |
 | 持续活动 | activities | 保持版本 CAS，检查点引用具体事件 |
 | 来源与关系 | source_event_ids + memory_links | typed evidence_refs + AND/OR 支持组 |
-| 遗忘标记 | 无 | tombstones、受影响来源定位、scope mutation_epoch |
-| 巩固 | consolidation_jobs | 已有租约；结果提交增加抑制/代次校验 |
+| 遗忘标记 | memory_tombstones、tombstone_sources、scope_mutations、core_field_tombstones | 内容擦除、scope generation、受控重新学习 |
+| 巩固 | consolidation_jobs；租约、抑制和 epoch 检查 | 来源修订与 scope generation 检查 |
 | 派生索引 | FTS、memory_vectors、summaries | 记录 source_revision / projection_epoch，失效后再重建 |
 
 目标证据引用为 `{kind: event|memory|core_version, id, revision}`。推导使用支持组：一个组的前提为 AND，多个独立组为 OR。多次提取同一事件不增加独立来源数，模型摘要不能创造新的证据根。未能区分独立来源时不报告“多条独立证据”。
@@ -170,7 +172,7 @@ sequenceDiagram
 
 发布验收覆盖：新进程第一条回复前恢复身份；跨用户/关系/领域隔离；旧事原话可回源；愿望/引用/助手自述不变成用户事实；纠错保留时间线；遗忘后重提取/重启/重建不复活；过期任务不能提交；超预算与超时有明确降级；不支持工具调用的模型可依靠宿主注入获得基础记忆。
 
-v0.5 的 156 项测试验证当前工程行为，12 条固定检索题中 10 条计分、2 条同义改写观察项未通过；这不证明长期人格稳定性。新增功能需分别测证据召回、错误记忆、恢复成功率、删除生效、p95 延迟与上下文成本。
+v0.6 的 183 项测试验证当前工程行为，12 条固定检索题中 10 条计分、2 条同义改写观察项未通过；这不证明长期人格稳定性。新增功能需分别测证据召回、错误记忆、恢复成功率、删除生效、p95 延迟与上下文成本。
 
 ## 9. 参考关系
 

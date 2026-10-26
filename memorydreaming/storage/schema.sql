@@ -19,28 +19,30 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 -- ----------------------------------------------------------------------------
 -- 身份核心 / 关系档案：版本化投影
 -- ----------------------------------------------------------------------------
--- 为什么用 (user_id, character_id, kind, core_version) 做主键？
--- 版本号必须在「同一个角色」内连续递增，才能做乐观并发控制。
--- 全局自增 ID 做不到这一点：别的角色写一次，你的版本号就跳了。
+-- scope_key 区分领域及关系；身份跨同领域关系共享，关系档案独立版本化。
+-- 版本号在同一核心范围内递增，配合 expected_version 防止窗口间覆盖。
 CREATE TABLE IF NOT EXISTS core_versions (
+    scope_key      TEXT NOT NULL,
     user_id        TEXT    NOT NULL,
     character_id   TEXT    NOT NULL,
     kind           TEXT    NOT NULL CHECK (kind IN ('identity', 'relationship')),
     core_version   INTEGER NOT NULL,
     relationship_id TEXT,
+    domain         TEXT NOT NULL DEFAULT 'real',
     payload_json   TEXT    NOT NULL,
     evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+    field_evidence_json TEXT NOT NULL DEFAULT '{}',
     change_reason  TEXT    NOT NULL,
     -- active=当前生效；superseded=被新版本取代（仍可回退）；rejected=候选被否决
     status         TEXT    NOT NULL DEFAULT 'active'
                           CHECK (status IN ('active', 'superseded', 'rejected')),
     effective_from TEXT    NOT NULL,
     created_at     TEXT    NOT NULL,
-    PRIMARY KEY (user_id, character_id, kind, core_version)
+    PRIMARY KEY (scope_key, kind, core_version)
 );
 
 CREATE INDEX IF NOT EXISTS idx_core_lookup
-    ON core_versions (user_id, character_id, kind, core_version DESC);
+    ON core_versions (scope_key, kind, core_version DESC);
 
 -- ----------------------------------------------------------------------------
 -- 活动：跨窗口继续的事情，同时是持久化的工作检查点
@@ -120,6 +122,7 @@ CREATE TABLE IF NOT EXISTS memories (
 
     -- 来源（provenance）
     source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_spans_json TEXT NOT NULL DEFAULT '{}',
     source_speaker  TEXT,
     extraction_version TEXT NOT NULL DEFAULT 'v1',
     candidate_key   TEXT,
@@ -269,3 +272,31 @@ CREATE INDEX IF NOT EXISTS idx_jobs_available
     ON consolidation_jobs (status, available_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_lease
     ON consolidation_jobs (status, lease_until);
+
+-- 遗忘只存 HMAC 指纹和来源位置，不在账本里复制被遗忘正文。
+CREATE TABLE IF NOT EXISTS memory_tombstones (
+    tombstone_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    assertion_key TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(scope_key, assertion_key)
+);
+CREATE TABLE IF NOT EXISTS tombstone_sources (
+    tombstone_id TEXT NOT NULL REFERENCES memory_tombstones(tombstone_id),
+    event_id TEXT NOT NULL,
+    span_start INTEGER,
+    span_end INTEGER,
+    UNIQUE(tombstone_id, event_id, span_start, span_end)
+);
+CREATE INDEX IF NOT EXISTS idx_tombstone_event ON tombstone_sources(event_id);
+CREATE TABLE IF NOT EXISTS scope_mutations (
+    scope_key TEXT PRIMARY KEY,
+    epoch INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS core_field_tombstones (
+    scope_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    field_key TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(scope_key, kind, field_key)
+);

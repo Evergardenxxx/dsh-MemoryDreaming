@@ -131,6 +131,13 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
         print(render_bootstrap_context(result, tz))
         return 0
 
+    if args.command == "forget":
+        result = runtime.forget_fact(
+            ForgetSelector(memory_ids=[args.memory_id], reason=args.reason)
+        )
+        print(json.dumps(result.__dict__, ensure_ascii=False, indent=2))
+        return 0
+
     scope = Scope(user_id=args.user, character_id=args.character)
 
     if args.command == "observe":
@@ -152,13 +159,6 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
         print(render_retrieval_context(result, tz))
         print()
         print(f"检索轨迹：{result.trace}")
-        return 0
-
-    if args.command == "forget":
-        result = runtime.forget(
-            ForgetSelector(memory_ids=[args.memory_id], reason=args.reason)
-        )
-        print(f"已删除 {len(result.deleted_ids)} 条；连带失效 {result.invalidated_derived}")
         return 0
 
     print(f"未知命令：{args.command}")

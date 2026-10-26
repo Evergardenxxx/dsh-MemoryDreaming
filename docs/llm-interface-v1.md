@@ -1,6 +1,8 @@
 # 面向 LLM 的接口协议 v1
 
-状态：**设计契约，尚未实现可调用服务**。本文固定宿主、对话 LLM、抽取 LLM 三种调用者的边界。业务架构见 [架构 v0.2](architecture-v0.2.md)，算法见 [算法 v0.2](algorithms-v0.2.md)。协议 v1 与 Python 包 v0.5、SQLite schema v5 是不同版本号。
+状态：**设计契约，尚未实现可调用服务**。本文固定宿主、对话 LLM、抽取 LLM 三种调用者的边界。业务架构见 [架构 v0.2](architecture-v0.2.md)，算法见 [算法 v0.2](algorithms-v0.2.md)。协议 v1 与 Python 包 v0.6、SQLite schema v6 是不同版本号。
+
+v0.6 / schema v6 现已提供本地 `forget_fact`、核心字段来源和作用域隔离，见 [实现说明](fact-suppression.md)；这些进展没有自动注册为模型工具。宿主绑定、受控引用和用户意图校验仍待实现，`full_forgetting` 继续为 false。
 
 机器可读文件：
 
@@ -23,7 +25,7 @@
 
 ## 2. 宿主生命周期 API（目标）
 
-| 入口 | 参数来源 | 输出与责任 | v0.5 映射 |
+| 入口 | 参数来源 | 输出与责任 | 当前本地 API 映射 |
 |---|---|---|---|
 | open_session | 宿主可信 binding、conversation_id、model_profile | 恢复状态、核心版本、活动目录、能力清单 | bootstrap + 新增包装层 |
 | prepare_turn | 实际用户 message_id/content/time、选定活动、deadline | 保存真实事件、检索资料、模型请求片段 | observe + retrieve + 新增排除/计量 |
@@ -52,7 +54,7 @@ binding、request_id、deadline、idempotency_key、当前用户事件 ID、scop
 }
 ```
 
-这是第一版适配器的预期能力样例，**不是当前 v0.5 已具备的服务声明**。未完成字段保持 false 或不注册对应工具。比如 recorded/valid 时间轴、完整遗忘或提议工作流未完成时，不能自动伪装成已支持。
+这是第一版适配器的预期能力样例，**不是当前已具备的服务声明**。未完成字段保持 false 或不注册对应工具。比如 recorded/valid 时间轴、完整遗忘或提议工作流未完成时，不能自动伪装成已支持。
 
 ## 3. 对话 LLM 的四个工具
 
@@ -208,6 +210,8 @@ source_span 使用原始事件正文的 Unicode 码点下标，左闭右开；�
 
 event_id、scope、extractor_version、candidate_key、assertion_key、job token、版本与核心写入结果均由后端产生。模型不填写这些权限/标识字段。后台将合法候选映射到 MemoryDraft，再验证遗忘标记、模态和时间；JSON 合法不代表事实正确。缺模型配置、超时或结构错误按算法规格降级/重试。
 
+当前规则抽取器已提供原文码点区间，运行时校验其上下界并写入 MemoryItem.source_spans。未来模型适配器还须按上文核对 quote，再映射为 MemoryDraft.source_span=(start,end)；现有本地抽取协议并未实现 JSON Schema/quote 校验。
+
 ## 8. 版本与发布门槛
 
 输入和结果都固定版本。v1 内不随意新增必填字段，破坏性变更发布新协议版本；服务端严格输入，客户端以协商版本解析结果。能力开关控制已实现子集，不能通过“忽略未知字段”悄悄接受新权限。
@@ -218,6 +222,6 @@ event_id、scope、extractor_version、candidate_key、assertion_key、job token
 2. 四种工具的 JSON 样例与非法参数均通过验证；回执、提议与真正生效明确区分。
 3. 每个按引用读取、来源展开、修改入口都有跨用户/关系/领域的拒绝用例。
 4. 供应商适配至少跑一次真实完整工具往返、超时降级和超预算场景。
-5. 遗忘传播与核心作用域未完成前，相关能力维持关闭，不包装成可用删除接口。
+5. 按实际完成范围声明遗忘能力。当前只有本地事实抑制；完整擦除、宿主撤销和受控修改未完成前，不注册可直接提交的删除工具。
 
-本次验证的是文档与 JSON 契约一致性；当前 156 项运行时测试不等于这些新接口的集成测试。
+契约样例验证与运行时回归各自独立；当前 183 项运行时测试不等于这些新接口的集成测试。

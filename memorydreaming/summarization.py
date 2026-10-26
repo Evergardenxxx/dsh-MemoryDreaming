@@ -68,6 +68,7 @@ def build_summaries(
     memories = repos.memories.list_by_scope(
         scope, limit=500, statuses=(MemoryStatus.ACTIVE,)
     )
+    memories = [item for item in memories if not repos.forgetting.is_suppressed(item)]
     groups = _topic_groups(memories, min_size, max_topics)
     now = clock.now()
     kept_topics: list[str] = []

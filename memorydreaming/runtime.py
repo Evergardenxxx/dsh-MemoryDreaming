@@ -148,10 +148,11 @@ class MemoryRuntime:
         highlights = self._repos.memories.list_important(
             scope, self._settings.bootstrap_highlight_limit
         )
+        highlights = [item for item in highlights if not self._repos.forgetting.is_suppressed(item)]
         summaries = self._repos.summaries.list_active(scope, limit=5)
 
         warning = None
-        if identity is None:
+        if identity is None or not identity.payload:
             warning = (
                 f"未找到角色 {character_id} 的身份核心。"
                 "请先通过 propose_core_update 建立身份，再让角色开始对话。"
@@ -344,6 +345,7 @@ class MemoryRuntime:
         change_reason: str,
         expected_version: int | None = None,
         evidence_ids: list[str] | None = None,
+        field_evidence_ids: dict[str, list[str]] | None = None,
     ) -> CoreSnapshot:
         """提出并应用一次核心变更。
 
@@ -359,6 +361,10 @@ class MemoryRuntime:
             current = self._repos.cores.latest(scope, core_kind)
             merged = dict(current.payload) if current else {}
             merged.update(patch)
+            fields = dict(current.field_evidence_ids) if current else {}
+            for name in patch:
+                fields[name] = list((field_evidence_ids or {}).get(name, evidence_ids or []))
+            refs = sorted({ref for values in fields.values() for ref in values})
             return self._repos.cores.append(
                 scope=scope,
                 kind=core_kind,
@@ -366,8 +372,9 @@ class MemoryRuntime:
                 change_reason=change_reason,
                 effective_from=now,
                 now=now,
-                evidence_ids=evidence_ids,
+                evidence_ids=refs,
                 expected_version=expected_version,
+                field_evidence_ids=fields,
             )
 
     # -- 6. 纠正与删除 -----------------------------------------------------
@@ -422,19 +429,43 @@ class MemoryRuntime:
             )
 
     def forget(self, selector: ForgetSelector) -> ForgetResult:
-        """删除记忆，并把失效传播到索引与派生记录。
+        """兼容入口：抑制事实及旧来源重提取，不擦除原始消息。"""
+        return self.forget_fact(selector)
 
-        删除是「用户要求忘掉」，比纠正更强硬：
-        状态置为 deleted（保留审计痕迹），检索与索引都不再返回它，
-        依赖它的派生记忆一并失效，避免它换个形式又冒出来。
+    def forget_fact(self, selector: ForgetSelector) -> ForgetResult:
+        """持久抑制选定断言，保留同消息中来源区间不重叠的其他事实。
+
+        同一作用域内的相同断言一起删除；未知来源片段保守隔离。
+        这是 logical_suppressed，不等于正文、备份或供应商历史已擦除。
         """
         now = self._clock.now()
         deleted: list[str] = []
         invalidated: list[str] = []
+        tombstones: set[str] = set()
+        conservative: set[str] = set()
 
         with self._db.transaction():
-            targets = self._resolve_forget_targets(selector)
-            for memory_id in targets:
+            seeds = self._repos.memories.fetch_many(self._resolve_forget_targets(selector))
+            scopes = {item.scope for item in seeds.values()}
+            for item in seeds.values():
+                tombstones.add(self._repos.forgetting.suppress(item, now))
+                conservative.update(event_id for event_id in item.source_event_ids
+                                    if not item.source_spans.get(event_id))
+            targets: set[str] = set(seeds)
+            candidates: list[MemoryItem] = []
+            for scope in scopes:
+                self._repos.forgetting.bump(scope)
+                candidates.extend(item for item in self._repos.memories.list_by_scope(
+                    scope, limit=-1, statuses=tuple(MemoryStatus),
+                ) if item.scope == scope)
+            # 先收齐同一断言的全部来源，再判断区间重叠，避免依赖记录遍历顺序。
+            for item in candidates:
+                if self._repos.forgetting.assertion_tombstone(item) is not None:
+                    tombstones.add(self._repos.forgetting.suppress(item, now))
+                    conservative.update(event_id for event_id in item.source_event_ids
+                                        if not item.source_spans.get(event_id))
+            targets.update(item.memory_id for item in candidates if self._repos.forgetting.is_suppressed(item))
+            for memory_id in sorted(targets):
                 if self._repos.memories.delete(memory_id, now):
                     deleted.append(memory_id)
                     # 向量是派生数据，主记录删除后必须一起清掉，
@@ -445,11 +476,16 @@ class MemoryRuntime:
                 invalidated = self._invalidate_derived(
                     deleted[0], now, being_removed=set(deleted)
                 )
+            core_fields = self._repos.forgetting.redact_cores(now)
 
         return ForgetResult(
             deleted_ids=deleted,
             invalidated_derived=sorted(set(invalidated)),
-            note=selector.reason or "已按请求删除",
+            note=("已持久抑制选定事实；原始消息正文与备份未擦除。" if seeds
+                  else "没有找到匹配的记忆；未新增抑制标记。"),
+            tombstone_ids=sorted(tombstones),
+            core_fields_removed=core_fields,
+            conservative_event_ids=sorted(conservative),
         )
 
     def mark_used(self, memory_ids: list[str]) -> None:
@@ -543,6 +579,7 @@ class MemoryRuntime:
             )
             for memory in memories.values()
             if memory.status not in (MemoryStatus.RETRACTED, MemoryStatus.DELETED)
+            and not self._repos.forgetting.is_suppressed(memory)
             and self._scope_matches(memory.scope, summary.scope)
             and not (
                 memory.status is MemoryStatus.SUPERSEDED
@@ -644,6 +681,7 @@ class MemoryRuntime:
             scope=old.scope,
             body=dict(body),
             source_event_ids=list(sources),
+            source_spans={key: value for key, value in old.source_spans.items() if key in sources},
             source_speaker=old.source_speaker,
             epistemic_status=old.epistemic_status,
             modality=old.modality,

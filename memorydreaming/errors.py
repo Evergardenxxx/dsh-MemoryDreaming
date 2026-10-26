@@ -51,3 +51,11 @@ class StorageError(MemoryDreamingError):
 
 class JobLeaseLost(MemoryDreamingError):
     """任务租约已过期或被另一 worker 接管，当前执行者必须放弃提交。"""
+
+
+class MemorySuppressed(MemoryDreamingError):
+    """候选或核心字段触及持久遗忘标记。"""
+
+
+class SourceRevisionChanged(MemoryDreamingError):
+    """计算期间发生遗忘，旧结果必须丢弃后重新计算。"""

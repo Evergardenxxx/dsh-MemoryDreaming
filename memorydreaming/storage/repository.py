@@ -15,13 +15,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Sequence
 
 from ..clock import ensure_utc, from_utc_iso, to_utc_iso
-from ..errors import JobLeaseLost, VersionConflict
+from ..errors import JobLeaseLost, MemorySuppressed, VersionConflict
+from ..assertions import assertion_material, core_scope_key, normalize
 from ..models import (
     Activity,
     ActivityStatus,
@@ -56,7 +59,7 @@ def scope_sql(scope: Scope, alias: str = "") -> tuple[str, list[object]]:
     """SQL 可见性边界：领域必须相同，给定关系/活动时再收窄。
 
     只可传程序中固定的表别名。调用者必须在排序和 LIMIT 之前应用此条件。
-    核心档案仍是角色级配置，不使用此记忆/活动范围过滤器。
+    核心档案使用独立的 core_scope_key，不使用此记忆/活动范围过滤器。
     """
     prefix = f"{alias}." if alias else ""
     clauses = [f"{prefix}user_id = ?", f"{prefix}character_id = ?", f"{prefix}domain = ?"]
@@ -137,6 +140,7 @@ def _memory_from_row(row: sqlite3.Row) -> MemoryItem:
         access_count=row["access_count"],
         recorded_at=from_utc_iso(row["recorded_at"]) or ensure_utc(datetime.min),
         body_text=row["body_text"],
+        source_spans=_load_dict(row["source_spans_json"]),
     )
 
 
@@ -169,6 +173,7 @@ def _core_from_row(row: sqlite3.Row) -> CoreSnapshot:
             user_id=row["user_id"],
             character_id=row["character_id"],
             relationship_id=row["relationship_id"],
+            domain=row["domain"],
         ),
         kind=CoreKind(row["kind"]),
         core_version=row["core_version"],
@@ -178,6 +183,7 @@ def _core_from_row(row: sqlite3.Row) -> CoreSnapshot:
         created_at=from_utc_iso(row["created_at"]) or ensure_utc(datetime.min),
         evidence_ids=_load_list(row["evidence_ids_json"]),
         status=row["status"],
+        field_evidence_ids=_load_dict(row["field_evidence_json"]),
     )
 
 
@@ -397,6 +403,8 @@ class MemoryRepository:
         返回 None 表示 dedupe_key 命中（同一事件、同一抽取器版本、同一个候选），
         这是幂等保护：重跑整理任务不会产生重复记忆。
         """
+        if ForgetRepository(self._conn).is_suppressed(item):
+            raise MemorySuppressed("记忆匹配持久遗忘标记")
         cursor = self._conn.execute(
             """
             INSERT INTO memories (
@@ -409,8 +417,8 @@ class MemoryRepository:
                 valid_from, valid_to, supersedes_id,
                 status, importance, retrieval_strength,
                 last_used_at, access_count,
-                body_json, body_text, recorded_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                body_json, body_text, recorded_at, updated_at, source_spans_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(dedupe_key) DO NOTHING
             """,
             (
@@ -444,6 +452,7 @@ class MemoryRepository:
                 item.body_text or body_to_text(item.memory_type, item.body),
                 to_utc_iso(item.recorded_at),
                 to_utc_iso(item.recorded_at),
+                json.dumps(item.source_spans, ensure_ascii=False),
             ),
         )
         return item if cursor.rowcount > 0 else None
@@ -662,6 +671,7 @@ class MemoryRepository:
         *,
         importance: float | None = None,
         source_event_ids: Sequence[str] | None = None,
+        source_spans: dict[str, list[list[int]]] | None = None,
     ) -> None:
         """改写一条记忆的正文（以及可选的重要度、证据来源）。
 
@@ -669,13 +679,15 @@ class MemoryRepository:
         FTS 触发器只在 body_text 变化时重建索引，
         只改 body_json 会让检索用的文本和正文不一致。
         """
-        item_type = self._conn.execute(
-            "SELECT memory_type FROM memories WHERE memory_id = ?", (memory_id,)
-        ).fetchone()
-        if item_type is None:
+        old = self.get(memory_id)
+        if old is None:
             return
-
-        memory_type = MemoryType(item_type["memory_type"])
+        candidate = replace(old, body=body,
+                            source_event_ids=list(source_event_ids) if source_event_ids is not None else old.source_event_ids,
+                            source_spans=source_spans if source_spans is not None else old.source_spans)
+        if ForgetRepository(self._conn).is_suppressed(candidate):
+            raise MemorySuppressed("更新正文会重新写入被抑制的事实")
+        memory_type = old.memory_type
         new_text = body_to_text(memory_type, body)
 
         assignments = ["body_json = ?", "body_text = ?", "updated_at = ?"]
@@ -691,6 +703,9 @@ class MemoryRepository:
         if source_event_ids is not None:
             assignments.append("source_event_ids_json = ?")
             params.append(_json_list(source_event_ids))
+        if source_spans is not None:
+            assignments.append("source_spans_json = ?")
+            params.append(json.dumps(source_spans, ensure_ascii=False))
 
         params.append(memory_id)
         self._conn.execute(
@@ -836,6 +851,147 @@ class ActivityRepository:
 # ---------------------------------------------------------------------------
 
 
+class ForgetRepository:
+    """持久断言抑制与内容代次。NULL 区间表示旧来源无法精确定位。"""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def fingerprint(self, value: str) -> str:
+        row = self._conn.execute("SELECT value FROM schema_meta WHERE key='forgetting_hmac_key'").fetchone()
+        if row is None:
+            raise RuntimeError("遗忘指纹密钥未初始化")
+        return hmac.new(bytes.fromhex(row[0]), value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def epoch(self, scope: Scope) -> int:
+        row = self._conn.execute("SELECT epoch FROM scope_mutations WHERE scope_key=?", (_scope_key(scope),)).fetchone()
+        return int(row[0]) if row else 0
+
+    def bump(self, scope: Scope) -> None:
+        self._conn.execute(
+            "INSERT INTO scope_mutations(scope_key,epoch) VALUES (?,1) "
+            "ON CONFLICT(scope_key) DO UPDATE SET epoch=epoch+1", (_scope_key(scope),),
+        )
+
+    def suppress(self, item: MemoryItem, now: datetime) -> str:
+        key = self.fingerprint(assertion_material(item))
+        self._conn.execute(
+            "INSERT INTO memory_tombstones(tombstone_id,scope_key,assertion_key,created_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(scope_key,assertion_key) DO NOTHING",
+            (new_id("tomb"), _scope_key(item.scope), key, to_utc_iso(now)),
+        )
+        row = self._conn.execute(
+            "SELECT tombstone_id FROM memory_tombstones WHERE scope_key=? AND assertion_key=?",
+            (_scope_key(item.scope), key),
+        ).fetchone()
+        tombstone_id = row[0]
+        for event_id in set(item.source_event_ids):
+            intervals = item.source_spans.get(event_id) or [[None, None]]
+            for start, end in intervals:
+                # SQLite UNIQUE 中 NULL 不去重，故先用 IS 显式判断。
+                self._conn.execute(
+                    "INSERT INTO tombstone_sources(tombstone_id,event_id,span_start,span_end) "
+                    "SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM tombstone_sources "
+                    "WHERE tombstone_id=? AND event_id=? AND span_start IS ? AND span_end IS ?)",
+                    (tombstone_id, event_id, start, end, tombstone_id, event_id, start, end),
+                )
+        return tombstone_id
+
+    def assertion_tombstone(self, item: MemoryItem) -> str | None:
+        """仅匹配稳定断言，供同一断言的其他来源补入现有账本。"""
+        key = self.fingerprint(assertion_material(item))
+        row = self._conn.execute(
+            "SELECT tombstone_id FROM memory_tombstones WHERE scope_key=? AND assertion_key=?",
+            (_scope_key(item.scope), key),
+        ).fetchone()
+        return row[0] if row else None
+
+    def is_suppressed(self, item: MemoryItem) -> bool:
+        if self.assertion_tombstone(item) is not None:
+            return True
+        if not item.source_event_ids:
+            return False
+        # 独立来源采用 OR 语义；所有来源都受抑制才隔离不同断言。
+        for event_id in item.source_event_ids:
+            rows = self._conn.execute(
+                "SELECT s.span_start,s.span_end FROM tombstone_sources s "
+                "JOIN memory_tombstones t USING(tombstone_id) WHERE t.scope_key=? AND s.event_id=?",
+                (_scope_key(item.scope), event_id),
+            ).fetchall()
+            if not rows:
+                return False
+            spans = item.source_spans.get(event_id)
+            blocked = not spans or any(
+                row[0] is None or any(start < row[1] and end > row[0] for start, end in spans)
+                for row in rows
+            )
+            if not blocked:
+                return False
+        return True
+
+    def core_field_blocked(self, core: CoreSnapshot, name: str, value: Any, refs: Sequence[str]) -> bool:
+        key = self.fingerprint(json.dumps([name, normalize(value)], ensure_ascii=False, sort_keys=True))
+        if self._conn.execute(
+            "SELECT 1 FROM core_field_tombstones WHERE scope_key=? AND kind=? AND field_key=?",
+            (core_scope_key(core.scope, core.kind), core.kind.value, key),
+        ).fetchone():
+            return True
+        for ref in refs:
+            memory = MemoryRepository(self._conn).get(ref)
+            if memory is not None:
+                if memory.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED) or self.is_suppressed(memory):
+                    return True
+                continue  # 精确记忆引用优于整条事件的粗粒度引用
+            rows = self._conn.execute(
+                "SELECT t.scope_key FROM tombstone_sources s JOIN memory_tombstones t USING(tombstone_id) "
+                "WHERE s.event_id=?", (ref,),
+            ).fetchall()
+            for row in rows:
+                user, character, relationship, activity, domain = json.loads(row[0])
+                source_scope = Scope(user, character, relationship, activity, domain)
+                if core_scope_key(source_scope, core.kind) == core_scope_key(core.scope, core.kind):
+                    return True
+        return False
+
+    def mask_core(self, core: CoreSnapshot) -> CoreSnapshot:
+        fields = core.field_evidence_ids
+        payload = {
+            name: value for name, value in core.payload.items()
+            if not self.core_field_blocked(core, name, value, fields.get(name, core.evidence_ids))
+        }
+        evidence = {name: list(fields.get(name, core.evidence_ids)) for name in payload}
+        return replace(core, payload=payload, field_evidence_ids=evidence,
+                       evidence_ids=sorted({ref for refs in evidence.values() for ref in refs}))
+
+    def redact_cores(self, now: datetime) -> list[str]:
+        """屏蔽所有历史版本中的受影响字段，再给当前核心追加清理版本。"""
+        changed: set[str] = set()
+        current: dict[tuple[str, str], CoreSnapshot] = {}
+        for row in self._conn.execute("SELECT * FROM core_versions ORDER BY core_version DESC").fetchall():
+            core = _core_from_row(row)
+            core_key = core_scope_key(core.scope, core.kind)
+            if core.status != "rejected":
+                current.setdefault((core_key, core.kind.value), core)
+            for name, value in core.payload.items():
+                if self.core_field_blocked(core, name, value, core.field_evidence_ids.get(name, core.evidence_ids)):
+                    key = self.fingerprint(json.dumps([name, normalize(value)], ensure_ascii=False, sort_keys=True))
+                    cursor = self._conn.execute(
+                        "INSERT OR IGNORE INTO core_field_tombstones(scope_key,kind,field_key,created_at) VALUES (?,?,?,?)",
+                        (core_key, core.kind.value, key, to_utc_iso(now)),
+                    )
+                    if cursor.rowcount:
+                        changed.add(f"{core.kind.value}:{name}")
+        for raw in current.values():
+            visible = self.mask_core(raw)
+            if visible.payload != raw.payload:
+                CoreRepository(self._conn).append(
+                    raw.scope, raw.kind, visible.payload, "遗忘后移除受影响字段", now, now,
+                    evidence_ids=visible.evidence_ids, expected_version=raw.core_version,
+                    field_evidence_ids=visible.field_evidence_ids,
+                )
+        return sorted(changed)
+
+
 class CoreRepository:
     """版本化核心档案。每次变更追加一条记录，旧版本标记为 superseded。"""
 
@@ -852,25 +1008,25 @@ class CoreRepository:
         row = self._conn.execute(
             """
             SELECT * FROM core_versions
-            WHERE user_id = ? AND character_id = ? AND kind = ?
+            WHERE scope_key = ? AND kind = ?
               AND status != 'rejected'
             ORDER BY core_version DESC
             LIMIT 1
             """,
-            (scope.user_id, scope.character_id, kind.value),
+            (core_scope_key(scope, kind), kind.value),
         ).fetchone()
-        return _core_from_row(row) if row else None
+        return ForgetRepository(self._conn).mask_core(_core_from_row(row)) if row else None
 
     def history(self, scope: Scope, kind: CoreKind, limit: int = 20) -> list[CoreSnapshot]:
         rows = self._conn.execute(
             """
             SELECT * FROM core_versions
-            WHERE user_id = ? AND character_id = ? AND kind = ?
+            WHERE scope_key = ? AND kind = ?
             ORDER BY core_version DESC LIMIT ?
             """,
-            (scope.user_id, scope.character_id, kind.value, limit),
+            (core_scope_key(scope, kind), kind.value, limit),
         ).fetchall()
-        return [_core_from_row(row) for row in rows]
+        return [ForgetRepository(self._conn).mask_core(_core_from_row(row)) for row in rows]
 
     def append(
         self,
@@ -882,6 +1038,7 @@ class CoreRepository:
         now: datetime,
         evidence_ids: Sequence[str] | None = None,
         expected_version: int | None = None,
+        field_evidence_ids: dict[str, list[str]] | None = None,
     ) -> CoreSnapshot:
         """追加一个新版本。
 
@@ -890,6 +1047,15 @@ class CoreRepository:
         """
         current = self.latest(scope, kind)
         current_version = current.core_version if current else 0
+        scope = replace(scope, activity_id=None,
+                        relationship_id=scope.relationship_id if kind is CoreKind.RELATIONSHIP else None)
+        field_evidence_ids = field_evidence_ids if field_evidence_ids is not None else {
+            name: list(evidence_ids or []) for name in payload
+        }
+        candidate = CoreSnapshot(scope, kind, 0, payload, change_reason, effective_from,
+                                 field_evidence_ids=field_evidence_ids, evidence_ids=list(evidence_ids or []))
+        if ForgetRepository(self._conn).mask_core(candidate).payload != payload:
+            raise MemorySuppressed("核心字段引用已撤回的来源或匹配遗忘标记")
 
         if expected_version is not None and expected_version != current_version:
             raise VersionConflict(expected_version, current_version, f"核心档案({kind.value})")
@@ -897,8 +1063,8 @@ class CoreRepository:
         # 被否决的版本仍占据版本号，不能从回退后的可用版本号重新分配。
         max_row = self._conn.execute(
             "SELECT COALESCE(MAX(core_version), 0) FROM core_versions "
-            "WHERE user_id = ? AND character_id = ? AND kind = ?",
-            (scope.user_id, scope.character_id, kind.value),
+            "WHERE scope_key = ? AND kind = ?",
+            (core_scope_key(scope, kind), kind.value),
         ).fetchone()
         next_version = int(max_row[0]) + 1
 
@@ -907,18 +1073,18 @@ class CoreRepository:
             self._conn.execute(
                 """
                 UPDATE core_versions SET status = 'superseded'
-                WHERE user_id = ? AND character_id = ? AND kind = ? AND core_version = ?
+                WHERE scope_key = ? AND kind = ? AND core_version = ?
                 """,
-                (scope.user_id, scope.character_id, kind.value, current.core_version),
+                (core_scope_key(scope, kind), kind.value, current.core_version),
             )
 
         self._conn.execute(
             """
             INSERT INTO core_versions (
-                user_id, character_id, kind, core_version, relationship_id,
-                payload_json, evidence_ids_json, change_reason, status,
+                user_id, character_id, kind, core_version, relationship_id, scope_key, domain,
+                payload_json, evidence_ids_json, field_evidence_json, change_reason, status,
                 effective_from, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 scope.user_id,
@@ -926,8 +1092,11 @@ class CoreRepository:
                 kind.value,
                 next_version,
                 scope.relationship_id,
+                core_scope_key(scope, kind),
+                scope.domain,
                 json.dumps(payload, ensure_ascii=False),
                 _json_list(evidence_ids),
+                json.dumps(field_evidence_ids, ensure_ascii=False),
                 change_reason,
                 "active",
                 to_utc_iso(effective_from),
@@ -945,6 +1114,7 @@ class CoreRepository:
             created_at=now,
             evidence_ids=list(evidence_ids or []),
             status="active",
+            field_evidence_ids=field_evidence_ids,
         )
 
 
@@ -1371,7 +1541,15 @@ class SummaryRepository:
             """,
             [*params, limit],
         ).fetchall()
-        return [_summary_from_row(row) for row in rows]
+        summaries = [_summary_from_row(row) for row in rows]
+        result = []
+        for summary in summaries:
+            sources = MemoryRepository(self._conn).fetch_many(summary.source_memory_ids)
+            if any(item.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED)
+                   or ForgetRepository(self._conn).is_suppressed(item) for item in sources.values()):
+                continue
+            result.append(summary)
+        return result
 
     def upsert(self, summary: Summary, now: datetime) -> Summary:
         """写入或更新一张索引卡，返回真正落库的那条（id 保持不变）。"""
@@ -1493,6 +1671,7 @@ class Repositories:
     jobs: JobRepository
     vectors: VectorRepository
     summaries: SummaryRepository
+    forgetting: ForgetRepository
 
 
 def build_repositories(conn: sqlite3.Connection) -> Repositories:
@@ -1505,4 +1684,5 @@ def build_repositories(conn: sqlite3.Connection) -> Repositories:
         jobs=JobRepository(conn),
         vectors=VectorRepository(conn),
         summaries=SummaryRepository(conn),
+        forgetting=ForgetRepository(conn),
     )

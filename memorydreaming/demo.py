@@ -261,7 +261,7 @@ def run_demo(db_path: str | Path | None = None) -> Path:
         print("\n→ 旧记录没有消失，但被标成「历史值」；模型据此不会拿旧偏好当现在。")
 
     # ---------------------------------------------------------------- ⑪
-    _section("⑪ 用户要求忘掉：删除传播到索引")
+    _section("⑪ 用户要求忘掉：持久抑制事实及其来源")
     preference_ids = [
         item.memory_id
         for item in runtime.retrieve("睡前偏好", scope).items
@@ -272,6 +272,8 @@ def run_demo(db_path: str | Path | None = None) -> Path:
     )
     print(f"删除 {len(forgotten.deleted_ids)} 条：{forgotten.deleted_ids}")
     print(f"连带失效的派生记忆：{forgotten.invalidated_derived}")
+    print(f"遗忘级别：{forgotten.erasure_level}；持久抑制标记 {len(forgotten.tombstone_ids)} 项")
+    print(f"范围说明：{forgotten.note}")
 
     empty = runtime.retrieve("睡前偏好", scope)
     print(f"\n再查一次 → 命中 {len(empty.items)} 条")
