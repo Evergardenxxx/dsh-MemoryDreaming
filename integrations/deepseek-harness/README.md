@@ -1,24 +1,26 @@
 # MemoryDreaming for DeepSeek Harness
 
-这是一个配置型 DeepSeek Harness bundle，不包含运行时代码。它把已经安装的 `@deepseek-ai/dsh-mcp-client` 连接到仓库内的 MemoryDreaming MCP stdio 服务。
+这是一个原生 DeepSeek Harness Cordis 插件。它直接监听 Harness 的用户消息、模型请求和回合结束事件，由本地 Python 记忆引擎负责恢复、检索与持久化。
 
 ## Bundle 内容
 
-- `cordis.patch.yml`：注册 `memorydreaming` MCP server。
+- `cordis.patch.yml`：把原生 `memorydreaming` 插件挂载到 Harness。
+- `lib/index.js`：Cordis 插件入口；不注册 MCP 工具。
 - `locale/en.json`、`locale/zh.json`：插件管理器显示名称和描述。
 - `icon.svg`：插件图标。
 
-服务使用 `C:\Python314\python.exe`、仓库根目录作为 `cwd`，并把身份绑定为 `u1 / c1 / r1`。数据库位于仓库的 `.memorydreaming/deepseek-harness.db`，不会写入 Harness profile 目录。`--compact` 只缩短发给模型的工具 schema，服务端仍执行完整参数校验。
+插件使用 `C:\Python314\python.exe` 在本地启动一个受控 JSONL 桥接进程，并把身份绑定为 `u1 / c1 / r1`。数据库位于仓库的 `.memorydreaming/deepseek-harness.db`，不会写入 Harness profile 目录。桥接协议不注册模型工具，也不把 MCP schema 放入上下文。
 
 ## 安装
 
-在 DeepSeek Harness 的插件管理器中安装本目录的绝对路径。安装后重载或重启应用，确认出现：
-
-- `mcp__memorydreaming__memory_search`
-- `mcp__memorydreaming__memory_read`
-
-首次连接会自动创建数据库文件。此 bundle 只启用只读工具；写入、整理和核心审批仍由可信宿主的 `HostAdapter` 生命周期接口负责。
+在 DeepSeek Harness 的插件管理器中安装本目录的绝对路径。安装后重载或重启应用。首次启动会自动创建数据库文件；插件在每个用户回合开始时调用 `HostAdapter.prepare_turn` 注入有限预算的身份、关系和相关记忆，在回合结束时调用 `after_delivery` 保存实际显示的助手回复。
 
 ### 上下文占用
 
-MemoryDreaming 只注册两个工具。Harness 会把当前 profile 中所有已启用工具的 schema 放入模型请求；如果上下文仍然很大，请在 Harness 的上下文面板按工具命名空间检查，优先关闭不使用的 MCP server（例如 `mcp__rea__*`）。本 bundle 的 compact 目录不会加载历史正文，也不会把整个数据库注入上下文。
+MemoryDreaming 不注册工具，因此不会增加工具 schema。它只按 `maxTokens`（默认 1200）注入当前回合记忆；如果上下文仍然很大，应在 Harness 的上下文面板按命名空间检查其他 MCP server（例如 `mcp__rea__*`）。
+
+### 当前限制
+
+- 插件依赖本机 Python 和仓库路径配置，尚未打包成跨机器安装器。
+- 插件无法可靠知道模型实际使用了哪条不透明引用，因此投递回执暂不增加 `used_references` 热度。
+- 记忆抽取、整理和核心候选审批仍由 Python 宿主调度，插件只接通每轮恢复和投递保存。

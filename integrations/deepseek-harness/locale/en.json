@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "MemoryDreaming Long-Term Memory",
-    "description": "Keeps a stable identity and retrieves controlled long-term memories across DeepSeek Harness sessions."
+    "description": "A native DeepSeek Harness lifecycle plugin that keeps identity and long-term memory without registering MCP tools."
   }
 }

@@ -84,6 +84,14 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp.add_argument("--activity", help="默认焦点，必须同时在允许目录内")
     mcp.add_argument("--compact", action="store_true",
                      help="使用低上下文占用的 MCP 工具目录；服务端仍执行完整参数校验")
+
+    bridge = sub.add_parser("bridge", help="启动原生宿主插件使用的 JSONL 生命周期桥接")
+    bridge.add_argument("--user", required=True)
+    bridge.add_argument("--character", required=True)
+    bridge.add_argument("--relationship", required=True)
+    bridge.add_argument("--domain", default="real")
+    bridge.add_argument("--max-tokens", type=int, default=1200,
+                        help="每轮记忆消息预算，默认 1200")
     return parser
 
 
@@ -122,6 +130,22 @@ def main(argv: list[str] | None = None) -> int:
                                      selected_activity_id=args.activity)
             session = HostAdapter(runtime).open_session(binding)
             return McpServer(session, compact=args.compact).serve()
+        finally:
+            runtime.close()
+
+    if args.command == "bridge":
+        from .bridge import BridgeServer
+        for stream in (sys.stdin, sys.stdout):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
+        # 桥接协议的 stdout 只允许输出一行一个响应；运行时诊断写入 stderr。
+        with redirect_stdout(sys.stderr):
+            runtime = _open_runtime(args)
+        try:
+            server = BridgeServer(runtime, user_id=args.user, character_id=args.character,
+                                  relationship_id=args.relationship, domain=args.domain,
+                                  max_tokens=args.max_tokens)
+            return server.serve()
         finally:
             runtime.close()
 

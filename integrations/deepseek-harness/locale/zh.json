@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "MemoryDreaming 长期记忆",
-    "description": "在 DeepSeek Harness 会话之间保持稳定身份，并通过受控工具检索长期记忆。"
+    "description": "原生接入 DeepSeek Harness 生命周期，在不同会话之间保持稳定身份和长期记忆，不注册 MCP 工具。"
   }
 }

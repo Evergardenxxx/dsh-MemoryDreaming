@@ -1,30 +1,13 @@
 - insert:
-    - id: memorydreaming-mcp
-      name: '@deepseek-ai/dsh-mcp-client'
+    - id: memorydreaming-plugin
+      name: '@local/memorydreaming'
       config:
-        serverName: memorydreaming
-        transport: stdio
-        command: 'C:\Python314\python.exe'
-        args:
-          - '-X'
-          - utf8
-          - '-m'
-          - memorydreaming
-          - '--db'
-          - 'D:\My_project\MemoryDreaming\.memorydreaming\deepseek-harness.db'
-          - mcp
-          - '--user'
-          - u1
-          - '--character'
-          - c1
-          - '--relationship'
-          - r1
-          - '--compact'
-        cwd: 'D:\My_project\MemoryDreaming'
-        toolCallTimeoutMs: 60000
-        failOnStartupError: true
-        reconnect:
-          enabled: true
-          initialDelayMs: 500
-          maxDelayMs: 30000
-          maxAttempts: 10
+        enabled: true
+        pythonCommand: 'C:\Python314\python.exe'
+        repoPath: 'D:\My_project\MemoryDreaming'
+        dbPath: 'D:\My_project\MemoryDreaming\.memorydreaming\deepseek-harness.db'
+        userId: u1
+        characterId: c1
+        relationshipId: r1
+        domain: real
+        maxTokens: 1200

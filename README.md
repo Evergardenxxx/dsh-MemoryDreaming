@@ -2,19 +2,19 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.8，增加核心候选与宿主审批**。在跨窗口恢复和 MCP 只读服务之上，Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。默认仍只开放 `memory_search` / `memory_read`。当前 261 个回归测试通过。具体聊天产品的 hook、真实模型往返、语义模型及完整擦除仍待完成。
+当前状态：**v0.9，增加原生 Harness 生命周期插件**。Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具。当前 265 个回归测试通过。跨机器打包、真实 Harness 热加载和完整擦除仍待完成。
 
-接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或使用 [MCP 配置示例](examples/mcp-config.json)。DeepSeek Harness 的配置型 bundle 位于 [`integrations/deepseek-harness`](integrations/deepseek-harness)，会把 stdio MCP 服务注册为 `memory_search` / `memory_read` 工具。
+接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
 ### DeepSeek Harness 接入
 
-bundle 使用固定的会话绑定（`u1 / c1 / r1`）和独立数据库 `.memorydreaming/deepseek-harness.db`，因此切换聊天窗口不会改变记忆引擎的身份边界。安装或更新时应通过 Harness 的插件管理器安装 `integrations/deepseek-harness` 目录；应用重启后，模型工具名为 `mcp__memorydreaming__memory_search` 和 `mcp__memorydreaming__memory_read`。MCP 服务的 stdout 只输出 JSON-RPC，诊断写入 stderr。bundle 默认带 `--compact`，只把精简后的工具目录发送给模型，服务端收到调用后仍用完整 schema 校验参数。
+插件使用固定的会话绑定（`u1 / c1 / r1`）和独立数据库 `.memorydreaming/deepseek-harness.db`，因此切换聊天窗口不会改变记忆引擎的身份边界。安装或更新时应通过 Harness 的插件管理器安装 `integrations/deepseek-harness` 目录；插件由本地 Python 桥接进程调用 HostAdapter，在每轮请求前注入有限预算的恢复资料，并在回合结束后保存实际显示的助手回复。
 
-当前接入提供只读检索和 bootstrap 资源。逐轮 `observe`、整理队列和核心候选审批仍需要宿主生命周期适配，不能仅靠 MCP 连接自动完成。
+当前 Harness 插件已接通逐轮用户事件、受预算限制的恢复检索和助手投递保存；后台整理队列、记忆抽取和核心候选审批仍需要独立宿主调度。
 
 ### 上下文占用
 
-MemoryDreaming 只注册两个工具，不会在连接时把数据库正文或历史对话注入模型上下文。Harness 会把当前 profile 中所有已启用 MCP 工具的 schema 一起放入请求；如果上下文仍然很大，应在 Harness 的上下文面板按命名空间检查并关闭不使用的 MCP server（例如 `mcp__rea__*`、ComfyUI 或 PhotoCraft）。
+MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `maxTokens`（默认 1200）注入当前回合所需的记忆资料。Harness 仍会把 profile 中其他已启用 MCP 工具的 schema 一起放入请求；如果上下文仍然很大，应在上下文面板按命名空间检查并关闭不使用的 MCP server（例如 `mcp__rea__*`、ComfyUI 或 PhotoCraft）。
 
 受控修改见 [核心候选与审批](docs/core-proposals.md)，可运行 [重启后审批示例](examples/core_proposal.py)。
 
@@ -35,7 +35,7 @@ MemoryDreaming 只注册两个工具，不会在连接时把数据库正文或�
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部 261 个测试
+python -m unittest                # 跑全部 265 个测试
 python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 python -X utf8 examples/core_proposal.py
 ```
@@ -294,7 +294,7 @@ MRR：1.000
 - **冲突检测只到规则级**。单值谓词换值和否定翻转能识别，复杂表达的冲突仍需验证（「养了猫」与「对猫过敏」本身可以同时成立，不能自动视作矛盾）；`as_of` 按「记录时间 + 有效期」回放，没有记录「何时得知失效」。
 - **向量检索是暴力扫描**。本地几百上千条够用，十万条以上要换 ANN。
 - **后台尚不会自动归纳人格成长**。`propose_core` 任务仍没有执行器；已支持基于实际用户消息提出核心字段候选并由宿主独立审批，见 [核心建议](docs/core-proposals.md)。
-- **具体聊天产品尚未接入**。已有进程内 HostAdapter 和 MCP 只读服务；保证首轮/压缩后自动恢复仍需产品的会话/请求 hook，尚未完成真实模型供应商往返测试。
+- **真实 Harness 往返仍待验收**。已有原生 Cordis 插件、生命周期桥接和进程内 HostAdapter；还需要在 Harness 主程序重启后验证多窗口、压缩、工具回合和异常退出等真实场景。
 - **队列需要宿主持续轮询**。每次 `run_consolidation()` 会回收过期任务；库本身不会启动常驻进程。文件库可在耗时抽取时续租，内存库只有同步租约校验。向量计算仍在写事务内，接远程嵌入前需要把这一步移到事务外；跨设备同步尚未实现。
 
 事实抑制的 API、迁移和边界见 [持久事实抑制](docs/fact-suppression.md)。完整问题清单见 **[docs/open-problems.md](docs/open-problems.md)**。schema v6 增加来源片段、抑制账本、内容代次及核心字段来源；v7 增加 host_deliveries；v8 纯新增 core_proposals，保存待审候选、来源版本与审批回执。迁移保留旧记忆与版本，不补造旧库没有的精确片段。
