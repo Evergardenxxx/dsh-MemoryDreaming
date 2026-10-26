@@ -14,10 +14,20 @@ BOOTSTRAP_URI = "memorydreaming://bootstrap"
 
 
 class McpServer:
-    def __init__(self, session):
+    def __init__(self, session, *, compact=False):
         self.session = session
+        # MCP tool definitions are copied into every model request by most
+        # clients.  Keep a deliberately small public projection for hosts
+        # where context cost matters; validation remains strict in HostAdapter.
+        self.compact = bool(compact)
         self.initialized = False
         self.ready = False
+
+    def _tools(self):
+        tools = tool_catalog()
+        if not self.compact:
+            return tools
+        return [_compact_tool(tool) for tool in tools]
 
     @staticmethod
     def error(request_id, code, message, data=None):
@@ -49,11 +59,15 @@ class McpServer:
                     return self.error(request_id, -32602, "Missing initialization parameters")
                 version = params["protocolVersion"]
                 self.initialized = True
+                instructions = "" if self.compact else (
+                    "使用受控引用查询记忆；可读取 bootstrap 资源恢复身份资料。"
+                    "自动首轮及逐轮恢复需要宿主调用 HostAdapter 生命周期接口。"
+                )
                 result = {"protocolVersion": version if version in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
                           "capabilities": {"tools": {"listChanged": False},
                                            "resources": {"subscribe": False, "listChanged": False}},
                           "serverInfo": {"name": "memorydreaming", "version": __version__},
-                          "instructions": "使用受控引用查询记忆；可读取 bootstrap 资源恢复身份资料。自动首轮及逐轮恢复需要宿主调用 HostAdapter 生命周期接口。"}
+                          "instructions": instructions}
             elif method == "ping":
                 result = {}
             elif not self.ready:
@@ -64,11 +78,11 @@ class McpServer:
                 result = {"tools": [{"name": tool["name"], "description": tool["description"],
                                      "inputSchema": tool["input_schema"],
                                      "annotations": {"readOnlyHint": True, "destructiveHint": False}}
-                                    for tool in tool_catalog()]}
+                                    for tool in self._tools()]}
             elif method == "tools/call":
                 if not isinstance(params.get("name"), str) or not isinstance(params.get("arguments"), dict):
                     return self.error(request_id, -32602, "name and arguments are required")
-                if params["name"] not in {tool["name"] for tool in tool_catalog()}:
+                if params["name"] not in {tool["name"] for tool in self._tools()}:
                     error = AdapterError("UNSUPPORTED", "MCP 服务当前仅开放只读工具")
                     response = self.session._fit(envelope(self.session._request_id(None), None,
                         status="error", error=error.as_dict()), min(1200, self.session.adapter.tool_token_limit))
@@ -132,3 +146,40 @@ def _unique_object(pairs):
             raise ValueError("Duplicate JSON key")
         result[key] = value
     return result
+
+
+def _compact_tool(tool):
+    """Return a small generation hint while keeping server-side validation authoritative.
+
+    MCP clients use this schema to decide how to call a tool, but the complete
+    schema is not needed in every prompt.  Enumerations that materially guide
+    generation are retained; bounds, formats, and opaque reference patterns
+    are enforced by ``validate_tool`` after the call arrives.
+    """
+    if tool["name"] == "memory_search":
+        schema = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "activity_ref": {"type": ["string", "null"]},
+                "time_range": {"type": ["object", "null"]},
+                "detail": {"type": "string", "enum": ["auto", "overview", "evidence"]},
+                "max_items": {"type": ["integer", "null"]},
+                "max_tokens": {"type": ["integer", "null"]},
+            },
+            "required": ["query", "activity_ref", "time_range", "detail", "max_items", "max_tokens"],
+            "additionalProperties": False,
+        }
+        return {"name": tool["name"], "description": "Search relevant long-term memory; an empty result means there is no usable evidence.", "input_schema": schema}
+    if tool["name"] == "memory_read":
+        schema = {
+            "type": "object",
+            "properties": {
+                "references": {"type": "array", "items": {"type": "string"}},
+                "max_tokens": {"type": ["integer", "null"]},
+            },
+            "required": ["references", "max_tokens"],
+            "additionalProperties": False,
+        }
+        return {"name": tool["name"], "description": "Read evidence references returned by memory_search.", "input_schema": schema}
+    return tool

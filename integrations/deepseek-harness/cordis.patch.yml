@@ -19,6 +19,7 @@
           - c1
           - '--relationship'
           - r1
+          - '--compact'
         cwd: 'D:\My_project\MemoryDreaming'
         toolCallTimeoutMs: 60000
         failOnStartupError: true

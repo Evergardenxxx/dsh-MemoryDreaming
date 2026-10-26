@@ -47,6 +47,26 @@ class McpTest(RuntimeTestCase):
         self.assertEqual(names, ["memory_search", "memory_read"])
         self.assertIn("error", self.server.handle(INITIALIZE))
 
+    def test_compact_catalog_keeps_tools_and_shrinks_prompt_projection(self):
+        server = McpServer(self.server.session, compact=True)
+        initialized = server.handle(INITIALIZE)
+        self.assertEqual(initialized["result"]["instructions"], "")
+        self.assertIsNone(server.handle(READY))
+        tools = server.handle(request("tools/list"))["result"]["tools"]
+        self.assertEqual([tool["name"] for tool in tools], ["memory_search", "memory_read"])
+        encoded = dumps(tools)
+        self.assertLess(len(encoded), 1000)
+        self.assertNotIn("pattern", encoded)
+        self.assertNotIn("date-time", encoded)
+
+        # Compact schemas are generation hints only; normal server-side
+        # validation still rejects malformed references and caps.
+        bad = server.handle(request("tools/call", {
+            "name": "memory_read",
+            "arguments": {"references": ["forged"], "max_tokens": 4096},
+        }))
+        self.assertTrue(bad["result"]["isError"])
+
     def test_tool_search_read_roundtrip_without_exposing_database_ids(self):
         item = self.add_memory(MemoryType.EPISODIC, {"what_happened": "海边约定"})
         self.start()
@@ -111,6 +131,23 @@ class McpTest(RuntimeTestCase):
         self.assertIn("小梦", replies[2]["result"]["contents"][0]["text"])
         self.assertIn("跨进程约定", replies[3]["result"]["content"][0]["text"])
         self.assertIn("不是整数", result.stderr)
+
+    def test_actual_cli_compact_flag_minimizes_catalog(self):
+        messages = [INITIALIZE, READY, request("tools/list", request_id=2)]
+        env = {**os.environ, "MEMORYDREAMING_JOB_MAX_ATTEMPTS": "invalid"}
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8", "-m", "memorydreaming", "--db", str(self.db_path),
+             "mcp", "--user", "u1", "--character", "c1", "--relationship", "r1", "--compact"],
+            input="\n".join(dumps(message) for message in messages) + "\n", text=True, encoding="utf-8",
+            capture_output=True, timeout=15, cwd=Path(__file__).resolve().parents[1], env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(replies[0]["result"]["instructions"], "")
+        tools = replies[1]["result"]["tools"]
+        self.assertEqual([tool["name"] for tool in tools], ["memory_search", "memory_read"])
+        self.assertLess(len(dumps(tools)), 1000)
+        self.assertNotIn("pattern", dumps(tools))
 
     def test_source_runner_starts_from_an_unrelated_working_directory(self):
         runner = Path(__file__).resolve().parents[1] / "examples/run_mcp.py"

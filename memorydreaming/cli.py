@@ -82,6 +82,8 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp.add_argument("--domain", default="real")
     mcp.add_argument("--allow-activity", action="append", default=[], help="显式允许的活动 ID，可重复")
     mcp.add_argument("--activity", help="默认焦点，必须同时在允许目录内")
+    mcp.add_argument("--compact", action="store_true",
+                     help="使用低上下文占用的 MCP 工具目录；服务端仍执行完整参数校验")
     return parser
 
 
@@ -119,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
                                      domain=args.domain, allowed_activity_ids=tuple(args.allow_activity),
                                      selected_activity_id=args.activity)
             session = HostAdapter(runtime).open_session(binding)
-            return McpServer(session).serve()
+            return McpServer(session, compact=args.compact).serve()
         finally:
             runtime.close()
 
