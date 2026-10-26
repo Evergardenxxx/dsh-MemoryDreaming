@@ -98,7 +98,7 @@ read 中任一引用越权/不存在，整次请求返回 NOT_FOUND_OR_FORBIDDEN
 
 修改建议额外做语义校验：
 
-- correct_fact / update_core 必须提供目标引用与非空 replacement_text；先读取目标版本，提议采用最小字段变化。
+- correct_fact 必须提供目标引用以及 replacement_text 或经过记忆类型校验的 replacement_body；先读取目标版本，提议采用最小字段变化。
 - forget_fact / forget_event 必须有目标引用，replacement_text 为 null；用户范围不清时返回 NEEDS_CLARIFICATION。
 - forget_scope 的 target_refs 为空，范围只能是当前可信绑定；不得从 query 或 reason 解析另一个用户身份。
 - checkpoint 必须引用允许的活动，expected_version 匹配，依据已经保存的真实事件；不能引用尚未显示的草稿。

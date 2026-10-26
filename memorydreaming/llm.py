@@ -153,6 +153,7 @@ def validate_tool(name: str, arguments: Any, *, include_core_proposals=False,
             invalid("evidence_refs 必须为当前资料引用")
         return args
     if name == "memory_request_change":
+        args.setdefault("replacement_body", None)
         if args["operation"] not in ("correct_fact", "forget_fact", "forget_event", "forget_scope"):
             invalid("不支持的变更操作")
         if (not isinstance(args["target_refs"], list) or len(args["target_refs"]) > 20
@@ -162,6 +163,13 @@ def validate_tool(name: str, arguments: Any, *, include_core_proposals=False,
         if args["replacement_text"] is not None and (
                 not isinstance(args["replacement_text"], str) or len(args["replacement_text"]) > 2000):
             invalid("replacement_text 必须为不超过 2000 字符的字符串或 null")
+        if args["replacement_body"] is not None and (
+                not isinstance(args["replacement_body"], dict) or len(args["replacement_body"]) > 20):
+            invalid("replacement_body 必须为不超过 20 个字段的对象或 null")
+        if args["operation"] == "correct_fact" and args["replacement_text"] is None and args["replacement_body"] is None:
+            invalid("correct_fact 必须提供 replacement_text 或 replacement_body")
+        if args["operation"] != "correct_fact" and args["replacement_body"] is not None:
+            invalid("replacement_body 只适用于 correct_fact")
         text(args["reason"], "reason", 1000)
         if (not isinstance(args["evidence_refs"], list) or len(args["evidence_refs"]) > 20
                 or any(not isinstance(ref, str) or not re.fullmatch(r"mref_[A-Za-z0-9_-]{1,128}", ref)

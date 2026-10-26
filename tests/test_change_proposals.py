@@ -77,3 +77,23 @@ class ChangeProposalTest(RuntimeTestCase):
         self.assertTrue(receipt["applied"])
         self.assertEqual(self.runtime.db.repositories.activities.get(activity.activity_id).checkpoint_version, 2)
 
+    def test_structured_fact_replacement_supersedes_old_value(self):
+        search = self.session.call_tool("memory_search", {
+            "query": "海边故事", "activity_ref": None, "time_range": None,
+            "detail": "evidence", "max_items": 4, "max_tokens": 1200,
+        })
+        proposal = self.session.call_tool("memory_request_change", {
+            "operation": "correct_fact", "target_refs": [search["data"]["evidence"][0]["ref"]],
+            "replacement_text": "用户更正了偏好", "replacement_body": {
+                "subject": "用户", "predicate": "喜欢", "obj": "森林故事",
+            },
+            "reason": "用户明确更正偏好", "evidence_refs": [],
+        })
+        receipt = self.session.approve_change_proposal(
+            proposal["data"]["proposal_id"], user_event_id=self.turn.user_event_id,
+            reviewer="host:test", reason="已核对结构化更正",
+        )
+        self.assertTrue(receipt["applied"])
+        current = self.runtime.db.repositories.memories.list_by_scope(self.scope, limit=20)
+        self.assertIn("森林故事", [item.body.get("obj") for item in current])
+

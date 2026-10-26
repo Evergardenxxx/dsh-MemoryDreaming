@@ -276,6 +276,7 @@
           "operation": { "type": "string", "enum": ["correct_fact", "forget_fact", "forget_event", "forget_scope"] },
           "target_refs": { "type": "array", "items": { "type": "string", "pattern": "^mref_[A-Za-z0-9_-]+$" }, "maxItems": 20 },
           "replacement_text": { "type": ["string", "null"], "maxLength": 2000 },
+          "replacement_body": { "type": ["object", "null"], "maxProperties": 20 },
           "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
           "evidence_refs": { "type": "array", "items": { "type": "string", "pattern": "^mref_[A-Za-z0-9_-]+$" }, "maxItems": 20 }
         },

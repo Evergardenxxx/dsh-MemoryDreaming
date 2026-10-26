@@ -10,8 +10,9 @@ from datetime import timedelta
 
 from .clock import to_utc_iso
 from .errors import MemorySuppressed, VersionConflict
+from .formation import MemoryFormationPolicy
 from .llm import AdapterError, dumps, integer, text
-from .models import CoreKind, Correction, ForgetSelector
+from .models import CoreKind, Correction, ForgetSelector, MemoryType
 from .references import ViewReader, forbidden
 from .storage.repository import _scope_key
 
@@ -268,7 +269,7 @@ class ChangeProposals:
             operation = args["operation"]
             target_refs = list(args["target_refs"])
             if operation == "forget_scope":
-                if target_refs or args["replacement_text"] is not None:
+                if target_refs or args["replacement_text"] is not None or args.get("replacement_body") is not None:
                     raise AdapterError("INVALID_ARGUMENT", "forget_scope 不接受 target_refs 或 replacement_text")
                 targets, evidence_views = [], []
             else:
@@ -280,9 +281,17 @@ class ChangeProposals:
                 expected_kind = "event" if operation == "forget_event" else "memory"
                 if any(view.kind != expected_kind for view in views):
                     raise AdapterError("INVALID_ARGUMENT", f"{operation} 的目标引用类型不正确")
+                if operation == "correct_fact" and args.get("replacement_body") is not None:
+                    try:
+                        MemoryFormationPolicy.validate_body(
+                            MemoryType(views[0].data["memory_type"]), args["replacement_body"]
+                        )
+                    except (KeyError, ValueError) as exc:
+                        raise AdapterError("INVALID_ARGUMENT", str(exc)) from exc
                 targets = [self._snapshot(view) for view in views]
                 evidence_views = self._resolve_evidence(args["evidence_refs"], reader)
-            payload = {"replacement_text": args["replacement_text"]}
+            payload = {"replacement_text": args["replacement_text"],
+                       "replacement_body": args.get("replacement_body")}
         for view in evidence_views:
             if view.kind not in ("event", "memory") or view.data.get("speaker") not in ("user", None):
                 raise AdapterError("INVALID_ARGUMENT", "依据必须来自当前作用域的用户事件或记忆")
@@ -417,12 +426,25 @@ class ChangeProposals:
                 receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
                            "erasure_level": result.erasure_level, "affected": len(result.deleted_ids),
                            "remaining_work": result.residuals}
-            else:  # correct_fact: safe first step is explicit retraction; replacement is retained in receipt only.
-                result = self.runtime.correct(targets[0]["target"], Correction(
-                    kind="fix", statement=payload.get("replacement_text") or row["reason"]))
-                receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
-                           "erasure_level": "logical_suppressed", "affected": len(result.invalidated_derived),
-                           "remaining_work": ["replacement must be separately confirmed and extracted"]}
+            else:  # correct_fact: structured body can atomically supersede the old fact;
+                # free text remains a safe retraction until a host supplies structure.
+                if payload.get("replacement_body") is not None:
+                    result = self.runtime.correct(
+                        targets[0]["target"], Correction(
+                            kind="change", corrected_body=payload["replacement_body"],
+                            evidence_event_ids=[row["request_event_id"]],
+                            statement=payload.get("replacement_text") or row["reason"],
+                        )
+                    )
+                    receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
+                               "erasure_level": "logical_suppressed", "affected": 1,
+                               "remaining_work": []}
+                else:
+                    result = self.runtime.correct(targets[0]["target"], Correction(
+                        kind="fix", statement=payload.get("replacement_text") or row["reason"]))
+                    receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
+                               "erasure_level": "logical_suppressed", "affected": len(result.invalidated_derived),
+                               "remaining_work": ["replacement_body must be supplied for structured replacement"]}
         except Exception as exc:
             code = "VERSION_CONFLICT" if exc.__class__.__name__ == "VersionConflict" else "EXECUTION_FAILED"
             return self._receipt(self._finish(row, "invalidated", code, reviewer, reason))

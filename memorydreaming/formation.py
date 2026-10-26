@@ -28,6 +28,36 @@ class MemoryFormationPolicy:
         MemoryType.PROCEDURAL: ("trigger", "steps"),
     }
 
+    @classmethod
+    def validate_body(cls, memory_type: MemoryType, body: dict) -> dict:
+        """校验已经形成的正文，供人工/宿主纠错替换复用。"""
+        if not isinstance(memory_type, MemoryType):
+            raise ValueError("memory_type 必须是 working/episodic/semantic/procedural")
+        if not isinstance(body, dict):
+            raise ValueError("记忆正文必须为对象")
+        required = cls.REQUIRED_FIELDS[memory_type]
+        missing = [name for name in required if name not in body]
+        if missing:
+            raise ValueError(f"{memory_type.value} 正文缺少字段：{', '.join(missing)}")
+        if memory_type is MemoryType.SEMANTIC:
+            if any(not isinstance(body[name], str) or not body[name].strip()
+                   for name in ("subject", "predicate", "obj")):
+                raise ValueError("semantic 正文的 subject/predicate/obj 必须为非空字符串")
+        elif memory_type is MemoryType.EPISODIC:
+            if not isinstance(body["what_happened"], str) or not body["what_happened"].strip():
+                raise ValueError("episodic 正文的 what_happened 必须为非空字符串")
+        elif memory_type is MemoryType.WORKING:
+            if not isinstance(body["open_loops"], list) or not isinstance(body["active_entities"], list):
+                raise ValueError("working 正文的 open_loops/active_entities 必须为数组")
+            if not str(body.get("goal", "")).strip() and not any(str(item).strip() for item in body["open_loops"]):
+                raise ValueError("working 正文至少需要 goal 或 open_loops")
+        else:
+            if not isinstance(body["trigger"], str) or not body["trigger"].strip():
+                raise ValueError("procedural 正文的 trigger 必须为非空字符串")
+            if not isinstance(body["steps"], list) or not body["steps"] or not all(str(step).strip() for step in body["steps"]):
+                raise ValueError("procedural 正文的 steps 必须为非空数组")
+        return body
+
     def validate(self, event: EventRecord, draft: MemoryDraft) -> MemoryDraft:
         if not isinstance(draft.memory_type, MemoryType):
             raise ValueError("候选 memory_type 必须是 working/episodic/semantic/procedural")
@@ -40,31 +70,7 @@ class MemoryFormationPolicy:
         if not 0 <= float(draft.importance) <= 1:
             raise ValueError("候选 importance 必须在 0 到 1 之间")
 
-        required = self.REQUIRED_FIELDS[draft.memory_type]
-        missing = [name for name in required if name not in draft.body]
-        if missing:
-            raise ValueError(f"{draft.memory_type.value} 候选缺少字段：{', '.join(missing)}")
-
-        if draft.memory_type is MemoryType.SEMANTIC:
-            if any(not isinstance(draft.body[name], str) or not draft.body[name].strip()
-                   for name in ("subject", "predicate", "obj")):
-                raise ValueError("semantic 候选的 subject/predicate/obj 必须为非空字符串")
-        elif draft.memory_type is MemoryType.EPISODIC:
-            if not isinstance(draft.body["what_happened"], str) or not draft.body["what_happened"].strip():
-                raise ValueError("episodic 候选的 what_happened 必须为非空字符串")
-        elif draft.memory_type is MemoryType.WORKING:
-            loops = draft.body["open_loops"]
-            entities = draft.body["active_entities"]
-            if not isinstance(loops, list) or not isinstance(entities, list):
-                raise ValueError("working 候选的 open_loops/active_entities 必须为数组")
-            if not str(draft.body.get("goal", "")).strip() and not any(str(item).strip() for item in loops):
-                raise ValueError("working 候选至少需要 goal 或 open_loops")
-        else:
-            steps = draft.body["steps"]
-            if not isinstance(draft.body["trigger"], str) or not draft.body["trigger"].strip():
-                raise ValueError("procedural 候选的 trigger 必须为非空字符串")
-            if not isinstance(steps, list) or not steps or not all(str(step).strip() for step in steps):
-                raise ValueError("procedural 候选的 steps 必须为非空数组")
+        self.validate_body(draft.memory_type, draft.body)
 
         # source_speaker 只能细化来源，不能伪造与事件不一致的说话者。
         if draft.source_speaker is not None and draft.source_speaker != event.speaker:
