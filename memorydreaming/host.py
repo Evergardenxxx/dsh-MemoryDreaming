@@ -213,6 +213,9 @@ class MemorySession:
                             briefing.pop(key)
                             removed = True
                             break
+                    if not removed and isinstance(briefing.get("goal"), str) and len(briefing["goal"]) > 500:
+                        briefing["goal"] = briefing["goal"][:500] + "…"
+                        removed = True
                     if not removed:
                         data["handoff"] = None
                 else:
@@ -383,6 +386,9 @@ class MemorySession:
                             briefing.pop(key)
                             removed = True
                             break
+                    if not removed and isinstance(briefing.get("goal"), str) and len(briefing["goal"]) > 500:
+                        briefing["goal"] = briefing["goal"][:500] + "…"
+                        removed = True
                     if not removed:
                         bootstrap["handoff"] = None
                 elif bootstrap["activities"]:
@@ -536,6 +542,9 @@ class MemorySession:
                     briefing.pop(key)
                     removed = True
                     break
+            if not removed and isinstance(briefing.get("goal"), str) and len(briefing["goal"]) > 500:
+                briefing["goal"] = briefing["goal"][:500] + "…"
+                removed = True
             if not removed and briefing.get("open_loops"):
                 briefing["open_loops"].pop()
                 removed = True
