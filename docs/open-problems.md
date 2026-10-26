@@ -54,7 +54,7 @@ v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段�
 - memory health / summary health / confidence / gaps：`MemoryRuntime.memory_health()` 已输出按类型/状态计数、陈旧摘要、失败任务、无来源推断和开放循环；置信度校准、历史趋势与 UI 仍待加入，健康分数不能被模型当作事实概率。
 - durable journal 与 hash chain：**已实现**。`journal_entries` 使用全局 sequence、prev_hash、entry_hash 追加；`MemoryRuntime.verify_journal()` 可检测篡改或断链，记录不复制正文。哈希链不能代替作用域权限和删除账本。
 - derived artifact 的 `source_digest`、`algorithm_version` 与 `stale/withdrawn/rolled_back` 生命周期：**source_digest / algorithm_version / stale 已实现**；来源改变时摘要先隐藏，再由队列重建，`withdrawn/rolled_back` 仍待用于更复杂的派生物。
-- portability export/import：manifest、源摘要、dry-run 迁移和残留报告；恢复旧备份前先应用遗忘账本并校验 generation。
+- portability export/import：**manifest、源摘要、作用域快照、dry-run 迁移和遗忘/generation 预检已实现**（见 [便携快照](portability.md)）；人工确认后的原子导入、残留报告和跨密钥迁移仍待完成。
 - entity index、图关系遍历和更完整双时间 claim 查询；没有修订日志时，`knowledge_at` 请求必须返回不支持。
 - 可选 arousal/importance 维度：只影响保留和召回排序，不能覆盖用户原话、来源和认识论状态。
 

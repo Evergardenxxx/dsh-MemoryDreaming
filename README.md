@@ -68,6 +68,7 @@ memorydreaming/
 ├── errors.py         自定义异常：版本冲突、恢复失败……
 ├── runtime.py        对外门面：bootstrap / retrieve / observe / checkpoint / correct / forget
 ├── host.py           可信会话绑定、逐轮恢复、实际投递、只读工具
+├── portability.py    便携快照导出、来源校验与导入 dry-run
 ├── references.py     随机会话引用、版本摘要、逐跳来源及遗忘检查
 ├── llm.py            工具参数校验、统一回应、TokenCounter
 ├── llm-tools.json    两个读工具和显式启用的核心建议工具定义

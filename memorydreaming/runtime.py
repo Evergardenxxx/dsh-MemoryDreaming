@@ -58,6 +58,7 @@ from .retrieval.vector import VectorIndex
 from .summarization import build_summaries
 from .storage.database import Database
 from .storage.repository import scope_sql
+from .portability import preflight_snapshot_file, write_snapshot
 from .worker import ConsolidationWorker
 
 
@@ -599,6 +600,14 @@ class MemoryRuntime:
     def verify_journal(self) -> dict[str, Any]:
         """校验从 genesis 到当前 head 的全局哈希链。"""
         return self._repos.journal.verify()
+
+    def export_snapshot(self, path: str, scope: Scope | None = None) -> dict[str, Any]:
+        """导出可移植 JSON 快照；不会把快照内容注入模型上下文。"""
+        return write_snapshot(self._db, path, scope=scope)
+
+    def preflight_snapshot(self, path: str) -> dict[str, Any]:
+        """只读检查快照能否导入当前库，失败时不修改任何数据。"""
+        return preflight_snapshot_file(self._db, path)
 
     # -- 5. 核心档案 -------------------------------------------------------
 
