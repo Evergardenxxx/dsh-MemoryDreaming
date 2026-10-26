@@ -64,3 +64,14 @@ class HandoffTests(RuntimeTestCase):
             "询问继续哪件事",
         )
 
+    def test_prepare_turn_trims_large_handoff_before_failing_budget(self):
+        session = self.adapter.open_session(self.binding)
+        session.pre_compress(
+            {"checkpoint": {"detail": "场景" * 3000}, "handoff_note": "继续故事"},
+            expected_version=1,
+            idempotency_key="large-handoff",
+        )
+        prepared = session.prepare_turn("small", "你好", max_tokens=1200)
+        self.assertLessEqual(prepared.counted_tokens, 1200)
+        self.assertTrue(prepared.truncated)
+

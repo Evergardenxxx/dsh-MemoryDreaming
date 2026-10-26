@@ -712,6 +712,16 @@
             }
           ]
         },
+        "handoff": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/handoff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "recovery_status": {
           "type": "string",
           "enum": [
@@ -730,7 +740,50 @@
         "relationship_fields",
         "activities",
         "selected_activity_ref",
+        "handoff",
         "recovery_status"
+      ],
+      "additionalProperties": false
+    },
+    "handoff": {
+      "type": "object",
+      "properties": {
+        "handoff_id": {
+          "type": "string",
+          "pattern": "^handoff_[A-Za-z0-9_-]+$"
+        },
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "activity_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "activity_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "briefing": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "handoff_id",
+        "conversation_id",
+        "activity_id",
+        "activity_version",
+        "updated_at",
+        "briefing"
       ],
       "additionalProperties": false
     },

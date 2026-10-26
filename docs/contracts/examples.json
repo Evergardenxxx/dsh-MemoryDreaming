@@ -47,6 +47,7 @@
         }
       ],
       "selected_activity_ref": "aref_story",
+      "handoff": null,
       "recovery_status": "complete"
     },
     "gaps": [],

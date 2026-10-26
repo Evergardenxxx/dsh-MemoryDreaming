@@ -375,6 +375,16 @@ class MemorySession:
                     search["evidence"].pop()
                 elif payload["working"] is not None:
                     payload["working"] = None
+                elif bootstrap.get("handoff") is not None:
+                    briefing = bootstrap["handoff"].get("briefing", {})
+                    removed = False
+                    for key in ("checkpoint", "active_entities", "next_action", "handoff_note"):
+                        if key in briefing:
+                            briefing.pop(key)
+                            removed = True
+                            break
+                    if not removed:
+                        bootstrap["handoff"] = None
                 elif bootstrap["activities"]:
                     bootstrap["activities"].pop()
                     bootstrap["selected_activity_ref"] = None
