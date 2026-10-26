@@ -24,7 +24,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 
-from ..models import MemoryType
+from ..models import MemoryType, Scope
 
 # 用来切分句子的标点与空白（不含中文汉字本身）
 _SPLIT_RE = re.compile(r"[\s，。！？、；：,.!?;:\"'“”‘’（）()\[\]【】《》〈〉…—\-~·]+")
@@ -302,6 +302,8 @@ class KeywordIndex:
         memory_types: list[MemoryType] | None = None,
         limit: int = 40,
         include_statuses: tuple[str, ...] = ("active", "superseded"),
+        *,
+        scope: Scope | None = None,
     ) -> list[KeywordHit]:
         """按词检索，返回按「命中词数 + 相关度」排序的候选。
 
@@ -314,8 +316,17 @@ class KeywordIndex:
         if not terms:
             return []
 
-        fts_terms = [t for t in terms if len(t) >= 3][:_MAX_TERMS]
-        like_terms = [t for t in terms if 1 <= len(t) < 3][:_MAX_TERMS]
+        search_scope = scope or Scope(scope_user_id, character_id)
+        if search_scope.user_id != scope_user_id or search_scope.character_id != character_id:
+            raise ValueError("关键词检索的 scope 与用户/角色参数不一致")
+
+        if self.tokenizer == "trigram":
+            fts_terms = [t for t in terms if len(t) >= 3][:_MAX_TERMS]
+            like_terms = [t for t in terms if 1 <= len(t) < 3][:_MAX_TERMS]
+        else:
+            # 没有 FTS 时长词也必须进入 LIKE，不能只剩两字词可查。
+            fts_terms = []
+            like_terms = [t for t in terms if t][:_MAX_TERMS]
 
         best_score: dict[str, float] = {}
         hit_count: dict[str, int] = {}
@@ -324,7 +335,7 @@ class KeywordIndex:
 
         for term in fts_terms:
             for memory_id, memory_type, score in self._search_fts(
-                term, scope_user_id, character_id, memory_types, limit, include_statuses
+                term, search_scope, memory_types, limit, include_statuses
             ):
                 type_of[memory_id] = memory_type
                 hit_count[memory_id] = hit_count.get(memory_id, 0) + 1
@@ -333,7 +344,7 @@ class KeywordIndex:
 
         for term in like_terms:
             for memory_id, memory_type in self._search_like(
-                term, scope_user_id, character_id, memory_types, limit, include_statuses
+                term, search_scope, memory_types, limit, include_statuses
             ):
                 type_of[memory_id] = memory_type
                 hit_count[memory_id] = hit_count.get(memory_id, 0) + 1
@@ -359,27 +370,28 @@ class KeywordIndex:
     def _search_fts(
         self,
         term: str,
-        user_id: str,
-        character_id: str,
+        scope: Scope,
         memory_types: list[MemoryType] | None,
         limit: int,
         include_statuses: tuple[str, ...],
     ) -> list[tuple[str, MemoryType, float]]:
+        from ..storage.repository import scope_sql
+
         if self.tokenizer != "trigram":
             return []
 
         # MATCH 里的双引号是 FTS5 的字符串定界符，词里出现要转义
         escaped = term.replace('"', '""')
+        scope_filter, scope_params = scope_sql(scope, "m")
         sql = f"""
             SELECT m.memory_id, m.memory_type, bm25({self.TABLE}) AS bm
             FROM {self.TABLE}
             JOIN memories m ON m.memory_id = {self.TABLE}.memory_id
             WHERE {self.TABLE} MATCH ?
-              AND m.user_id = ?
-              AND m.character_id = ?
+              AND {scope_filter}
               AND m.status IN ({_marks(len(include_statuses))})
         """
-        params: list[object] = [f'"{escaped}"', user_id, character_id, *include_statuses]
+        params: list[object] = [f'"{escaped}"', *scope_params, *include_statuses]
 
         if memory_types:
             sql += f" AND m.memory_type IN ({_marks(len(memory_types))})"
@@ -395,21 +407,22 @@ class KeywordIndex:
     def _search_like(
         self,
         term: str,
-        user_id: str,
-        character_id: str,
+        scope: Scope,
         memory_types: list[MemoryType] | None,
         limit: int,
         include_statuses: tuple[str, ...],
     ) -> list[tuple[str, MemoryType]]:
-        sql = """
+        from ..storage.repository import scope_sql
+
+        scope_filter, scope_params = scope_sql(scope, "m")
+        sql = f"""
             SELECT m.memory_id, m.memory_type
             FROM memories m
             WHERE m.body_text LIKE ?
-              AND m.user_id = ?
-              AND m.character_id = ?
-              AND m.status IN ({statuses})
-        """.format(statuses=",".join("?" * len(include_statuses)))
-        params: list[object] = [f"%{term}%", user_id, character_id, *include_statuses]
+              AND {scope_filter}
+              AND m.status IN ({_marks(len(include_statuses))})
+        """
+        params: list[object] = [f"%{term}%", *scope_params, *include_statuses]
 
         if memory_types:
             sql += f" AND m.memory_type IN ({_marks(len(memory_types))})"

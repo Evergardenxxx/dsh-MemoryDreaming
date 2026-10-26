@@ -125,30 +125,30 @@ def parse_time_hint(text: str, now: datetime, tz: tzinfo) -> TimeHint | None:
     if "上周" in text or "上星期" in text:
         start_day = _week_start(today) - timedelta(days=7)
         start, _ = day_bounds_utc(start_day, tz)
-        _, end = day_bounds_utc(start_day + timedelta(days=7), tz)
+        end, _ = day_bounds_utc(start_day + timedelta(days=7), tz)
         return TimeHint("上周", start, end, "week", hard=True)
 
     if "这周" in text or "本周" in text or "这星期" in text:
         start_day = _week_start(today)
         start, _ = day_bounds_utc(start_day, tz)
-        _, end = day_bounds_utc(start_day + timedelta(days=7), tz)
+        end, _ = day_bounds_utc(start_day + timedelta(days=7), tz)
         return TimeHint("本周", start, end, "week", hard=True)
 
     if "上个月" in text or "上月" in text:
         start_day = _prev_month_start(today)
         start, _ = day_bounds_utc(start_day, tz)
-        _, end = day_bounds_utc(_month_start(today), tz)
+        end, _ = day_bounds_utc(_month_start(today), tz)
         return TimeHint("上个月", start, end, "month", hard=True)
 
     if "去年" in text:
         start_day = date(today.year - 1, 1, 1)
         start, _ = day_bounds_utc(start_day, tz)
-        _, end = day_bounds_utc(date(today.year, 1, 1), tz)
+        end, _ = day_bounds_utc(date(today.year, 1, 1), tz)
         return TimeHint("去年", start, end, "year", hard=True)
 
     if "今年" in text:
         start, _ = day_bounds_utc(date(today.year, 1, 1), tz)
-        _, end = day_bounds_utc(date(today.year + 1, 1, 1), tz)
+        end, _ = day_bounds_utc(date(today.year + 1, 1, 1), tz)
         return TimeHint("今年", start, end, "year", hard=True)
 
     # --- 5) 模糊指代：没有具体范围，但说明「不是现在」 ---

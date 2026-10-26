@@ -3,14 +3,13 @@
 架构文档第 6 节的流程：
     原始事件 → 类型候选 → 来源/说话者/模态校验 → 写入类型记忆 → 建立证据链接
 
-这一版支持两类任务：
+这一版支持三类任务：
 
     extract  抽取：谁来抽、怎么抽由调用方决定（示例里是 RuleBasedExtractor）
     dedupe   去重：同一件事被两次对话分别记下来时，合成一条
+    summarize  生成可回源的主题索引卡
 
-刻意没做的：summarize（主题摘要）和 propose_core（核心成长候选）。
-它们都需要「归纳质量」的判断，没有模型时做出来只是假动作。
-任务类型已经留在表里，实现时不用改结构。
+propose_core（核心成长候选）尚无执行器，保留在队列中等待支持它的 worker。
 
 幂等的关键在 dedupe_key：
     source_event_id + extractor_version + candidate_key
@@ -25,14 +24,16 @@ from dataclasses import dataclass, field
 from datetime import tzinfo, timezone
 from typing import Any, Protocol
 
-from .clock import Clock
+from .clock import Clock, ensure_utc
 from .models import (
+    EpistemicStatus,
     EventRecord,
     LinkRelation,
     MemoryDraft,
     MemoryItem,
     MemoryStatus,
     MemoryType,
+    Modality,
     Scope,
     new_id,
 )
@@ -54,6 +55,7 @@ SUMMARY_TRIGGER_MEMORIES = 4
 # 没有模型时用一份单值谓词表 + 否定词检测，覆盖最常见的几类。
 SINGLE_VALUED_PREDICATES = {
     "名字", "称呼", "住在", "住在哪", "生日", "年龄", "职业", "家乡", "手机号", "血型",
+    "希望被称呼为",
 }
 
 # 去重的默认相似度阈值：两条记忆的字符二元组重合度达到 85% 就视为同一件事。
@@ -85,7 +87,7 @@ class ConsolidationReport:
     duplicates: int = 0       # 因幂等键命中而跳过
     merged: int = 0           # 去重合并掉多少条
     summarized: int = 0       # 生成/更新了多少张主题摘要卡
-    skipped: int = 0          # 因缺少处理条件而退回队列
+    skipped: int = 0          # 因没有对应执行器而保留在队列
     failed: int = 0           # 失败任务数
     errors: list[str] = field(default_factory=list)
 
@@ -104,7 +106,7 @@ def run_pending_jobs(
     失败信息写回任务表，未超过重试上限的会自动退回 pending。
 
     参数:
-        extractor:    抽取器。为 None 时 extract 任务会被退回队列（不消耗重试次数），
+        extractor:    抽取器。为 None 时不领取 extract 任务（不消耗重试次数），
                       这样可以只跑去重任务——例如换嵌入模型后的批量整理。
         vector_index: 传入后，新写入的记忆会顺带建立向量索引；
                       不传则跳过（检索时就没有语义通道）。
@@ -113,22 +115,24 @@ def run_pending_jobs(
     repos = db.repositories
     report = ConsolidationReport()
 
-    # 先原子地把任务从 pending 改成 running，避免被别的 worker 重复取走
+    # 只领取当前 worker 能执行的类型。先领再释放会反复卡在最老的 extract，
+    # 导致后面的 dedupe/summarize 永远没有机会运行。
+    supported_types = ["dedupe", "summarize"]
+    if extractor is not None:
+        supported_types.append("extract")
+    placeholders = ",".join("?" for _ in supported_types)
     with db.transaction():
-        jobs = repos.jobs.claim(limit, clock.now())
+        report.skipped = int(db.connection.execute(
+            f"SELECT COUNT(*) FROM consolidation_jobs WHERE status = 'pending' "
+            f"AND job_type NOT IN ({placeholders})", supported_types,
+        ).fetchone()[0])
+        jobs = repos.jobs.claim(limit, clock.now(), job_types=supported_types)
     report.claimed = len(jobs)
 
     for job in jobs:
         try:
             if job.job_type == "extract":
-                if extractor is None:
-                    # 没带抽取器：把任务放回队列，下次再处理。
-                    # 用 release 而不是 fail，否则三次空跑就把任务判死了。
-                    with db.transaction():
-                        repos.jobs.release(job.job_id, clock.now())
-                    report.skipped += 1
-                    continue
-
+                assert extractor is not None  # 由支持的任务类型保证
                 created, duplicates = _run_extract(db, job, extractor, clock, vector_index)
                 report.created += created
                 report.duplicates += duplicates
@@ -207,12 +211,11 @@ def _run_extract(
             for old in conflicts:
                 repos.memories.close_validity(
                     old.memory_id,
-                    memory.occurred_start or now,
+                    memory.valid_from or memory.occurred_start or memory.recorded_at,
                     now,
                 )
                 repos.links.add(memory.memory_id, old.memory_id, LinkRelation.SUPERSEDES, now)
-            # 向量索引是派生数据，和主记录分开写：即使索引失败，
-            # 记忆本身也已经落库，下次 rebuild 就能补上。
+            # 当前实现将索引和主记录一起提交；索引失败时本任务回滚并重试。
             if vector_index is not None:
                 vector_index.index_memory(memory, now)
 
@@ -233,7 +236,11 @@ def _find_conflicts(repos, candidate: MemoryItem) -> list[MemoryItem]:
     其余情况一律不冲突：「喜欢猫」和「喜欢狗」可以同时成立，
     这正是 Mem0 现行实现强调的「历史是时间线，不是一份可覆盖的档案」。
     """
-    if candidate.memory_type is not MemoryType.SEMANTIC:
+    if (
+        candidate.memory_type is not MemoryType.SEMANTIC
+        or candidate.modality is not Modality.OCCURRED
+        or candidate.epistemic_status is EpistemicStatus.INFERRED
+    ):
         return []
 
     body = candidate.body
@@ -246,12 +253,23 @@ def _find_conflicts(repos, candidate: MemoryItem) -> list[MemoryItem]:
     existing = repos.memories.list_by_scope(
         candidate.scope,
         memory_types=[MemoryType.SEMANTIC],
-        limit=200,
-        statuses=(MemoryStatus.ACTIVE,),
+        limit=-1,
+        statuses=(MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED),
     )
 
-    conflicts: list[MemoryItem] = []
+    comparable: list[MemoryItem] = []
     for old in existing:
+        if (
+            old.scope != candidate.scope
+            or old.source_speaker != candidate.source_speaker
+            or old.modality is not Modality.OCCURRED
+            or old.epistemic_status is EpistemicStatus.INFERRED
+            or (
+                old.status is MemoryStatus.SUPERSEDED
+                and repos.links.has_relation(old.memory_id, LinkRelation.PART_OF)
+            )
+        ):
+            continue
         old_body = old.body
         if str(old_body.get("subject", "")).strip() != subject:
             continue
@@ -263,9 +281,24 @@ def _find_conflicts(repos, candidate: MemoryItem) -> list[MemoryItem]:
             if old_obj == obj:
                 continue  # 一模一样，交给去重处理
             if predicate in SINGLE_VALUED_PREDICATES:
-                conflicts.append(old)
+                comparable.append(old)
         elif _is_negation(predicate, old_predicate) and old_obj == obj:
-            conflicts.append(old)
+            comparable.append(old)
+
+    # 按事实生效时间而非处理顺序写时间线。补录旧对话时，旧候选可以形成
+    # 有界历史，但不能关闭更晚才生效的当前事实，更不能生成倒置有效期。
+    start = ensure_utc(candidate.valid_from or candidate.occurred_start or candidate.recorded_at)
+    conflicts: list[MemoryItem] = []
+    for old in comparable:
+        old_start = ensure_utc(old.valid_from or old.occurred_start or old.recorded_at)
+        if old_start > start:
+            if candidate.valid_to is None or old_start < ensure_utc(candidate.valid_to):
+                candidate.valid_to = old_start
+                candidate.status = MemoryStatus.SUPERSEDED
+            continue
+        if old.valid_to is not None and ensure_utc(old.valid_to) <= start:
+            continue
+        conflicts.append(old)
 
     return conflicts
 
@@ -360,10 +393,27 @@ def _run_dedupe(
     """
     repos = db.repositories
     memories = repos.memories.list_by_scope(
-        scope, limit=500, statuses=(MemoryStatus.ACTIVE,)
+        scope, limit=-1, statuses=(MemoryStatus.ACTIVE,)
     )
-    # 去重要求「同类型 + 高阈值」：工作记忆和情景记忆本来就不是一回事
-    clusters = cluster_by_similarity(memories, threshold, respect_type=True)
+    # 相似措辞不代表相同事实。先以完整作用域、模态、来源及有效期隔离，
+    # 防止把不同活动的工作状态、意愿和真实经历合为同一条。
+    partitions: dict[tuple[Any, ...], list[MemoryItem]] = {}
+    for memory in memories:
+        key: tuple[Any, ...] = (
+            memory.scope, memory.memory_type, memory.modality,
+            memory.source_speaker, memory.epistemic_status,
+            memory.valid_from, memory.valid_to,
+        )
+        if memory.memory_type is MemoryType.SEMANTIC:
+            # 一个否定字或名字不同也可能有很高的字面相似度，语义三元组
+            # 必须相同才允许继续做近重复合并。
+            key += tuple(str(memory.body.get(field, "")).strip()
+                         for field in ("subject", "predicate", "obj"))
+        partitions.setdefault(key, []).append(memory)
+    clusters = [
+        group for partition in partitions.values()
+        for group in cluster_by_similarity(partition, threshold, respect_type=True)
+    ]
     if not clusters:
         return 0
 

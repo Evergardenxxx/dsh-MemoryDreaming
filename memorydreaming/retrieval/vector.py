@@ -20,8 +20,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ..clock import utcnow
-from ..models import MemoryItem, MemoryType, Scope
+from ..models import LinkRelation, MemoryItem, MemoryStatus, MemoryType, Scope
 from ..storage.database import Database
+from ..storage.repository import scope_sql
 from .embedding import Embedder, HashingEmbedder
 
 
@@ -128,18 +129,30 @@ class VectorIndex:
           - 发现检索结果和正文对不上时（可能是索引漂移）。
         """
         moment = now or utcnow()
-        memories = self._repos.memories.list_by_scope(scope, limit=10000)
+        # 重建不能使用检索候选上限，否则第 10001 条以后的有效向量会被误删。
+        memories = self._repos.memories.list_by_scope(
+            scope, limit=-1, statuses=(MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)
+        )
+        memories = [
+            memory for memory in memories
+            if not (
+                memory.status is MemoryStatus.SUPERSEDED
+                and self._repos.links.has_relation(memory.memory_id, LinkRelation.PART_OF)
+            )
+        ]
         alive = {memory.memory_id for memory in memories}
 
-        # 先清掉这个角色名下、已经不该存在的向量（已删除或已合并掉的记忆）
+        # 清理范围必须与读取范围一致。重建真实世界或活动 A 时，
+        # 不能把同角色的虚构世界/活动 B 向量当成孤立数据清掉。
+        visible, params = scope_sql(scope, "m")
         rows = self._db.connection.execute(
-            """
+            f"""
             SELECT v.memory_id
             FROM memory_vectors v
             JOIN memories m ON m.memory_id = v.memory_id
-            WHERE m.user_id = ? AND m.character_id = ?
+            WHERE {visible}
             """,
-            (scope.user_id, scope.character_id),
+            params,
         ).fetchall()
         for row in rows:
             if row["memory_id"] not in alive:

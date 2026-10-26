@@ -332,6 +332,8 @@ class MemoryItem:
         """
         if self.status is not MemoryStatus.ACTIVE:
             return False
+        if self.valid_from is not None and ensure_utc(self.valid_from) > ensure_utc(now):
+            return False
         if self.valid_to is None:
             return True
         return ensure_utc(self.valid_to) > ensure_utc(now)

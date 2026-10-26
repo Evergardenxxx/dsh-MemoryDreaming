@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS events (
     recorded_at     TEXT NOT NULL,           -- 记录时间（何时写进库）
     turn_index      INTEGER,
     -- 幂等键：同一轮消息被重复提交时不会写两条
-    idempotency_key TEXT UNIQUE,
+    idempotency_key TEXT,
     created_at      TEXT NOT NULL
 );
 
@@ -97,6 +97,10 @@ CREATE INDEX IF NOT EXISTS idx_events_scope_time
     ON events (user_id, character_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_activity
     ON events (activity_id, occurred_at);
+-- 幂等属于同一用户、角色与领域；不同活动/关系可重复使用客户端消息键。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_scope
+    ON events (user_id, character_id, domain,
+               COALESCE(relationship_id, ''), COALESCE(activity_id, ''), idempotency_key);
 
 -- ----------------------------------------------------------------------------
 -- 四类记忆：共用一张表
@@ -205,13 +209,16 @@ CREATE INDEX IF NOT EXISTS idx_vectors_model ON memory_vectors (model);
 -- ----------------------------------------------------------------------------
 -- 设计要点：摘要只做索引，不做事实底座。
 -- digest 是一句概述，真正的内容仍然在 source_memory_ids 指向的记忆里。
--- 主题在同一个角色内唯一：重建摘要是「更新同一张卡」，不是「再发一张卡」，
+-- 主题在精确的作用域内唯一：重建摘要是「更新同一张卡」，不是「再发一张卡」，
 -- 这样外部（宿主、日志）引用的 summary_id 不会失效。
 CREATE TABLE IF NOT EXISTS summaries (
     summary_id      TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL,
     character_id    TEXT NOT NULL,
+    relationship_id TEXT,
     activity_id     TEXT,
+    domain          TEXT NOT NULL DEFAULT 'real',
+    scope_key       TEXT NOT NULL,
     topic           TEXT NOT NULL,
     digest          TEXT NOT NULL,
     source_memory_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -223,7 +230,7 @@ CREATE TABLE IF NOT EXISTS summaries (
                          CHECK (status IN ('active', 'stale')),
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
-    UNIQUE (user_id, character_id, topic)
+    UNIQUE (scope_key, topic)
 );
 
 CREATE INDEX IF NOT EXISTS idx_summaries_scope
@@ -240,7 +247,9 @@ CREATE TABLE IF NOT EXISTS consolidation_jobs (
                         CHECK (job_type IN ('extract', 'dedupe', 'summarize', 'propose_core')),
     user_id        TEXT NOT NULL,
     character_id   TEXT NOT NULL,
+    relationship_id TEXT,
     activity_id    TEXT,
+    domain         TEXT NOT NULL DEFAULT 'real',
     payload_json   TEXT NOT NULL DEFAULT '{}',
     status         TEXT NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending', 'running', 'done', 'failed')),

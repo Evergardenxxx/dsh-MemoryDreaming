@@ -52,6 +52,32 @@ def _placeholders(count: int) -> str:
     return ",".join("?" for _ in range(count))
 
 
+def scope_sql(scope: Scope, alias: str = "") -> tuple[str, list[object]]:
+    """SQL 可见性边界：领域必须相同，给定关系/活动时再收窄。
+
+    只可传程序中固定的表别名。调用者必须在排序和 LIMIT 之前应用此条件。
+    核心档案仍是角色级配置，不使用此记忆/活动范围过滤器。
+    """
+    prefix = f"{alias}." if alias else ""
+    clauses = [f"{prefix}user_id = ?", f"{prefix}character_id = ?", f"{prefix}domain = ?"]
+    params: list[object] = [scope.user_id, scope.character_id, scope.domain]
+    if scope.relationship_id is not None:
+        clauses.append(f"{prefix}relationship_id = ?")
+        params.append(scope.relationship_id)
+    if scope.activity_id is not None:
+        clauses.append(f"{prefix}activity_id = ?")
+        params.append(scope.activity_id)
+    return " AND ".join(clauses), params
+
+
+def _scope_key(scope: Scope) -> str:
+    """摘要的精确生成范围；宽范围查询不会覆盖窄范围卡片。"""
+    return json.dumps(
+        [scope.user_id, scope.character_id, scope.relationship_id, scope.activity_id, scope.domain],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+
+
 def _json_list(values: Iterable[str] | None) -> str:
     return json.dumps(list(values or []), ensure_ascii=False)
 
@@ -199,7 +225,9 @@ def _summary_from_row(row: sqlite3.Row) -> Summary:
         scope=Scope(
             user_id=row["user_id"],
             character_id=row["character_id"],
+            relationship_id=row["relationship_id"],
             activity_id=row["activity_id"],
+            domain=row["domain"],
         ),
         topic=row["topic"],
         digest=row["digest"],
@@ -221,6 +249,9 @@ def _job_from_row(row: sqlite3.Row) -> JobRecord:
         scope=Scope(
             user_id=row["user_id"],
             character_id=row["character_id"],
+            relationship_id=row["relationship_id"],
+            activity_id=row["activity_id"],
+            domain=row["domain"],
         ),
         activity_id=row["activity_id"],
         payload=_load_dict(row["payload_json"]),
@@ -257,7 +288,7 @@ class EventRepository:
                 occurred_precision, source_timezone, recorded_at, turn_index,
                 idempotency_key, created_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(idempotency_key) DO NOTHING
+            ON CONFLICT DO NOTHING
             """,
             (
                 event.event_id,
@@ -279,19 +310,29 @@ class EventRepository:
             ),
         )
 
-        if cursor.rowcount == 0 and event.idempotency_key:
-            existing = self.find_by_idempotency_key(event.idempotency_key)
+        if cursor.rowcount == 0 and event.idempotency_key is not None:
+            existing = self.find_by_idempotency_key(event.idempotency_key, event.scope)
             if existing is not None:
+                if (existing.content, existing.speaker, existing.conversation_id) != (
+                    event.content, event.speaker, event.conversation_id
+                ):
+                    raise ValueError("同一作用域的幂等键已用于不同的消息内容或会话")
                 return existing, True
+        if cursor.rowcount == 0:
+            raise ValueError("事件 ID 冲突，消息未保存")
         return event, False
 
     def get(self, event_id: str) -> EventRecord | None:
         row = self._conn.execute("SELECT * FROM events WHERE event_id = ?", (event_id,)).fetchone()
         return _event_from_row(row) if row else None
 
-    def find_by_idempotency_key(self, key: str) -> EventRecord | None:
+    def find_by_idempotency_key(self, key: str, scope: Scope) -> EventRecord | None:
         row = self._conn.execute(
-            "SELECT * FROM events WHERE idempotency_key = ?", (key,)
+            "SELECT * FROM events WHERE idempotency_key = ? "
+            "AND user_id = ? AND character_id = ? AND domain = ? "
+            "AND COALESCE(relationship_id, '') = ? AND COALESCE(activity_id, '') = ?",
+            (key, scope.user_id, scope.character_id, scope.domain,
+             scope.relationship_id or "", scope.activity_id or ""),
         ).fetchone()
         return _event_from_row(row) if row else None
 
@@ -310,15 +351,16 @@ class EventRepository:
         limit: int = 50,
     ) -> list[EventRecord]:
         """按事件时间取原始对话。用于「回到原话」的精确回查。"""
+        visible, params = scope_sql(scope)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT * FROM events
-            WHERE user_id = ? AND character_id = ?
+            WHERE {visible}
               AND occurred_at >= ? AND occurred_at < ?
             ORDER BY occurred_at ASC
             LIMIT ?
             """,
-            (scope.user_id, scope.character_id, to_utc_iso(start), to_utc_iso(end), limit),
+            [*params, to_utc_iso(start), to_utc_iso(end), limit],
         ).fetchall()
         return [_event_from_row(row) for row in rows]
 
@@ -426,13 +468,14 @@ class MemoryRepository:
         用 COALESCE(occurred_start, recorded_at)：有的记忆只有记录时间
         （比如「用户今天提到自己十年前搬过家」），不能因为缺事件时间就漏掉。
         """
-        sql = """
+        visible, params = scope_sql(scope)
+        sql = f"""
             SELECT * FROM memories
-            WHERE user_id = ? AND character_id = ?
+            WHERE {visible}
               AND status = 'active'
               AND COALESCE(occurred_start, recorded_at) >= ?
         """
-        params: list[object] = [scope.user_id, scope.character_id, to_utc_iso(since)]
+        params.append(to_utc_iso(since))
 
         if memory_types:
             sql += f" AND memory_type IN ({_placeholders(len(memory_types))})"
@@ -453,19 +496,15 @@ class MemoryRepository:
         limit: int,
     ) -> list[MemoryItem]:
         """按事件时间范围取记忆，用于「明确日期」的精确回查。"""
-        sql = """
+        visible, params = scope_sql(scope)
+        sql = f"""
             SELECT * FROM memories
-            WHERE user_id = ? AND character_id = ?
+            WHERE {visible}
               AND status = 'active'
               AND COALESCE(occurred_start, recorded_at) >= ?
               AND COALESCE(occurred_start, recorded_at) < ?
         """
-        params: list[object] = [
-            scope.user_id,
-            scope.character_id,
-            to_utc_iso(start),
-            to_utc_iso(end),
-        ]
+        params.extend([to_utc_iso(start), to_utc_iso(end)])
 
         if memory_types:
             sql += f" AND memory_type IN ({_placeholders(len(memory_types))})"
@@ -479,27 +518,29 @@ class MemoryRepository:
 
     def list_important(self, scope: Scope, limit: int) -> list[MemoryItem]:
         """按重要度取少量「值得先想起来」的经历，用于 bootstrap 摘要。"""
+        visible, params = scope_sql(scope)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT * FROM memories
-            WHERE user_id = ? AND character_id = ?
+            WHERE {visible}
               AND status = 'active'
               AND memory_type IN ('episodic', 'semantic')
             ORDER BY importance DESC, COALESCE(occurred_start, recorded_at) DESC
             LIMIT ?
             """,
-            (scope.user_id, scope.character_id, limit),
+            [*params, limit],
         ).fetchall()
         return [_memory_from_row(row) for row in rows]
 
     def count_active(self, scope: Scope) -> int:
         """这个角色名下有多少条有效记忆。用来决定「够不够生成摘要」。"""
+        visible, params = scope_sql(scope)
         row = self._conn.execute(
-            """
+            f"""
             SELECT COUNT(*) AS n FROM memories
-            WHERE user_id = ? AND character_id = ? AND status = 'active'
+            WHERE {visible} AND status = 'active'
             """,
-            (scope.user_id, scope.character_id),
+            params,
         ).fetchone()
         return int(row["n"])
 
@@ -508,6 +549,7 @@ class MemoryRepository:
             "UPDATE memories SET status = ?, updated_at = ? WHERE memory_id = ?",
             (status.value, to_utc_iso(now), memory_id),
         )
+        SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
     def close_validity(
         self,
@@ -524,6 +566,7 @@ class MemoryRepository:
             "UPDATE memories SET valid_to = ?, status = ?, updated_at = ? WHERE memory_id = ?",
             (to_utc_iso(valid_to), status.value, to_utc_iso(now), memory_id),
         )
+        SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
     def mark_used(self, memory_ids: Sequence[str], now: datetime) -> None:
         """记录「这些记忆被真正用上了」。
@@ -555,6 +598,8 @@ class MemoryRepository:
             "WHERE memory_id = ? AND status != 'deleted'",
             (to_utc_iso(now), memory_id),
         )
+        if cursor.rowcount:
+            SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
         return cursor.rowcount > 0
 
     def list_by_scope(
@@ -570,11 +615,11 @@ class MemoryRepository:
             statuses: 只取这些状态的记录；None 表示「除已删除之外全部」。
                       去重要求只看 active，纠错/删除则希望覆盖历史记录。
         """
-        sql = """
+        visible, params = scope_sql(scope)
+        sql = f"""
             SELECT * FROM memories
-            WHERE user_id = ? AND character_id = ? AND status != 'deleted'
+            WHERE {visible} AND status != 'deleted'
         """
-        params: list[object] = [scope.user_id, scope.character_id]
 
         if memory_types:
             sql += f" AND memory_type IN ({_placeholders(len(memory_types))})"
@@ -584,15 +629,22 @@ class MemoryRepository:
             sql += f" AND status IN ({_placeholders(len(statuses))})"
             params.extend(status.value for status in statuses)
 
-        if scope.domain:
-            sql += " AND domain = ?"
-            params.append(scope.domain)
-
         sql += " ORDER BY COALESCE(occurred_start, recorded_at) DESC LIMIT ?"
         params.append(limit)
 
         rows = self._conn.execute(sql, params).fetchall()
         return [_memory_from_row(row) for row in rows]
+
+    def list_ids_for_scope(
+        self, scope: Scope, memory_types: list[MemoryType] | None = None
+    ) -> list[str]:
+        """枚举删除范围的全部 ID，不应用检索候选上限。"""
+        visible, params = scope_sql(scope)
+        sql = f"SELECT memory_id FROM memories WHERE {visible} AND status != 'deleted'"
+        if memory_types:
+            sql += f" AND memory_type IN ({_placeholders(len(memory_types))})"
+            params.extend(value.value for value in memory_types)
+        return [row[0] for row in self._conn.execute(sql, params).fetchall()]
 
     def update_content(
         self,
@@ -636,6 +688,7 @@ class MemoryRepository:
         self._conn.execute(
             f"UPDATE memories SET {', '.join(assignments)} WHERE memory_id = ?", params
         )
+        SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
 
 # ---------------------------------------------------------------------------
@@ -691,11 +744,11 @@ class ActivityRepository:
         statuses: tuple[ActivityStatus, ...] = (ActivityStatus.ACTIVE,),
         limit: int = 20,
     ) -> list[Activity]:
-        sql = """
+        visible, params = scope_sql(scope)
+        sql = f"""
             SELECT * FROM activities
-            WHERE user_id = ? AND character_id = ?
+            WHERE {visible}
         """
-        params: list[object] = [scope.user_id, scope.character_id]
 
         if statuses:
             sql += f" AND status IN ({_placeholders(len(statuses))})"
@@ -785,13 +838,14 @@ class CoreRepository:
         """取当前（版本号最大的）快照。
 
         为什么不按 status='active' 过滤？
-        因为可能有人手工把某版本标成 rejected 之后没有新的 active，
-        这时仍应回退到最后一个可用版本，而不是让角色「失忆」。
+        因为某版本被标成 rejected 后可能没有新的 active，
+        这时跳过 rejected，回退到最后一个可用版本。
         """
         row = self._conn.execute(
             """
             SELECT * FROM core_versions
             WHERE user_id = ? AND character_id = ? AND kind = ?
+              AND status != 'rejected'
             ORDER BY core_version DESC
             LIMIT 1
             """,
@@ -832,7 +886,13 @@ class CoreRepository:
         if expected_version is not None and expected_version != current_version:
             raise VersionConflict(expected_version, current_version, f"核心档案({kind.value})")
 
-        next_version = current_version + 1
+        # 被否决的版本仍占据版本号，不能从回退后的可用版本号重新分配。
+        max_row = self._conn.execute(
+            "SELECT COALESCE(MAX(core_version), 0) FROM core_versions "
+            "WHERE user_id = ? AND character_id = ? AND kind = ?",
+            (scope.user_id, scope.character_id, kind.value),
+        ).fetchone()
+        next_version = int(max_row[0]) + 1
 
         if current is not None:
             # 旧版本保留数据，只改状态，方便「这个称呼是什么时候变的」这类追溯
@@ -985,16 +1045,18 @@ class JobRepository:
         self._conn.execute(
             """
             INSERT INTO consolidation_jobs (
-                job_id, job_type, user_id, character_id, activity_id,
+                job_id, job_type, user_id, character_id, relationship_id, activity_id, domain,
                 payload_json, status, attempts, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 job_id,
                 job_type,
                 scope.user_id,
                 scope.character_id,
+                scope.relationship_id,
                 activity_id or scope.activity_id,
+                scope.domain,
                 json.dumps(payload, ensure_ascii=False),
                 JobStatus.PENDING.value,
                 0,
@@ -1056,10 +1118,12 @@ class JobRepository:
         row = self._conn.execute(
             """
             SELECT 1 FROM consolidation_jobs
-            WHERE job_type = ? AND user_id = ? AND character_id = ? AND status = 'pending'
+            WHERE job_type = ? AND user_id = ? AND character_id = ? AND domain = ?
+              AND relationship_id IS ? AND activity_id IS ? AND status = 'pending'
             LIMIT 1
             """,
-            (job_type, scope.user_id, scope.character_id),
+            [job_type, scope.user_id, scope.character_id, scope.domain,
+             scope.relationship_id, scope.activity_id],
         ).fetchone()
         return row is not None
 
@@ -1158,15 +1222,16 @@ class VectorRepository:
         第一版是全量载入内存做暴力检索：本地几百上千条记忆完全够用，
         而且实现简单、没有近似误差。规模上去再换 ANN 索引。
         """
-        sql = """
+        visible, params = scope_sql(scope, "m")
+        sql = f"""
             SELECT v.memory_id, v.vector, m.memory_type
             FROM memory_vectors v
             JOIN memories m ON m.memory_id = v.memory_id
             WHERE v.model = ?
-              AND m.user_id = ? AND m.character_id = ?
+              AND {visible}
               AND m.status IN ('active', 'superseded')
         """
-        params: list[object] = [model, scope.user_id, scope.character_id]
+        params = [model, *params]
 
         if memory_types:
             sql += f" AND m.memory_type IN ({_placeholders(len(memory_types))})"
@@ -1193,7 +1258,7 @@ class VectorRepository:
 class SummaryRepository:
     """主题索引卡的读写。
 
-    upsert 的语义是「更新同一张卡」：主题在角色内唯一，
+        upsert 的语义是「更新同一张卡」：主题在精确生成范围内唯一，
     重建摘要不会产生新的 summary_id，外部引用不会失效。
     """
 
@@ -1208,20 +1273,21 @@ class SummaryRepository:
 
     def get_by_topic(self, scope: Scope, topic: str) -> Summary | None:
         row = self._conn.execute(
-            "SELECT * FROM summaries WHERE user_id = ? AND character_id = ? AND topic = ?",
-            (scope.user_id, scope.character_id, topic),
+            "SELECT * FROM summaries WHERE scope_key = ? AND topic = ?",
+            (_scope_key(scope), topic),
         ).fetchone()
         return _summary_from_row(row) if row else None
 
     def list_active(self, scope: Scope, limit: int = 50) -> list[Summary]:
+        visible, params = scope_sql(scope)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT * FROM summaries
-            WHERE user_id = ? AND character_id = ? AND status = 'active'
+            WHERE {visible} AND status = 'active'
             ORDER BY importance DESC, updated_at DESC
             LIMIT ?
             """,
-            (scope.user_id, scope.character_id, limit),
+            [*params, limit],
         ).fetchall()
         return [_summary_from_row(row) for row in rows]
 
@@ -1272,16 +1338,20 @@ class SummaryRepository:
         self._conn.execute(
             """
             INSERT INTO summaries (
-                summary_id, user_id, character_id, activity_id, topic, digest,
+                summary_id, user_id, character_id, relationship_id, activity_id, domain, scope_key,
+                topic, digest,
                 source_memory_ids_json, source_event_ids_json,
                 span_start, span_end, importance, status, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 summary.summary_id,
                 summary.scope.user_id,
                 summary.scope.character_id,
+                summary.scope.relationship_id,
                 summary.scope.activity_id,
+                summary.scope.domain,
+                _scope_key(summary.scope),
                 summary.topic,
                 summary.digest,
                 _json_list(summary.source_memory_ids),
@@ -1295,6 +1365,18 @@ class SummaryRepository:
             ),
         )
         return summary
+
+    def invalidate_for_memories(self, memory_ids: Sequence[str], now: datetime) -> int:
+        """来源变化立即隐藏摘要；重建前不能继续恢复旧摘要正文。"""
+        changed = set(memory_ids)
+        if not changed:
+            return 0
+        rows = self._conn.execute(
+            "SELECT summary_id, source_memory_ids_json FROM summaries WHERE status = 'active'"
+        ).fetchall()
+        affected = [row["summary_id"] for row in rows
+                    if changed.intersection(_load_list(row["source_memory_ids_json"]))]
+        return self.mark_stale(affected, now)
 
     def mark_stale(self, summary_ids: Sequence[str], now: datetime) -> int:
         """把不再对应任何主题的旧卡标成 stale。

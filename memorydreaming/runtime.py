@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -113,6 +115,9 @@ class MemoryRuntime:
         user_id: str,
         character_id: str,
         activity_id: str | None = None,
+        *,
+        relationship_id: str | None = None,
+        domain: str = "real",
     ) -> BootstrapResult:
         """恢复「我是谁、我们是什么关系、手上还有什么没做完」。
 
@@ -120,7 +125,10 @@ class MemoryRuntime:
         这时返回 recovery_warning，让宿主如实告诉用户恢复失败，
         而不是拿一个临时身份顶上去——后者会让角色在不知不觉中「换了个人」。
         """
-        scope = Scope(user_id=user_id, character_id=character_id)
+        scope = Scope(
+            user_id=user_id, character_id=character_id,
+            relationship_id=relationship_id, domain=domain,
+        )
         identity = self._repos.cores.latest(scope, CoreKind.IDENTITY)
         relationship = self._repos.cores.latest(scope, CoreKind.RELATIONSHIP)
 
@@ -131,8 +139,8 @@ class MemoryRuntime:
         selected: Activity | None = None
         if activity_id:
             selected = self._repos.activities.get(activity_id)
-            if selected is not None and selected.scope.character_id != character_id:
-                # 有人拿别的角色的活动 ID 来查：当作没找到，不泄露存在性
+            if selected is not None and not self._scope_matches(selected.scope, scope):
+                # 显式 ID 仍须检查完整可见范围，不泄露外部活动。
                 selected = None
         elif activities:
             selected = activities[0]
@@ -202,6 +210,8 @@ class MemoryRuntime:
         幂等键命中时不会重复写入，也不会重复入队——宿主可以放心重试。
         """
         activity_id = turn.activity_id or scope.activity_id
+        if turn.activity_id and scope.activity_id and turn.activity_id != scope.activity_id:
+            raise ValueError("消息与作用域指定了不同的活动")
         event_scope = Scope(
             user_id=scope.user_id,
             character_id=scope.character_id,
@@ -225,6 +235,10 @@ class MemoryRuntime:
         )
 
         with self._db.transaction():
+            if activity_id:
+                activity = self._repos.activities.get(activity_id)
+                if activity is None or not self._scope_matches(activity.scope, event_scope):
+                    raise ScopeNotFound("找不到当前作用域中的活动")
             stored, duplicate = self._repos.events.insert(event)
 
             job_id: str | None = None
@@ -340,11 +354,10 @@ class MemoryRuntime:
         """
         core_kind = kind if isinstance(kind, CoreKind) else CoreKind(kind)
         now = self._clock.now()
-        current = self._repos.cores.latest(scope, core_kind)
-        merged = dict(current.payload) if current else {}
-        merged.update(patch)
-
         with self._db.transaction():
+            current = self._repos.cores.latest(scope, core_kind)
+            merged = dict(current.payload) if current else {}
+            merged.update(patch)
             return self._repos.cores.append(
                 scope=scope,
                 kind=core_kind,
@@ -380,6 +393,7 @@ class MemoryRuntime:
         with self._db.transaction():
             if correction.kind == "fix":
                 self._repos.memories.update_status(memory_id, MemoryStatus.RETRACTED, now)
+                self._vectors.delete(memory_id)
                 invalidated = self._invalidate_derived(
                     memory_id, now, being_removed={memory_id}
                 )
@@ -413,23 +427,23 @@ class MemoryRuntime:
         状态置为 deleted（保留审计痕迹），检索与索引都不再返回它，
         依赖它的派生记忆一并失效，避免它换个形式又冒出来。
         """
-        targets = self._resolve_forget_targets(selector)
         now = self._clock.now()
         deleted: list[str] = []
         invalidated: list[str] = []
 
         with self._db.transaction():
+            targets = self._resolve_forget_targets(selector)
             for memory_id in targets:
                 if self._repos.memories.delete(memory_id, now):
                     deleted.append(memory_id)
                     # 向量是派生数据，主记录删除后必须一起清掉，
                     # 否则它还会出现在语义通道的候选里。
                     self._vectors.delete(memory_id)
-                    # 把「本次要删的全部 id」传进去：同一批删除里的互相支持不算数，
-                    # 只有批次之外还活着的来源才能保住一条派生记忆。
-                    invalidated.extend(
-                        self._invalidate_derived(memory_id, now, being_removed=set(targets))
-                    )
+            if deleted:
+                # 整批显式删除完成后统一判断来源，避免遍历顺序改变结果。
+                invalidated = self._invalidate_derived(
+                    deleted[0], now, being_removed=set(deleted)
+                )
 
         return ForgetResult(
             deleted_ids=deleted,
@@ -470,7 +484,7 @@ class MemoryRuntime:
         """执行待处理的抽取任务。
 
         第一版同步执行；真实部署可以把这个方法丢进后台线程或队列 worker，
-        因为任务本身已经落库，进程被杀也不会丢。
+        任务本身已经落库；当前尚无租约，崩溃后 running 任务需要人工恢复。
         """
         return run_pending_jobs(
             db=self._db,
@@ -503,6 +517,8 @@ class MemoryRuntime:
         summary = self._repos.summaries.get(summary_id)
         if summary is None:
             raise ScopeNotFound(f"找不到摘要 {summary_id}")
+        if summary.status != "active":
+            return []
 
         memories = self._repos.memories.fetch_many(summary.source_memory_ids)
         now = self._clock.now()
@@ -518,6 +534,11 @@ class MemoryRuntime:
             )
             for memory in memories.values()
             if memory.status not in (MemoryStatus.RETRACTED, MemoryStatus.DELETED)
+            and self._scope_matches(memory.scope, summary.scope)
+            and not (
+                memory.status is MemoryStatus.SUPERSEDED
+                and self._repos.links.has_relation(memory.memory_id, LinkRelation.PART_OF)
+            )
         ]
         items.sort(key=lambda item: (-item.memory.importance, item.memory.recorded_at))
         return items[:limit]
@@ -536,48 +557,66 @@ class MemoryRuntime:
         它才该消失**。如果一条派生记忆同时由 A 和 B 支撑，删掉 A 不该动它——
         否则删一次来源就会误伤别的证据。
 
-        用广度优先遍历，visited 防止链接成环时死循环。
+        先取受影响子图，再保留仍能连接到外部有效来源的节点。
+        不等长路径和环形依赖都不能凭互相引用充当独立证据。
         """
         removed = set(being_removed or ()) | {memory_id}
-        visited: set[str] = set()
-        queue = [memory_id]
-        invalidated: list[str] = []
-
+        affected: set[str] = set()
+        queue = deque(sorted(removed))
         while queue:
-            current = queue.pop(0)
-            for dependent in self._repos.links.dependents(current):
-                if dependent in visited:
-                    continue
-                visited.add(dependent)
+            for dependent in self._repos.links.dependents(queue.popleft()):
+                if dependent not in affected and dependent not in removed:
+                    affected.add(dependent)
+                    queue.append(dependent)
 
-                # 还有别的父来源活着 → 保留，只当没看见这次删除
-                if self._has_surviving_parent(dependent, removed):
+        supported: set[str] = set()
+        for dependent in affected:
+            item = self._repos.memories.get(dependent)
+            if item is None or item.status in (MemoryStatus.RETRACTED, MemoryStatus.DELETED):
+                continue
+            for parent_id in self._repos.links.parents_of(dependent):
+                if parent_id in affected or parent_id in removed:
                     continue
+                parent = self._repos.memories.get(parent_id)
+                if parent is not None and parent.status not in (
+                    MemoryStatus.RETRACTED, MemoryStatus.DELETED,
+                ):
+                    supported.add(dependent)
+                    break
 
+        queue = deque(sorted(supported))
+        while queue:
+            for dependent in self._repos.links.dependents(queue.popleft()):
+                if dependent not in affected or dependent in supported:
+                    continue
+                item = self._repos.memories.get(dependent)
+                if item is not None and item.status not in (
+                    MemoryStatus.RETRACTED, MemoryStatus.DELETED,
+                ):
+                    supported.add(dependent)
+                    queue.append(dependent)
+
+        invalidated: list[str] = []
+        for dependent in sorted(affected - supported):
+            item = self._repos.memories.get(dependent)
+            if item is not None and item.status not in (
+                MemoryStatus.RETRACTED, MemoryStatus.DELETED,
+            ):
                 self._repos.memories.update_status(dependent, MemoryStatus.RETRACTED, now)
+                self._vectors.delete(dependent)
                 invalidated.append(dependent)
-                queue.append(dependent)
-
         return invalidated
 
-    def _has_surviving_parent(self, memory_id: str, removed: set[str]) -> bool:
-        """这条派生记忆是否还有「没被删除且仍然有效」的父来源。"""
-        parents = self._repos.links.parents_of(memory_id)
-        if not parents:
-            # 没登记来源的派生记录（例如早期数据）无法判断，按保守策略处理：
-            # 不因为「查不到来源」就把它连带删掉。
-            return True
-
-        for parent_id in parents:
-            if parent_id in removed:
-                continue
-            parent = self._repos.memories.get(parent_id)
-            if parent is not None and parent.status not in (
-                MemoryStatus.RETRACTED,
-                MemoryStatus.DELETED,
-            ):
-                return True
-        return False
+    @staticmethod
+    def _scope_matches(actual: Scope, requested: Scope) -> bool:
+        """与仓储相同的可见性规则；可选 ID 仅在指定时收窄范围。"""
+        return (
+            actual.user_id == requested.user_id
+            and actual.character_id == requested.character_id
+            and actual.domain == requested.domain
+            and (requested.relationship_id is None or actual.relationship_id == requested.relationship_id)
+            and (requested.activity_id is None or actual.activity_id == requested.activity_id)
+        )
 
     def _build_replacement(
         self,
@@ -615,14 +654,20 @@ class MemoryRuntime:
     def _resolve_forget_targets(self, selector: ForgetSelector) -> list[str]:
         """把删除选择器解析成具体的记忆 ID 列表。"""
         if selector.memory_ids:
-            return list(dict.fromkeys(selector.memory_ids))
+            ids = list(dict.fromkeys(selector.memory_ids))
+            if selector.scope is None and selector.domain is None and not selector.memory_types:
+                return ids
+            items = self._repos.memories.fetch_many(ids)
+            return [
+                memory_id for memory_id in ids
+                if (item := items.get(memory_id)) is not None
+                and (selector.scope is None or self._scope_matches(item.scope, selector.scope))
+                and (selector.domain is None or item.scope.domain == selector.domain)
+                and (not selector.memory_types or item.memory_type in selector.memory_types)
+            ]
 
         if selector.scope is None:
             raise ValueError("forget 需要 memory_ids 或 scope 之一，不能都为空")
 
-        items = self._repos.memories.list_by_scope(
-            selector.scope, selector.memory_types, limit=1000
-        )
-        if selector.domain:
-            items = [item for item in items if item.scope.domain == selector.domain]
-        return [item.memory_id for item in items]
+        scope = replace(selector.scope, domain=selector.domain) if selector.domain else selector.scope
+        return self._repos.memories.list_ids_for_scope(scope, selector.memory_types)

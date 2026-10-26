@@ -92,7 +92,7 @@ def render_item_line(item: RetrievedItem, tz: tzinfo) -> str:
 
     if memory.scope.domain != "real":
         # 虚构世界的内容必须显式标记，否则很容易被当成真实经历
-        tags.append(f"虚构世界:{memory.domain}")
+        tags.append(f"虚构世界:{memory.scope.domain}")
     if not item.valid_now:
         tags.append("历史值")
     if memory.modality.value in ("intention", "hypothetical", "quoted", "fictional"):
@@ -116,11 +116,10 @@ def render_item_line(item: RetrievedItem, tz: tzinfo) -> str:
     return f"- [{' | '.join(tags)}] {memory.render(200)} ({detail})"
 
 
-def render_retrieval_context(result: RetrievalResult, tz: tzinfo) -> str:
-    """把一次检索结果渲染成文本块，供宿主拼进模型上下文。"""
+def _render_retrieval_context(result: RetrievalResult, tz: tzinfo) -> str:
+    """渲染完整内容；预算估算和最终输出共用同一条路径。"""
     lines: list[str] = []
-    total_tokens = result.trace.token_estimate
-    lines.append(f"【记忆检索结果】{len(result.items)} 条，约 {total_tokens} token")
+    lines.append(f"【记忆检索结果】{len(result.items)} 条")
 
     if result.plan.time_hint is not None:
         hint = result.plan.time_hint
@@ -158,6 +157,21 @@ def render_retrieval_context(result: RetrievalResult, tz: tzinfo) -> str:
         lines.extend(f"- {gap}" for gap in result.gaps)
 
     return _fence(lines)
+
+
+def estimate_retrieval_tokens(result: RetrievalResult, tz: tzinfo) -> int:
+    """估算完整上下文，包含摘要、时间说明、缺口及围栏。"""
+    return estimate_tokens(_render_retrieval_context(result, tz))
+
+
+def render_retrieval_context(result: RetrievalResult, tz: tzinfo) -> str:
+    """输出已限预算的上下文；连固定围栏也放不下时返回空串。
+
+    预算不足的原因仍保存在结构化 result.gaps 中，供宿主展示。
+    最后的检查也保护直接构造或被调用方修改过的 RetrievalResult。
+    """
+    context = _render_retrieval_context(result, tz)
+    return context if estimate_tokens(context) <= result.plan.token_budget else ""
 
 
 def render_bootstrap_context(result: BootstrapResult, tz: tzinfo) -> str:

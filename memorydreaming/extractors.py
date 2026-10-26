@@ -20,6 +20,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from typing import Callable
 
 from .models import (
     EpistemicStatus,
@@ -104,29 +106,53 @@ def _preference_draft(match: re.Match[str]) -> MemoryDraft:
     )
 
 
-_RULES: list[tuple[re.Pattern[str], object]] = [
-    # 顺序有意义：更具体的「以后叫我 X」必须排在通用的「叫我 X」前面
+_RULES: list[tuple[re.Pattern[str], Callable[[re.Match[str]], MemoryDraft]]] = [
+    # 称呼请求与姓名陈述使用互斥规则，避免同一短语同时改写姓名和偏好。
     (
-        re.compile(r"以后叫我\s*(?P<value>[\u4e00-\u9fffA-Za-z]{1,8}?)(?:就行|就好|吧|啦|，|。|！|$)"),
+        re.compile(r"^(?:你)?(?:以后)?叫我\s*(?P<value>[\u4e00-\u9fffA-Za-z]{1,8}?)(?:就行|就好|吧|啦)?$"),
         _address_draft,
     ),
     # 名字也要截断：「叫我林小鸥就好」不能记成「林小鸥就好」
     (
         re.compile(
-            r"(?:我叫|叫我|我的名字是)\s*(?P<value>[\u4e00-\u9fffA-Za-z]{1,8}?)"
-            r"(?:就行|就好|吧|啦|，|。|！|$)"
+            r"^(?:我叫|我的名字是)\s*(?P<value>[\u4e00-\u9fffA-Za-z]{1,8}?)"
+            r"(?:就行|就好|吧|啦)?$"
         ),
         _name_draft,
     ),
-    (re.compile(r"(?:我们约好|说好|答应你)\s*(?P<value>[^。！？]{1,30})"), _commitment_draft),
-    (re.compile(r"(?P<neg>不)?(?:我)?喜欢\s*(?P<value>[^。！？]{1,30})"), _preference_draft),
+    (re.compile(r"^(?:我们约好|说好|答应你)\s*(?P<value>[^。！？]{1,30})$"), _commitment_draft),
+    (re.compile(r"^我(?P<neg>不)?喜欢\s*(?P<value>[^。！？]{1,30})$"), _preference_draft),
 ]
+
+
+# 示例抽取器只接受可以直接识别的自述。复杂语境留给更完整的抽取器，
+# 原始事件始终保留；漏抽可以重建，错误的个人事实却会污染后续交流。
+_UNSAFE_CONTEXT = re.compile(
+    r"[\"'“”‘’「」『』]|如果|假如|假设|倘若|要是|假装|扮演|"
+    r"例如|比如|举例|台词|引文|原话|例句|不是不|是否|会不会|什么|哪里|怎样|"
+    r"(?:^|[，,：:])(?:他|她|它|别人|有人|朋友|同事|妈妈|爸爸|你|作者|角色)"
+    r"[^，,：:]{0,8}(?:说|问|写|表示)"
+)
+
+
+def _declarative_clauses(content: str) -> Iterator[str]:
+    """拒绝引述、假设和疑问句，然后分出简单陈述，避免跨说话者归因。"""
+    for sentence in re.finditer(r"[^。！？!?；;\n]+[。！？!?；;]?", content):
+        text = sentence.group().strip()
+        if _UNSAFE_CONTEXT.search(text):
+            continue
+        if text.endswith(("?", "？")) or re.search(r"(?:吗|么|呢)[。！!]?$", text):
+            continue
+        for clause in re.finditer(r"[^，,]+", text.rstrip("。！？!?；;")):
+            normalized = clause.group().strip()
+            if normalized:
+                yield normalized
 
 
 class RuleBasedExtractor:
     """示例抽取器：只用正则，不依赖模型。"""
 
-    version = "rule-v1"
+    version = "rule-v2"
 
     def extract(self, event: EventRecord) -> list[MemoryDraft]:
         """只处理用户说的话；角色自己的话不作为关于用户的事实来源。"""
@@ -134,8 +160,11 @@ class RuleBasedExtractor:
             return []
 
         drafts: list[MemoryDraft] = []
-        for pattern, builder in _RULES:
-            match = pattern.search(event.content)
-            if match:
-                drafts.append(builder(match))  # type: ignore[operator]
+        for clause_index, clause in enumerate(_declarative_clauses(event.content)):
+            for pattern, builder in _RULES:
+                for match in pattern.finditer(clause):
+                    draft = builder(match)
+                    # 一条消息可包含多个同类型陈述；键由原文中的稳定位置区分。
+                    draft.candidate_key += f":{clause_index}:{match.start()}"
+                    drafts.append(draft)
         return drafts

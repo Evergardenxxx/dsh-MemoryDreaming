@@ -34,7 +34,7 @@ from ..models import (
 )
 from ..storage.database import Database
 from ..summarization import find_summaries
-from .context import estimate_tokens, render_item_line
+from .context import estimate_retrieval_tokens, estimate_tokens, render_item_line
 from .decay import effective_strength
 from .fusion import ChannelHit, FusedCandidate, fuse
 from .keyword import KeywordIndex
@@ -109,7 +109,7 @@ class RetrievalPipeline:
         )
         gaps = self._collect_gaps(selected, plan, hits)
 
-        return RetrievalResult(
+        result = RetrievalResult(
             query_text=query.text,
             plan=plan,
             items=selected,
@@ -117,6 +117,8 @@ class RetrievalPipeline:
             trace=trace,
             gaps=gaps,
         )
+        self._fit_context_budget(result)
+        return result
 
     # -- 通道 -------------------------------------------------------------
 
@@ -131,7 +133,9 @@ class RetrievalPipeline:
         用户问「昨天我们聊了什么」时，答案就该是那几条原始记录，
         先给一张摘要卡反而绕远了。
         """
-        if plan.expansion_mode != "summary_then_expand":
+        # 当前摘要是可变的投影，没有历史版本。即使摘要创建得早，后续重建
+        # 也可能混入 as_of 之后的内容；历史回放只使用逐条校验后的来源记忆。
+        if plan.expansion_mode != "summary_then_expand" or plan.as_of is not None:
             return [], []
 
         hits = find_summaries(self._db, query.scope, plan.query_text, limit=2)
@@ -187,6 +191,7 @@ class RetrievalPipeline:
                 query.scope.character_id,
                 memory_types=[memory_type],
                 limit=budget,
+                scope=query.scope,
             )
             weight = 0.5 + 0.5 * plan.type_scores[memory_type]
             hits.extend(
@@ -296,6 +301,15 @@ class RetrievalPipeline:
             if (
                 memory.scope.user_id != query.scope.user_id
                 or memory.scope.character_id != query.scope.character_id
+                or memory.scope.domain != query.scope.domain
+                or (
+                    query.scope.relationship_id is not None
+                    and memory.scope.relationship_id != query.scope.relationship_id
+                )
+                or (
+                    query.scope.activity_id is not None
+                    and memory.scope.activity_id != query.scope.activity_id
+                )
             ):
                 dropped += 1
                 continue
@@ -370,12 +384,39 @@ class RetrievalPipeline:
             cost = estimate_tokens(render_item_line(item, self._tz))
             if len(selected) >= plan.max_items:
                 break
-            if selected and used_tokens + cost > plan.token_budget:
-                break
+            if used_tokens + cost > plan.token_budget:
+                # 大条目不能突破预算，也不能阻止后面的短条目被考虑。
+                continue
             selected.append(item)
             used_tokens += cost
 
         return selected, used_tokens
+
+    def _fit_context_budget(self, result: RetrievalResult) -> None:
+        """对真正交给模型的完整文本限预算，而非只计算证据正文。
+
+        先去掉可重新查询的摘要卡，再去掉最低排名的证据；结构化缺口
+        始终保留。预算小于固定围栏时，渲染器输出空串并由宿主处理缺口。
+        """
+        budget_gap = "上下文预算不足，部分索引或证据未展示；可增加预算或缩小范围后重查。"
+        while True:
+            cost = estimate_retrieval_tokens(result, self._tz)
+            if cost <= result.plan.token_budget:
+                result.trace.selected = len(result.items)
+                result.trace.token_estimate = cost
+                return
+
+            if budget_gap not in result.gaps:
+                result.gaps.append(budget_gap)
+            if result.summaries:
+                result.summaries.pop()
+            elif result.items:
+                result.items.pop()
+            else:
+                result.trace.selected = 0
+                result.trace.token_estimate = 0
+                result.trace.notes.append("预算小于固定上下文开销，渲染结果为空。")
+                return
 
     # -- 辅助 -------------------------------------------------------------
 

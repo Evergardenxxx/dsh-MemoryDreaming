@@ -91,7 +91,15 @@ class QueryPlanner:
 
         # 向前看的句子里，时间词指向「现在」而不是「事件发生的时候」，
         # 所以把它降级成软提示：仍然显示给调用方看，但不作为过滤条件。
-        if time_hint is not None and time_hint.hard and _is_prospective(query.text):
+        # 仅「今天接着讲」里的今天指说话时刻。调用方给定的范围，以及
+        # 「继续查昨天/10月3日的约定」等事件日期必须保持硬约束。
+        if (
+            query.time_range is None
+            and time_hint is not None
+            and time_hint.hard
+            and time_hint.label in {"今天", "今日", "今天早上", "今天下午", "今晚"}
+            and _is_prospective(query.text)
+        ):
             time_hint = replace(time_hint, hard=False)
 
         type_scores = self._score_types(query.text, time_hint, now)
