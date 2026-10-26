@@ -36,7 +36,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部测试（当前 320 项）
+python -m unittest                # 跑全部测试（当前 322 项）
 python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 python -X utf8 examples/core_proposal.py
 ```
