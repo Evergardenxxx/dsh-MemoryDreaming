@@ -110,7 +110,14 @@ _RULES: list[tuple[re.Pattern[str], object]] = [
         re.compile(r"以后叫我\s*(?P<value>[\u4e00-\u9fffA-Za-z]{1,8}?)(?:就行|就好|吧|啦|，|。|！|$)"),
         _address_draft,
     ),
-    (re.compile(r"(?:我叫|叫我|我的名字是)\s*(?P<value>[\u4e00-\u9fff]{1,6})"), _name_draft),
+    # 名字也要截断：「叫我林小鸥就好」不能记成「林小鸥就好」
+    (
+        re.compile(
+            r"(?:我叫|叫我|我的名字是)\s*(?P<value>[\u4e00-\u9fffA-Za-z]{1,8}?)"
+            r"(?:就行|就好|吧|啦|，|。|！|$)"
+        ),
+        _name_draft,
+    ),
     (re.compile(r"(?:我们约好|说好|答应你)\s*(?P<value>[^。！？]{1,30})"), _commitment_draft),
     (re.compile(r"(?P<neg>不)?(?:我)?喜欢\s*(?P<value>[^。！？]{1,30})"), _preference_draft),
 ]

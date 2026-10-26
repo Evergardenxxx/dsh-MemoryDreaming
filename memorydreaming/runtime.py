@@ -380,7 +380,9 @@ class MemoryRuntime:
         with self._db.transaction():
             if correction.kind == "fix":
                 self._repos.memories.update_status(memory_id, MemoryStatus.RETRACTED, now)
-                invalidated = self._invalidate_derived(memory_id, now)
+                invalidated = self._invalidate_derived(
+                    memory_id, now, being_removed={memory_id}
+                )
                 return CorrectionResult(
                     old_memory=old,
                     invalidated_derived=invalidated,
@@ -423,7 +425,11 @@ class MemoryRuntime:
                     # 向量是派生数据，主记录删除后必须一起清掉，
                     # 否则它还会出现在语义通道的候选里。
                     self._vectors.delete(memory_id)
-                    invalidated.extend(self._invalidate_derived(memory_id, now))
+                    # 把「本次要删的全部 id」传进去：同一批删除里的互相支持不算数，
+                    # 只有批次之外还活着的来源才能保住一条派生记忆。
+                    invalidated.extend(
+                        self._invalidate_derived(memory_id, now, being_removed=set(targets))
+                    )
 
         return ForgetResult(
             deleted_ids=deleted,
@@ -518,13 +524,21 @@ class MemoryRuntime:
 
     # -- 内部实现 ---------------------------------------------------------
 
-    def _invalidate_derived(self, memory_id: str, now: datetime) -> list[str]:
-        """把依赖某条记忆的派生记录标成 retracted。
+    def _invalidate_derived(
+        self,
+        memory_id: str,
+        now: datetime,
+        being_removed: set[str] | None = None,
+    ) -> list[str]:
+        """把「失去全部来源支持」的派生记录标成 retracted。
+
+        规则取自 Zep 的 remove_episode：**只有当一个事实的所有父来源都没了，
+        它才该消失**。如果一条派生记忆同时由 A 和 B 支撑，删掉 A 不该动它——
+        否则删一次来源就会误伤别的证据。
 
         用广度优先遍历，visited 防止链接成环时死循环。
-        第一版只做「失效」，不做「重建」：重建需要抽取器参与，
-        属于整理任务的职责，放在 consolidation 里更合适。
         """
+        removed = set(being_removed or ()) | {memory_id}
         visited: set[str] = set()
         queue = [memory_id]
         invalidated: list[str] = []
@@ -535,11 +549,35 @@ class MemoryRuntime:
                 if dependent in visited:
                     continue
                 visited.add(dependent)
+
+                # 还有别的父来源活着 → 保留，只当没看见这次删除
+                if self._has_surviving_parent(dependent, removed):
+                    continue
+
                 self._repos.memories.update_status(dependent, MemoryStatus.RETRACTED, now)
                 invalidated.append(dependent)
                 queue.append(dependent)
 
         return invalidated
+
+    def _has_surviving_parent(self, memory_id: str, removed: set[str]) -> bool:
+        """这条派生记忆是否还有「没被删除且仍然有效」的父来源。"""
+        parents = self._repos.links.parents_of(memory_id)
+        if not parents:
+            # 没登记来源的派生记录（例如早期数据）无法判断，按保守策略处理：
+            # 不因为「查不到来源」就把它连带删掉。
+            return True
+
+        for parent_id in parents:
+            if parent_id in removed:
+                continue
+            parent = self._repos.memories.get(parent_id)
+            if parent is not None and parent.status not in (
+                MemoryStatus.RETRACTED,
+                MemoryStatus.DELETED,
+            ):
+                return True
+        return False
 
     def _build_replacement(
         self,

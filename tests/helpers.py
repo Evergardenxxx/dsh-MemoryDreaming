@@ -75,6 +75,7 @@ class RuntimeTestCase(unittest.TestCase):
         occurred_at: datetime | None = None,
         importance: float = 0.5,
         dedupe_key: str | None = None,
+        source_speaker: str | None = "user",
         **kwargs: object,
     ) -> MemoryItem | None:
         """直接往库里塞一条记忆，跳过抽取流程，便于单独测检索。"""
@@ -90,6 +91,7 @@ class RuntimeTestCase(unittest.TestCase):
             memory_type=memory_type,
             scope=self.scope,
             body=body,
+            source_speaker=source_speaker,
             occurred_start=moment,
             recorded_at=moment,
             importance=importance,

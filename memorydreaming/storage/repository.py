@@ -922,6 +922,21 @@ class LinkRepository:
         ).fetchall()
         return [row[0] for row in rows]
 
+    def parents_of(self, memory_id: str) -> list[str]:
+        """这条记忆是从哪些记忆派生出来的。
+
+        删除时用它回答一个关键问题：「删掉这个来源之后，还有别的来源撑着它吗？」
+        参考 Zep 的 remove_episode 规则——只有所有父来源都没了，派生事实才该消失。
+        """
+        rows = self._conn.execute(
+            """
+            SELECT to_memory_id FROM memory_links
+            WHERE from_memory_id = ? AND relation = 'derived_from'
+            """,
+            (memory_id,),
+        ).fetchall()
+        return [row[0] for row in rows]
+
     def has_relation(self, from_memory_id: str, relation: LinkRelation) -> bool:
         """这条记忆是否挂着某种关系。
 
@@ -995,44 +1010,43 @@ class JobRepository:
         now: datetime,
         job_types: Sequence[str] | None = None,
     ) -> list[JobRecord]:
-        """取出待处理任务并标记为 running。
+        """原子地取出待处理任务并标记为 running。
+
+        用一个 `UPDATE ... RETURNING` 完成「挑选 + 占位」：
+        先 SELECT 再逐条 UPDATE 的写法在两个进程同时取任务时会重复领取，
+        而单条 UPDATE 的 WHERE 子查询在 SQLite 里是原子的。
+        （SQLite 3.35+ 支持 RETURNING，本项目要求 3.53 实测可用。）
 
         参数:
             job_types: 只取这几类任务；None 表示不限。
                        抽取任务需要抽取器，去重任务不需要——
                        调用方可以据此只领自己能处理的那部分。
-
-        注意：这是「单进程」版本。多进程部署时应当换成
-        `UPDATE ... RETURNING` + 事务锁，避免两个 worker 抢到同一条任务。
         """
         sql = """
-            SELECT * FROM consolidation_jobs
-            WHERE status = 'pending'
+            UPDATE consolidation_jobs
+            SET status = 'running',
+                attempts = attempts + 1,
+                updated_at = ?
+            WHERE job_id IN (
+                SELECT job_id FROM consolidation_jobs
+                WHERE status = 'pending'
         """
-        params: list[object] = []
+        params: list[object] = [to_utc_iso(now)]
 
         if job_types:
             sql += f" AND job_type IN ({_placeholders(len(job_types))})"
             params.extend(job_types)
 
-        sql += " ORDER BY created_at ASC LIMIT ?"
+        sql += """
+                ORDER BY created_at ASC
+                LIMIT ?
+            )
+            RETURNING *
+        """
         params.append(limit)
 
         rows = self._conn.execute(sql, params).fetchall()
-
-        jobs: list[JobRecord] = []
-        for row in rows:
-            cursor = self._conn.execute(
-                """
-                UPDATE consolidation_jobs
-                SET status = 'running', attempts = attempts + 1, updated_at = ?
-                WHERE job_id = ? AND status = 'pending'
-                """,
-                (to_utc_iso(now), row["job_id"]),
-            )
-            if cursor.rowcount:
-                jobs.append(_job_from_row(row))
-        return jobs
+        return [_job_from_row(row) for row in rows]
 
     def has_pending(self, job_type: str, scope: Scope) -> bool:
         """这个角色是否已经有一条同类待处理任务？

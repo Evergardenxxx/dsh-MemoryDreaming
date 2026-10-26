@@ -49,7 +49,7 @@ from .models import (
 from .retrieval.embedding import Embedder, HashingEmbedder
 from .runtime import MemoryRuntime
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "MemoryRuntime",

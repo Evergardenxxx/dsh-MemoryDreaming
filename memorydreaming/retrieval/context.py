@@ -34,6 +34,24 @@ _FENCE_HINT = (
 _FENCE_CLOSE = "</memory-context>"
 
 
+# 指令性措辞：记忆里出现这些说法时，渲染时加警示标签。
+# 这是「spotlighting / 数据标记」思路的简化版——不能阻止注入，
+# 但能让模型和调试者一眼看到「这条历史原话长得像命令」。
+_INSTRUCTION_PATTERNS = re.compile(
+    r"(忽略|无视|忘记)(之前|以上|前面|所有)"
+    r"|从现在起|从现在开始|你必须|你只能|不要告诉"
+    r"|<\|?\w+\|?>|system\s*:|assistant\s*:",
+    re.IGNORECASE,
+)
+
+_SPEAKER_LABELS = {"user": "用户", "character": "角色", "system": "系统"}
+
+
+def _looks_instructional(text: str) -> bool:
+    """这段正文是否包含指令性措辞（历史原话里出现也算）。"""
+    return bool(_INSTRUCTION_PATTERNS.search(text))
+
+
 def _fence(lines: list[str]) -> str:
     """给上下文加围栏。所有对外渲染都必须经过这里。"""
     return "\n".join([_FENCE_OPEN, _FENCE_HINT, *lines, _FENCE_CLOSE])
@@ -80,8 +98,16 @@ def render_item_line(item: RetrievedItem, tz: tzinfo) -> str:
     if memory.modality.value in ("intention", "hypothetical", "quoted", "fictional"):
         tags.append(f"模态:{memory.modality.value}")
 
+    if _looks_instructional(memory.body_text):
+        # 标出来而不是藏起来：它仍然是证据（用户确实说过这句话），
+        # 但读的人要立刻知道「这句话是在下指令，不是在陈述事实」。
+        tags.append("⚠含指令性措辞")
+
     source = ",".join(memory.source_event_ids) if memory.source_event_ids else "无来源"
+    speaker = _SPEAKER_LABELS.get(memory.source_speaker or "", memory.source_speaker or "")
     detail = f"id={memory.memory_id}; 来源={source}"
+    if speaker:
+        detail += f"; 说话者={speaker}"
     if memory.valid_to is not None:
         detail += f"; 有效期至 {_fmt_moment(memory.valid_to, tz)}"
     if item.note:

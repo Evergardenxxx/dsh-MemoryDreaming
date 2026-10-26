@@ -32,6 +32,7 @@ from .models import (
     MemoryDraft,
     MemoryItem,
     MemoryStatus,
+    MemoryType,
     Scope,
     new_id,
 )
@@ -44,6 +45,16 @@ from .storage.repository import JobRecord
 # 有效记忆少于这个数就不生成主题摘要：两三条记忆凑不出主题，
 # 生成出来的「摘要」只是换句话重复一遍，还会挤占检索预算。
 SUMMARY_TRIGGER_MEMORIES = 4
+
+# 单值谓词：同一个主体身上，这个属性同时只能有一个当前值。
+#
+# 这是从 Zep/Graphiti 学来的「写时失效」思路的规则版：
+# 新事实与旧事实冲突时，不删除旧的，而是**关闭它的有效期**并写新值。
+# 判断「是否冲突」本来应该由模型做（Graphiti 就是这么做的），
+# 没有模型时用一份单值谓词表 + 否定词检测，覆盖最常见的几类。
+SINGLE_VALUED_PREDICATES = {
+    "名字", "称呼", "住在", "住在哪", "生日", "年龄", "职业", "家乡", "手机号", "血型",
+}
 
 # 去重的默认相似度阈值：两条记忆的字符二元组重合度达到 85% 就视为同一件事。
 # 调高的后果是漏合并（同一件事留两条），调低则可能把「相关但不是同一件」的两条
@@ -172,6 +183,13 @@ def _run_extract(
     with db.transaction():
         for draft in drafts:
             memory = _build_memory(draft, event, clock)
+
+            # 写时冲突消解：先把「这条新事实会让哪条旧事实过期」找出来。
+            # 注意顺序——必须先算冲突、再插入，这样新记录能带上 supersedes_id。
+            conflicts = _find_conflicts(repos, memory)
+            if conflicts:
+                memory.supersedes_id = conflicts[0].memory_id
+
             dedupe_key = f"{event.event_id}:{extractor.version}:{draft.candidate_key}"
             inserted = repos.memories.insert(
                 memory,
@@ -184,12 +202,77 @@ def _run_extract(
                 continue
 
             created += 1
+
+            # 旧事实不被删除，只关闭有效期：历史仍然可查（Zep 的双时间模型）
+            for old in conflicts:
+                repos.memories.close_validity(
+                    old.memory_id,
+                    memory.occurred_start or now,
+                    now,
+                )
+                repos.links.add(memory.memory_id, old.memory_id, LinkRelation.SUPERSEDES, now)
             # 向量索引是派生数据，和主记录分开写：即使索引失败，
             # 记忆本身也已经落库，下次 rebuild 就能补上。
             if vector_index is not None:
                 vector_index.index_memory(memory, now)
 
     return created, duplicates
+
+
+def _find_conflicts(repos, candidate: MemoryItem) -> list[MemoryItem]:
+    """找出会被这条新事实「顶掉」的旧记忆。
+
+    只处理语义记忆，因为只有它有明确的三元组结构。两条冲突规则：
+
+    1. 单值谓词 + 同一主体 + 不同客体 → 冲突。
+       「我住在北京」之后说「我住在上海」，北京那条必须失效，
+       否则检索会两句话都拿出来。
+    2. 同一客体的否定翻转 → 冲突。
+       「我喜欢猫」之后说「我不喜欢猫」，这是直接推翻，不是并列偏好。
+
+    其余情况一律不冲突：「喜欢猫」和「喜欢狗」可以同时成立，
+    这正是 Mem0 现行实现强调的「历史是时间线，不是一份可覆盖的档案」。
+    """
+    if candidate.memory_type is not MemoryType.SEMANTIC:
+        return []
+
+    body = candidate.body
+    subject = str(body.get("subject", "")).strip()
+    predicate = str(body.get("predicate", "")).strip()
+    obj = str(body.get("obj", "")).strip()
+    if not subject or not predicate:
+        return []
+
+    existing = repos.memories.list_by_scope(
+        candidate.scope,
+        memory_types=[MemoryType.SEMANTIC],
+        limit=200,
+        statuses=(MemoryStatus.ACTIVE,),
+    )
+
+    conflicts: list[MemoryItem] = []
+    for old in existing:
+        old_body = old.body
+        if str(old_body.get("subject", "")).strip() != subject:
+            continue
+
+        old_predicate = str(old_body.get("predicate", "")).strip()
+        old_obj = str(old_body.get("obj", "")).strip()
+
+        if old_predicate == predicate:
+            if old_obj == obj:
+                continue  # 一模一样，交给去重处理
+            if predicate in SINGLE_VALUED_PREDICATES:
+                conflicts.append(old)
+        elif _is_negation(predicate, old_predicate) and old_obj == obj:
+            conflicts.append(old)
+
+    return conflicts
+
+
+def _is_negation(left: str, right: str) -> bool:
+    """判断两个谓词是不是「肯定 / 否定」的关系。"""
+    return left == f"不{right}" or right == f"不{left}"
 
 
 def _enqueue_follow_up(db: Database, job: JobRecord, clock: Clock) -> None:
