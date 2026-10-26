@@ -66,7 +66,7 @@ dedupe_key = event_id + ':' + extractor_version + ':' + candidate_key
 
 `candidate_key` 必须由规范化内容与来源位置稳定生成，不能是每次随机 UUID 或候选数组下标。目标引入独立稳定 `assertion_key`，关联语义相同候选和遗忘标记；提取器版本升级不会成为新增证据。语义规范化有歧义时保留候选或隔离审核，不能仅按词面相近自动合并。
 
-模型输出重试规则：先按 JSON Schema 和语义校验；至多一次格式修复请求，仍不合格即记录任务失败并走队列退避。当前 `LLMExtractor` 提供不绑定供应商的 callable 适配器，优先传入 `EXTRACTION_SCHEMA`，也兼容只接收 prompt 的 provider；它只解析候选，不接受 event_id、scope、speaker 等权限字段。模型置信度只代表生成器自评，不等于事实概率。无模型服务时继续规则基线，明确报告能力下降。
+模型输出重试规则：先按 JSON Schema 和语义校验；至多一次格式修复请求，仍不合格即记录任务失败并走队列退避。当前 `DeepSeekExtractor` 使用 DeepSeek 的 OpenAI 兼容 `chat/completions`、`response_format=json_object` 和 `DEEPSEEK_API_KEY`，底层解析器只接受候选，不接受 event_id、scope、speaker 等权限字段。模型置信度只代表生成器自评，不等于事实概率。没有 DeepSeek 凭据时继续规则基线，明确报告能力下降。
 
 当前工程实现补充一层 `MemoryFormationPolicy`：在 `_build_memory` 之前对整批候选执行 fail-closed 校验。它要求四类正文分别满足 `working: goal/open_loops`、`episodic: what_happened`、`semantic: subject/predicate/obj`、`procedural: trigger/steps`，并校验候选键、importance、来源说话者和列表字段。整批有一条不合法时任务不提交任何候选，由租约重试；这条策略只保证结构和来源边界，不把模型自评置信度当成事实概率。
 

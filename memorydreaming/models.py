@@ -691,6 +691,7 @@ class ForgetSelector:
 
     reason: str = ""
     memory_ids: list[str] | None = None
+    event_ids: list[str] | None = None
     scope: Scope | None = None
     memory_types: list[MemoryType] | None = None
     domain: str | None = None
@@ -706,6 +707,7 @@ class ForgetResult:
     tombstone_ids: list[str] = field(default_factory=list)
     core_fields_removed: list[str] = field(default_factory=list)
     conservative_event_ids: list[str] = field(default_factory=list)
+    forgotten_event_ids: list[str] = field(default_factory=list)
     erasure_level: str = "logical_suppressed"
 
 

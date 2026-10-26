@@ -137,7 +137,8 @@ class ViewReader:
 
     def _event(self, target: str) -> RecordView:
         item = self.repos.events.get(target)
-        if item is None or not self.visible(item.scope) or target in self.excluded:
+        if (item is None or not self.visible(item.scope) or target in self.excluded
+                or self.repos.forgetting.is_event_forgotten(target)):
             raise forbidden()
         rows = self.runtime.db.connection.execute(
             "SELECT s.span_start,s.span_end,t.scope_key FROM tombstone_sources s "

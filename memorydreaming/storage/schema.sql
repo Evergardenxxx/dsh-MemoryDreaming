@@ -104,6 +104,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_scope
     ON events (user_id, character_id, domain,
                COALESCE(relationship_id, ''), COALESCE(activity_id, ''), idempotency_key);
 
+-- 事件级遗忘账本。正文行保留以维护外键和审计结构，但对外读取、重新抽取
+-- 和来源支持都必须先检查这张表；物理备份/供应商历史清理属于更高等级操作。
+CREATE TABLE IF NOT EXISTS forgotten_events (
+    event_id    TEXT PRIMARY KEY,
+    scope_key   TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_forgotten_events_scope ON forgotten_events (scope_key);
+
 -- ----------------------------------------------------------------------------
 -- 四类记忆：共用一张表
 -- ----------------------------------------------------------------------------

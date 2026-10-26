@@ -49,7 +49,13 @@ from .models import (
 from .retrieval.embedding import Embedder, HashingEmbedder
 from .runtime import MemoryRuntime
 from .host import HostAdapter, MemorySession, PreparedTurn, SessionBinding
-from .llm_extractor import EXTRACTION_SCHEMA, LLMExtractionError, LLMExtractor
+from .llm_extractor import (
+    EXTRACTION_SCHEMA,
+    DeepSeekClient,
+    DeepSeekExtractor,
+    LLMExtractionError,
+    LLMExtractor,
+)
 from .formation import MemoryFormationPolicy
 from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 from .proposals import CoreProposalPolicy
@@ -95,6 +101,8 @@ __all__ = [
     "ForgetSelector",
     "ForgetResult",
     "LLMExtractor",
+    "DeepSeekClient",
+    "DeepSeekExtractor",
     "LLMExtractionError",
     "EXTRACTION_SCHEMA",
     "MemoryFormationPolicy",

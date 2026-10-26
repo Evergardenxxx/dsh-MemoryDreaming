@@ -27,6 +27,7 @@ from .config import Settings
 from .demo import run_demo
 from .evaluation import run_evaluation
 from .extractors import RuleBasedExtractor
+from .llm_extractor import DeepSeekExtractor
 from .models import ForgetSelector, Scope, Turn
 from .retrieval.context import render_bootstrap_context, render_retrieval_context
 from .runtime import MemoryRuntime
@@ -95,6 +96,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="每轮记忆消息预算，默认 1200")
     bridge.add_argument("--auto-consolidation", action="store_true",
                         help="启动后台记忆整理器；事件入队后自动抽取、去重和摘要")
+    bridge.add_argument("--extractor", choices=("rules", "deepseek"), default="rules",
+                        help="后台抽取器；deepseek 从 DEEPSEEK_API_KEY 读取凭据")
     return parser
 
 
@@ -103,9 +106,11 @@ def _open_runtime(args: argparse.Namespace) -> MemoryRuntime:
     if args.db:
         settings = settings.with_db(args.db)
     extractor = None
-    if getattr(args, "command", None) == "bridge" and getattr(args, "auto_consolidation", False):
+    if getattr(args, "command", None) == "bridge" and (
+        getattr(args, "auto_consolidation", False) or getattr(args, "extractor", "rules") == "deepseek"
+    ):
         settings = replace(settings, auto_consolidation=True)
-        extractor = RuleBasedExtractor()
+        extractor = DeepSeekExtractor.from_env() if args.extractor == "deepseek" else RuleBasedExtractor()
     return MemoryRuntime(settings, consolidation_extractor=extractor)
 
 

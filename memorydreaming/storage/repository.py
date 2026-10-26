@@ -365,6 +365,14 @@ class EventRepository:
         row = self._conn.execute("SELECT * FROM events WHERE event_id = ?", (event_id,)).fetchone()
         return _event_from_row(row) if row else None
 
+    def redact(self, event_id: str) -> bool:
+        """逻辑擦除事件正文，保留事件 ID 以维护来源和投递外键。"""
+        cursor = self._conn.execute(
+            "UPDATE events SET content = ? WHERE event_id = ?",
+            ("[已删除事件]", event_id),
+        )
+        return cursor.rowcount > 0
+
     def find_by_idempotency_key(self, key: str, scope: Scope) -> EventRecord | None:
         row = self._conn.execute(
             "SELECT * FROM events WHERE idempotency_key = ? "
@@ -900,6 +908,17 @@ class ForgetRepository:
             "ON CONFLICT(scope_key) DO UPDATE SET epoch=epoch+1", (_scope_key(scope),),
         )
 
+    def mark_event(self, event_id: str, scope: Scope, now: datetime, reason: str = "") -> None:
+        self._conn.execute(
+            "INSERT OR IGNORE INTO forgotten_events(event_id,scope_key,reason,created_at) VALUES (?,?,?,?)",
+            (event_id, _scope_key(scope), reason[:500], to_utc_iso(now)),
+        )
+
+    def is_event_forgotten(self, event_id: str) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM forgotten_events WHERE event_id = ?", (event_id,)
+        ).fetchone() is not None
+
     def suppress(self, item: MemoryItem, now: datetime) -> str:
         key = self.fingerprint(assertion_material(item))
         self._conn.execute(
@@ -964,6 +983,8 @@ class ForgetRepository:
         ).fetchone():
             return True
         for ref in refs:
+            if self.is_event_forgotten(ref):
+                return True
             memory = MemoryRepository(self._conn).get(ref)
             if memory is not None:
                 if memory.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED) or self.is_suppressed(memory):
@@ -1366,6 +1387,28 @@ class JobRepository:
              scope.relationship_id, scope.activity_id],
         ).fetchone()
         return row is not None
+
+    def cancel_event(self, event_id: str, now: datetime) -> int:
+        """取消指定事件的抽取任务；运行中的 worker 会被租约校验隔离。"""
+        rows = self._conn.execute(
+            "SELECT job_id,payload_json,status FROM consolidation_jobs "
+            "WHERE job_type='extract' AND status IN ('pending','running')"
+        ).fetchall()
+        cancelled = 0
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if payload.get("event_id") != event_id:
+                continue
+            cursor = self._conn.execute(
+                "UPDATE consolidation_jobs SET status='done', claim_token=NULL, lease_until=NULL, "
+                "last_error=?, updated_at=? WHERE job_id=? AND status IN ('pending','running')",
+                ("event forgotten", to_utc_iso(now), row["job_id"]),
+            )
+            cancelled += cursor.rowcount
+        return cancelled
 
     def assert_owned(self, job_id: str, claim_token: str, now: datetime) -> None:
         row = self._conn.execute(

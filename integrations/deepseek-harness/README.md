@@ -11,6 +11,8 @@
 
 插件使用 `C:\Python314\python.exe` 在本地启动一个受控 JSONL 桥接进程，并把身份绑定为 `u1 / c1 / r1`。数据库位于仓库的 `.memorydreaming/deepseek-harness.db`，不会写入 Harness profile 目录。桥接协议不注册模型工具，也不把 MCP schema 放入上下文；默认同时启动独立连接的后台整理器，自动处理抽取、去重和摘要。
 
+抽取器默认是零依赖规则版。若要启用 DeepSeek 抽取，在插件配置中设置 `extractor: "deepseek"`，并在 Harness 进程环境中提供 `DEEPSEEK_API_KEY`；可选配置 `MEMORYDREAMING_DEEPSEEK_MODEL`、`MEMORYDREAMING_DEEPSEEK_BASE_URL`、`MEMORYDREAMING_DEEPSEEK_TIMEOUT` 和 `MEMORYDREAMING_DEEPSEEK_MAX_TOKENS`。
+
 ## 安装
 
 在 DeepSeek Harness 的插件管理器中安装本目录的绝对路径。安装后重载或重启应用。首次启动会自动创建数据库文件；插件在每个用户回合开始时调用 `HostAdapter.prepare_turn` 注入有限预算的身份、关系和相关记忆，在回合结束时调用 `after_delivery` 保存实际显示的助手回复。

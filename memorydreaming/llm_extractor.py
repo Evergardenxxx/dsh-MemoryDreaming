@@ -1,11 +1,8 @@
-"""面向外部 LLM 的结构化记忆抽取适配器。
+"""DeepSeek 结构化记忆抽取适配器。
 
-本模块不绑定任何供应商 SDK。调用方只需提供一个 callable：
-
-    provider(prompt: str) -> str | dict
-
-如果使用支持 JSON Schema 的模型，也可以接收第二个 ``schema`` 关键字参数；
-适配器会优先尝试该签名，避免把 OpenAI/DeepSeek 等 SDK 写进核心引擎。
+核心只接入 DeepSeek：使用其 OpenAI 兼容 ``chat/completions`` 接口，
+通过 JSON object 模式和提示词约束返回候选。解析器仍保持可注入 callable，
+方便测试而不把 SDK 引入项目；生产调用请使用 ``DeepSeekExtractor``。
 模型只能返回候选，不能提供 event_id、speaker、scope 或权限字段。
 """
 
@@ -13,6 +10,9 @@ from __future__ import annotations
 
 import json
 import inspect
+import os
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -49,6 +49,102 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
 
 class LLMExtractionError(ValueError):
     """模型返回不可接受候选时抛出的可重试错误。"""
+
+
+class DeepSeekClient:
+    """DeepSeek 官方 OpenAI 兼容接口的零依赖客户端。"""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = "deepseek-chat",
+        base_url: str = "https://api.deepseek.com",
+        timeout: float = 30.0,
+        max_tokens: int = 1200,
+        opener: Any | None = None,
+    ) -> None:
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ValueError("DeepSeek API key 不能为空")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("DeepSeek model 不能为空")
+        if not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")):
+            raise ValueError("DeepSeek base_url 必须是 http(s) URL")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise ValueError("DeepSeek timeout 必须为正数")
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 128:
+            raise ValueError("DeepSeek max_tokens 必须至少为 128")
+        self.api_key = api_key.strip()
+        self.model = model.strip()
+        self.base_url = base_url.rstrip("/")
+        self.timeout = float(timeout)
+        self.max_tokens = max_tokens
+        self._opener = opener or urllib.request.urlopen
+
+    @classmethod
+    def from_env(cls) -> "DeepSeekClient":
+        raw_timeout = os.environ.get("MEMORYDREAMING_DEEPSEEK_TIMEOUT", "30")
+        raw_tokens = os.environ.get("MEMORYDREAMING_DEEPSEEK_MAX_TOKENS", "1200")
+        try:
+            timeout = float(raw_timeout)
+            max_tokens = int(raw_tokens)
+        except ValueError as exc:
+            raise ValueError("DeepSeek timeout/max_tokens 环境变量格式错误") from exc
+        return cls(
+            os.environ.get("DEEPSEEK_API_KEY", ""),
+            model=os.environ.get("MEMORYDREAMING_DEEPSEEK_MODEL", "deepseek-chat"),
+            base_url=os.environ.get("MEMORYDREAMING_DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            timeout=timeout,
+            max_tokens=max_tokens,
+        )
+
+    def __call__(self, prompt: str, *, schema: dict[str, Any]) -> str:
+        # DeepSeek 的 JSON object 模式需要在 prompt 中明确要求 JSON；
+        # 具体字段 schema 同时作为提示的一部分发送，避免依赖供应商私有 SDK。
+        request_body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "你只能输出一个 JSON object，不要输出 Markdown。"},
+                {"role": "user", "content": prompt + "\nJSON schema:\n" + json.dumps(schema, ensure_ascii=False)},
+            ],
+            "temperature": 0,
+            "max_tokens": self.max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        request = urllib.request.Request(
+            self.base_url + "/chat/completions",
+            data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        response = None
+        try:
+            response = self._opener(request, timeout=self.timeout)
+            raw = response.read(2 * 1024 * 1024)
+            payload = json.loads(raw.decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise LLMExtractionError("DeepSeek 服务暂时不可用，请稍后重试") from exc
+        except (UnicodeDecodeError, ValueError, TypeError) as exc:
+            raise LLMExtractionError("DeepSeek 返回了不可解析的响应") from exc
+        finally:
+            if response is not None:
+                response.close()
+
+        if not isinstance(payload, dict):
+            raise LLMExtractionError("DeepSeek 返回格式错误")
+        if payload.get("error") is not None:
+            raise LLMExtractionError("DeepSeek 请求被拒绝或额度不足")
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMExtractionError("DeepSeek 响应缺少 choices.message.content") from exc
+        if not isinstance(content, str) or not content.strip():
+            raise LLMExtractionError("DeepSeek 没有返回抽取内容")
+        return content.strip()
 
 
 def _moment(value: Any, name: str) -> datetime | None:
@@ -177,4 +273,17 @@ class LLMExtractor:
                 source_span=source_span,
             ))
         return drafts
+
+
+class DeepSeekExtractor(LLMExtractor):
+    """使用 DeepSeek chat 模型的生产抽取器。"""
+
+    def __init__(self, client: DeepSeekClient | None = None, **client_kwargs: Any) -> None:
+        client = client or DeepSeekClient(**client_kwargs)
+        super().__init__(client, version=f"deepseek:{client.model}:v1")
+        self.client = client
+
+    @classmethod
+    def from_env(cls) -> "DeepSeekExtractor":
+        return cls(client=DeepSeekClient.from_env())
 

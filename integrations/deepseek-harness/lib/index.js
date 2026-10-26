@@ -57,6 +57,7 @@ class BridgeClient {
     const repoPath = this.config.repoPath ?? REPO_ROOT
     const dbPath = this.config.dbPath ?? resolve(repoPath, '.memorydreaming', 'deepseek-harness.db')
     const maxTokens = Number.isInteger(this.config.maxTokens) ? this.config.maxTokens : 1200
+    const extractor = this.config.extractor === 'deepseek' ? 'deepseek' : 'rules'
     const args = [
       '-X', 'utf8', '-m', 'memorydreaming', '--db', dbPath, 'bridge',
       '--user', String(this.config.userId ?? 'u1'),
@@ -64,8 +65,9 @@ class BridgeClient {
       '--relationship', String(this.config.relationshipId ?? 'r1'),
       '--domain', String(this.config.domain ?? 'real'),
       '--max-tokens', String(maxTokens),
+      '--extractor', extractor,
     ]
-    if (this.config.autoConsolidation !== false) args.push('--auto-consolidation')
+    if (this.config.autoConsolidation !== false || extractor === 'deepseek') args.push('--auto-consolidation')
     const child = spawn(python, args, {
       cwd: repoPath,
       env: { ...process.env, PYTHONUTF8: '1' },

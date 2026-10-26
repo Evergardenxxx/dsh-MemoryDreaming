@@ -479,8 +479,89 @@ class MemoryRuntime:
             )
 
     def forget(self, selector: ForgetSelector) -> ForgetResult:
-        """兼容入口：抑制事实及旧来源重提取，不擦除原始消息。"""
+        """兼容入口：按选择器分派事实级或事件级遗忘。"""
+        if selector.event_ids:
+            if selector.memory_ids or len(selector.event_ids) != 1:
+                raise ValueError("兼容 forget 入口一次只能指定一个 event_id，且不能同时指定 memory_id")
+            return self.forget_event(selector.event_ids[0], scope=selector.scope, reason=selector.reason)
         return self.forget_fact(selector)
+
+    def forget_event(
+        self,
+        event_id: str,
+        *,
+        scope: Scope | None = None,
+        reason: str = "用户要求删除事件",
+    ) -> ForgetResult:
+        """撤销一条原始事件对系统的支持并逻辑擦除正文。
+
+        事件行和 ID 保留以维护外键与审计结构；对外读取、重新抽取和核心
+        字段来源均检查 forgotten_events。记忆若还有其他独立事件来源则只
+        移除本事件，否则软删除并传播派生失效。
+        """
+        now = self._clock.now()
+        event = self._repos.events.get(event_id)
+        if event is None:
+            raise ScopeNotFound(f"找不到事件 {event_id}")
+        if scope is not None and not self._scope_matches(event.scope, scope):
+            raise ScopeNotFound(f"事件 {event_id} 不属于当前作用域")
+        target_scope = event.scope
+        deleted: list[str] = []
+        invalidated: list[str] = []
+        core_fields: list[str] = []
+
+        with self._db.transaction():
+            if self._repos.forgetting.is_event_forgotten(event_id):
+                return ForgetResult(
+                    forgotten_event_ids=[event_id],
+                    note="该事件已经完成逻辑遗忘。",
+                    erasure_level="event_redacted",
+                )
+            self._repos.forgetting.mark_event(event_id, target_scope, now, reason)
+            self._repos.forgetting.bump(target_scope)
+            self._repos.jobs.cancel_event(event_id, now)
+
+            candidates = self._repos.memories.list_by_scope(
+                target_scope, limit=-1,
+                statuses=(MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED, MemoryStatus.RETRACTED),
+            )
+            for item in candidates:
+                if event_id not in item.source_event_ids:
+                    continue
+                remaining_ids = [source for source in item.source_event_ids if source != event_id]
+                remaining_spans = {
+                    source: intervals for source, intervals in item.source_spans.items()
+                    if source != event_id
+                }
+                if remaining_ids:
+                    # 仍有独立来源的事实保留，避免一次事件遗忘误删其他证据。
+                    if not self._repos.forgetting.is_suppressed(item):
+                        self._repos.memories.update_content(
+                            item.memory_id,
+                            item.body,
+                            now,
+                            source_event_ids=remaining_ids,
+                            source_spans=remaining_spans,
+                        )
+                elif self._repos.memories.delete(item.memory_id, now):
+                    deleted.append(item.memory_id)
+                    self._vectors.delete(item.memory_id)
+
+            if deleted:
+                invalidated = self._invalidate_derived(
+                    deleted[0], now, being_removed=set(deleted)
+                )
+            self._repos.events.redact(event_id)
+            core_fields = self._repos.forgetting.redact_cores(now)
+
+        return ForgetResult(
+            deleted_ids=deleted,
+            invalidated_derived=sorted(set(invalidated)),
+            core_fields_removed=core_fields,
+            forgotten_event_ids=[event_id],
+            note="已撤销该事件的来源贡献并逻辑擦除正文；备份与供应商历史仍需单独清理。",
+            erasure_level="event_redacted",
+        )
 
     def forget_fact(self, selector: ForgetSelector) -> ForgetResult:
         """持久抑制选定断言，保留同消息中来源区间不重叠的其他事实。

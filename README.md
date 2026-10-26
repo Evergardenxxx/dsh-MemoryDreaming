@@ -78,7 +78,7 @@ memorydreaming/
 ├── summarization.py  主题摘要：主题词分组、索引卡生成、卡片匹配
 ├── similarity.py     相似度：字符 n-gram Jaccard + 聚簇（去重共用）
 ├── extractors.py     示例规则抽取器（覆盖四类显式候选）
-├── llm_extractor.py  不绑定供应商的 JSON/Schema LLM 抽取适配器
+├── llm_extractor.py  DeepSeek JSON/Schema 抽取适配器
 ├── formation.py      四类记忆候选统一格式与来源校验
 ├── evaluation.py     检索评估：固定用例 + Recall/MRR + 观察项
 ├── cli.py            命令行入口

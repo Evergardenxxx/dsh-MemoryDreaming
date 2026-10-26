@@ -41,7 +41,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 6：断言抑制、来源片段、内容代次及作用域独立的核心字段来源。
 # 版本 7：宿主实际投递记录，纯新增表。
 # 版本 8：核心候选与宿主审批回执，纯新增表。
-SCHEMA_VERSION = "8"
+# 版本 9：事件级遗忘账本，保留事件行但撤销读取、抽取和来源贡献。
+SCHEMA_VERSION = "9"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 

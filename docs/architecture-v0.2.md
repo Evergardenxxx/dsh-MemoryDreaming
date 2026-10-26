@@ -57,7 +57,7 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | Core Resolver | bootstrap、核心版本、活动目录 | 已实现核心键、字段来源和宿主记忆预算；完整供应商请求预算待接入 |
 | Retriever | Query → 证据、摘要、缺口、轨迹 | 已实现规则路由与混合检索 |
 | Consolidation Queue | extract → dedupe → summarize | 已实现租约、原子提交；文件运行时可选独立后台 worker 自动消费 |
-| Extractor / Formation Policy | EventRecord → MemoryDraft[] → validated candidates | 规则版覆盖四类记忆的显式格式；统一候选校验与零依赖 `LLMExtractor` 适配器已实现，供应商调用由宿主注入 |
+| Extractor / Formation Policy | EventRecord → MemoryDraft[] → validated candidates | 规则版覆盖四类记忆的显式格式；统一候选校验与 DeepSeek `LLMExtractor` 已实现，供应商调用由宿主配置 |
 | Mutation Service | 撤回、替代、来源变化、删除 | 已实现部分纠正与事实抑制；正文擦除待实现 |
 | Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 已实现 Python 生命周期、可选核心建议与宿主审批、MCP 只读服务；产品 hook 与通用修改待接入 |
 | Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | 抑制与 scope epoch 已实现；类型化 AND/OR 组待实现 |

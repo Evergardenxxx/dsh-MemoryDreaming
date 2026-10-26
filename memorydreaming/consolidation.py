@@ -170,6 +170,13 @@ def run_pending_jobs(
                     event = repos.events.get(event_id)
                     if event is None or event.scope != job.scope:
                         raise ValueError(f"任务引用的原始事件不存在或作用域不匹配：{event_id}")
+                    # 事件级遗忘在抽取开始前直接取消工作；若遗忘发生在
+                    # 模型调用期间，下面的 scope epoch 校验会丢弃旧结果。
+                    if repos.forgetting.is_event_forgotten(event_id):
+                        with db.transaction():
+                            repos.jobs.assert_owned(job.job_id, job.claim_token, clock.now())
+                            repos.jobs.complete(job.job_id, job.claim_token, clock.now())
+                        continue
                     drafts = extractor.extract(event)
 
                 with db.transaction():
