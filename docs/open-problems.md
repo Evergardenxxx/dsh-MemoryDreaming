@@ -54,7 +54,7 @@ v0.6 已迁移核心键：身份按用户/角色/领域、关系再按 relations
 
 建议提供可选真实嵌入与模型抽取适配器，保留零依赖基线。零依赖是当前实现选择，用户并未要求禁止可选依赖或 API。先建立中文标注集，再选择多语言模型；记录模型版本、维度、查询/文档前缀、归一化策略并重建索引。验证超时降级与关键词回退，重新校准阈值。
 
-抽取 JSON 仍需校验类型、说话者、模态、来源和有效期。候选可和相近旧记忆一起决策；没有充分依据时，不自动撤回旧事实。
+`LLMExtractor` 已提供零依赖 JSON/Schema 适配器，`MemoryFormationPolicy` 校验四类正文和来源说话者；仍需在真实 provider 上补充超时、限流、一次格式修复和模型输出评估。候选可和相近旧记忆一起决策；没有充分依据时，不自动撤回旧事实。
 
 参考：[Mem0 当前主线 additive 抽取](https://github.com/mem0ai/mem0/blob/main/mem0/memory/main.py#L918)、[cogmem-agent 混合检索](https://github.com/akira-001/pj-memory/blob/d0b2287e9a6fd2d19b0d77c88b48ea6169675250/src/cognitive_memory/search.py#L207)。实现随版本变化，不能将某一路径概括为所有模式都只增不改。
 
