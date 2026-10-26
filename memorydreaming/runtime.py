@@ -949,6 +949,7 @@ class MemoryRuntime:
                 conn.execute(f"DELETE FROM entity_mentions WHERE entity_id IN ({placeholders})", entity_ids)
             if tombstone_ids:
                 conn.execute("DELETE FROM tombstone_sources WHERE tombstone_id IN (" + ",".join("?" for _ in tombstone_ids) + ")", tombstone_ids)
+            self._repos.retrieval_cache.delete_scopes(list(scope_keys))
 
             for table in ("memory_revisions", "memories", "summaries", "consolidation_jobs",
                           "health_snapshots", "entities", "session_handoffs", "events", "activities"):

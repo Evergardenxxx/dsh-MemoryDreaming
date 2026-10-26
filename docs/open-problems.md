@@ -49,7 +49,7 @@ v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段�
 从 cogmem-agent、Celiums-memory 和 cognitive-memory 纳入的后续待办（其中低信息检索门控、会话缓存、健康摘要和 durable journal 已实现）：
 
 - `trivial query` retrieval gate：已实现对“你好/好的”等完整短语跳过检索，但不能跳过核心恢复或事件保存；后续用中文对话集校准误判边界。
-- 会话内检索缓存和后台 prefetch：已实现受 TTL、scope mutation epoch、当前事件和引用 revision 约束的会话缓存；`session.prefetch()` / JSONL `prefetch` 只预热候选引用，不返回正文。真正的后台调度、跨进程缓存和指标仍待加入。
+- 会话内检索缓存和后台 prefetch：已实现受 TTL、scope mutation epoch、当前事件和引用 revision 约束的会话缓存；`session.prefetch()` / JSONL `prefetch` 只预热候选引用，不返回正文。当前又增加 SQLite 跨进程候选缓存，跨窗口命中后重新签发本地引用，并提供命中/失效计数；真正的后台调度、分布式缓存和长期指标聚合仍待加入。
 - recall reinforcement：把“被实际使用过”与事实真实性分开记录，只调整检索强度，不提高证据等级。
 - memory health / summary health / confidence / gaps：`MemoryRuntime.memory_health()` 已输出按类型/状态计数、陈旧摘要、失败任务、无来源推断和开放循环；置信度校准、历史趋势与 UI 仍待加入，健康分数不能被模型当作事实概率。
 - durable journal 与 hash chain：**已实现**。`journal_entries` 使用全局 sequence、prev_hash、entry_hash 追加；`MemoryRuntime.verify_journal()` 可检测篡改或断链，记录不复制正文。哈希链不能代替作用域权限和删除账本。
@@ -90,7 +90,7 @@ v0.6 已迁移核心键：身份按用户/角色/领域、关系再按 relations
 
 LLM `memory_search` 已能显式传入 `knowledge_at` / `fact_at`，宿主能力声明同步更新；`recorded` / `valid` 的 `time_range` 仍明确返回 unsupported，避免静默误查。
 
-实体索引、图关系遍历和快照实体映射已完成。待完成：更丰富的提议类型（核心以外的批量修改）、派生物 `withdrawn/rolled_back`、跨进程缓存与后台 prefetch 指标、真实中文 embedding/DeepSeek 抽取评估、精确 tokenizer 预算，以及真实 Harness 主程序重启/取消/异常退出验收。
+实体索引、图关系遍历、快照实体映射和 SQLite 跨进程候选缓存已完成。待完成：更丰富的提议类型（核心以外的批量修改）、派生物 `withdrawn/rolled_back`、后台 prefetch 调度与长期指标聚合、真实中文 embedding/DeepSeek 抽取评估、精确 tokenizer 预算，以及真实 Harness 主程序重启/取消/异常退出验收。
 
 ## 7. P2：评估、人格成长和预算计量
 

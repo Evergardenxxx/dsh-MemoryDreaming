@@ -53,3 +53,26 @@ class SearchCacheTests(RuntimeTestCase):
         self.assertEqual(retrieve.call_count, 2)
         self.assertEqual(result["status"], "not_found")
 
+    def test_second_window_reuses_shared_candidate_cache_without_running_pipeline(self):
+        second = HostAdapter(
+            self.runtime, clock=self.clock, retrieval_cache_ttl_seconds=60,
+        ).open_session(SessionBinding("u1", "c1", "r1", "other-window"))
+        try:
+            with patch.object(self.runtime, "retrieve", wraps=self.runtime.retrieve) as retrieve:
+                first = self.session.call_tool("memory_search", self.args())
+                replay = second.call_tool("memory_search", self.args())
+            self.assertEqual(retrieve.call_count, 1)
+            self.assertEqual(first["data"]["evidence"][0]["text"], replay["data"]["evidence"][0]["text"])
+            self.assertEqual(second.cache_stats()["shared_hits"], 1)
+        finally:
+            second.close()
+
+    def test_temporal_search_does_not_reuse_current_projection_cache(self):
+        args = self.args()
+        args["knowledge_at"] = "2026-10-19T12:00:00+00:00"
+        args["fact_at"] = None
+        with patch.object(self.runtime, "retrieve", wraps=self.runtime.retrieve) as retrieve:
+            self.session.call_tool("memory_search", args)
+            self.session.call_tool("memory_search", args)
+        self.assertEqual(retrieve.call_count, 2)
+

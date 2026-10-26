@@ -2227,6 +2227,102 @@ class SummaryRepository:
 
 
 # ---------------------------------------------------------------------------
+# 跨进程检索缓存（只保存候选 ID 与版本指纹）
+# ---------------------------------------------------------------------------
+
+
+class RetrievalCacheRepository:
+    """SQLite 共享检索缓存；正文和会话引用永远不进入缓存表。"""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get(
+        self,
+        cache_key: str,
+        scope_key: str,
+        current_event_id: str | None,
+        mutation_epoch: int,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM retrieval_cache WHERE cache_key=? AND scope_key=? "
+            "AND current_event_id IS ? AND mutation_epoch=? AND expires_at>?",
+            (cache_key, scope_key, current_event_id, mutation_epoch, to_utc_iso(now)),
+        ).fetchone()
+        if row is None:
+            # 过期项是派生数据，可以惰性清理，不影响主记忆。
+            self._conn.execute(
+                "DELETE FROM retrieval_cache WHERE cache_key=? AND expires_at<=?",
+                (cache_key, to_utc_iso(now)),
+            )
+            return None
+        return {
+            "cache_key": row["cache_key"],
+            "memory_ids": _load_list(row["memory_ids_json"]),
+            "summary_ids": _load_list(row["summary_ids_json"]),
+            "memory_revisions": _load_dict(row["memory_revisions_json"]),
+            "summary_revisions": _load_dict(row["summary_revisions_json"]),
+            "retrieval_complete": bool(row["retrieval_complete"]),
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+        }
+
+    def put(
+        self,
+        *,
+        cache_key: str,
+        scope_key: str,
+        current_event_id: str | None,
+        mutation_epoch: int,
+        memory_ids: Sequence[str],
+        summary_ids: Sequence[str],
+        memory_revisions: dict[str, str],
+        summary_revisions: dict[str, str],
+        retrieval_complete: bool,
+        created_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO retrieval_cache (
+                cache_key,scope_key,current_event_id,mutation_epoch,
+                memory_ids_json,summary_ids_json,memory_revisions_json,summary_revisions_json,
+                retrieval_complete,created_at,expires_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                scope_key=excluded.scope_key,
+                current_event_id=excluded.current_event_id,
+                mutation_epoch=excluded.mutation_epoch,
+                memory_ids_json=excluded.memory_ids_json,
+                summary_ids_json=excluded.summary_ids_json,
+                memory_revisions_json=excluded.memory_revisions_json,
+                summary_revisions_json=excluded.summary_revisions_json,
+                retrieval_complete=excluded.retrieval_complete,
+                created_at=excluded.created_at,
+                expires_at=excluded.expires_at""",
+            (
+                cache_key, scope_key, current_event_id, mutation_epoch,
+                _json_list(memory_ids), _json_list(summary_ids),
+                json.dumps(memory_revisions, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                json.dumps(summary_revisions, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                int(bool(retrieval_complete)), to_utc_iso(created_at), to_utc_iso(expires_at),
+            ),
+        )
+
+    def delete(self, cache_key: str) -> None:
+        self._conn.execute("DELETE FROM retrieval_cache WHERE cache_key=?", (cache_key,))
+
+    def delete_scopes(self, scope_keys: Sequence[str]) -> int:
+        keys = list(dict.fromkeys(scope_keys))
+        if not keys:
+            return 0
+        cursor = self._conn.execute(
+            f"DELETE FROM retrieval_cache WHERE scope_key IN ({_placeholders(len(keys))})", keys,
+        )
+        return cursor.rowcount
+
+
+# ---------------------------------------------------------------------------
 # Durable journal / hash chain
 # ---------------------------------------------------------------------------
 
@@ -2466,6 +2562,7 @@ class Repositories:
     jobs: JobRepository
     vectors: VectorRepository
     summaries: SummaryRepository
+    retrieval_cache: RetrievalCacheRepository
     entities: EntityRepository
     forgetting: ForgetRepository
     journal: JournalRepository
@@ -2482,6 +2579,7 @@ def build_repositories(conn: sqlite3.Connection) -> Repositories:
         jobs=JobRepository(conn),
         vectors=VectorRepository(conn),
         summaries=SummaryRepository(conn),
+        retrieval_cache=RetrievalCacheRepository(conn),
         entities=EntityRepository(conn),
         forgetting=ForgetRepository(conn),
         journal=JournalRepository(conn),

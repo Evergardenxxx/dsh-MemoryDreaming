@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.14，增加双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照、实体索引和可选变更提议审批**。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 320 个回归测试通过。跨机器打包、真实 Harness 热加载、完整外部备份清理和健康趋势告警仍待完成。
+当前状态：**v0.15，增加双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照、实体索引、跨进程候选缓存和可选变更提议审批**。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 322 个回归测试通过。跨机器打包、真实 Harness 热加载、完整外部备份清理和健康趋势告警仍待完成。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -14,7 +14,7 @@
 
 ### 上下文占用
 
-MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `maxTokens`（默认 1200）注入当前回合所需的记忆资料。Harness 仍会把 profile 中其他已启用 MCP 工具的 schema 一起放入请求；如果上下文仍然很大，应在上下文面板按命名空间检查并关闭不使用的 MCP server（例如 `mcp__rea__*`、ComfyUI 或 PhotoCraft）。
+MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `maxTokens`（默认 1200）注入当前回合所需的记忆资料。检索候选可在多个窗口/进程间共享，但共享表只存 ID 和版本指纹，不存正文，也不会自动注入上下文。Harness 仍会把 profile 中其他已启用 MCP 工具的 schema 一起放入请求；如果上下文仍然很大，应在上下文面板按命名空间检查并关闭不使用的 MCP server（例如 `mcp__rea__*`、ComfyUI 或 PhotoCraft）。
 
 受控修改见 [核心候选与审批](docs/core-proposals.md)，可运行 [重启后审批示例](examples/core_proposal.py)。
 
@@ -190,7 +190,7 @@ tests/
 3. **效力**：`epistemic_status / modality / occurred_* / valid_* / status`
 4. **权重**：`importance / retrieval_strength / access_count`
 
-另有四类派生索引，以及持久整理队列。队列需要单独保证恢复，不能仅靠重建索引替代：
+另有五类派生索引，以及持久整理队列。队列需要单独保证恢复，不能仅靠重建索引替代：
 
 | 表 | 作用 | 同步方式 |
 |---|---|---|
@@ -198,6 +198,7 @@ tests/
 | `memory_vectors` | 向量索引（float32 BLOB） | 写入时显式建立，可 `reindex` |
 | `summaries` | 主题索引卡（概述 + 来源 ID） | 整理任务重建 |
 | `entities` / `entity_mentions` | 结构化实体到记忆的反查索引 | 接受记忆时增量更新，也可按作用域重建 |
+| `retrieval_cache` | 跨进程候选缓存（仅 ID 和版本指纹） | TTL、作用域代次或版本变化后失效 |
 | `consolidation_jobs` | 异步任务队列 | — |
 
 ## 关键取舍（以及为什么）

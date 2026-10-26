@@ -17,6 +17,7 @@ from .llm import (AdapterError, EstimatedTokenCounter, TokenCounter, dumps, enve
 from .models import CoreKind, ReadFilter, Scope, Turn
 from .proposals import ChangeProposals, CoreProposalPolicy, CoreProposals
 from .references import ReferenceRegistry, ViewReader, forbidden, render_record
+from .storage.repository import _scope_key
 
 
 MEMORY_RULES = (
@@ -83,7 +84,8 @@ class HostAdapter:
     def __init__(self, runtime, *, clock=None, token_counter: TokenCounter | None = None,
                  tool_token_limit=4096, max_calls_per_turn=4, reference_ttl_seconds=1800,
                  core_policy: CoreProposalPolicy | None = None,
-                 retrieval_cache_ttl_seconds=30, retrieval_cache_capacity=32):
+                 retrieval_cache_ttl_seconds=30, retrieval_cache_capacity=32,
+                 shared_retrieval_cache=True):
         self.runtime, self.clock = runtime, clock or runtime.clock
         self.counter = token_counter or EstimatedTokenCounter()
         if self.counter.mode not in ("estimated", "exact"):
@@ -95,6 +97,9 @@ class HostAdapter:
                                                    "retrieval_cache_ttl_seconds", 1, 3600)
         self.retrieval_cache_capacity = integer(retrieval_cache_capacity,
                                                 "retrieval_cache_capacity", 1, 256)
+        if not isinstance(shared_retrieval_cache, bool):
+            raise ValueError("shared_retrieval_cache 必须为布尔值")
+        self.shared_retrieval_cache = shared_retrieval_cache
         self.core_policy = core_policy if core_policy is not None else CoreProposalPolicy()
         if not isinstance(self.core_policy, CoreProposalPolicy):
             raise TypeError("core_policy 必须由宿主构造为 CoreProposalPolicy")
@@ -121,7 +126,7 @@ class HostAdapter:
                 "change_proposals": self.core_policy.change_proposals,
                 "checkpoint_proposals": self.core_policy.checkpoint_proposals,
                 "pre_compress_handoff": True, "session_retrieval_cache": True,
-                "host_prefetch": True}
+                "host_prefetch": True, "shared_retrieval_cache": self.shared_retrieval_cache}
 
     def open_session(self, binding: SessionBinding, *, request_id=None, max_tokens=4096) -> "MemorySession":
         if not isinstance(binding, SessionBinding):
@@ -141,6 +146,8 @@ class MemorySession:
         self._calls = 0
         self._closed = False
         self._search_cache: OrderedDict[str, _SearchCacheEntry] = OrderedDict()
+        self._cache_metrics = {"local_hits": 0, "shared_hits": 0, "misses": 0,
+                               "stale": 0, "prefetches": 0}
 
     def close(self):
         self._closed = True
@@ -162,6 +169,60 @@ class MemorySession:
     def _reader(self):
         return ViewReader(self.runtime, self.binding, self.clock,
                           exclude_event_ids=([self.current_event_id] if self.current_event_id else []))
+
+    def cache_stats(self) -> dict[str, int]:
+        """返回本会话缓存计数；只包含运维指标，不包含查询或记忆正文。"""
+        return dict(self._cache_metrics)
+
+    def _render_cached_views(self, evidence_views, summary_views, retrieval_complete, activities):
+        evidence = [render_record(view, self.registry) for view in evidence_views]
+        summaries = []
+        for view in summary_views:
+            if any(
+                source.kind == "memory"
+                and self.runtime.db.repositories.memories.get(source.target).scope.activity_id not in activities
+                for source in view.sources
+            ):
+                continue
+            summary_payload = json.loads(view.data["text"])
+            summaries.append({
+                "ref": self.registry.issue(view),
+                "title": summary_payload["title"],
+                "text": summary_payload["digest"],
+                "source_refs": [self.registry.issue(source) for source in view.sources[:20]],
+            })
+        return {"kind": "search", "evidence": evidence, "summaries": summaries,
+                "retrieval_complete": retrieval_complete}
+
+    def _shared_cached_search(self, cache_key, reader, activities):
+        if not self.adapter.shared_retrieval_cache:
+            return None
+        epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
+        cached = self.runtime.db.repositories.retrieval_cache.get(
+            cache_key, _scope_key(self.binding.scope), self.current_event_id, epoch, self.clock.now(),
+        )
+        if cached is None:
+            return None
+        try:
+            evidence_views = []
+            for target in cached["memory_ids"]:
+                view = reader.load("memory", target)
+                if view.revision != cached["memory_revisions"].get(target):
+                    raise ValueError("memory revision changed")
+                evidence_views.append(view)
+            summary_views = []
+            for target in cached["summary_ids"]:
+                view = reader.load("summary", target)
+                if view.revision != cached["summary_revisions"].get(target):
+                    raise ValueError("summary revision changed")
+                summary_views.append(view)
+            self._cache_metrics["shared_hits"] += 1
+            return self._render_cached_views(evidence_views, summary_views,
+                                             cached["retrieval_complete"], activities)
+        except (AdapterError, KeyError, ValueError, json.JSONDecodeError, AttributeError):
+            self._cache_metrics["stale"] += 1
+            self.runtime.db.repositories.retrieval_cache.delete(cache_key)
+            return None
 
     def _bootstrap_data(self, reader):
         cores = {}
@@ -279,34 +340,42 @@ class MemorySession:
             "knowledge_at": args.get("knowledge_at"), "fact_at": args.get("fact_at"),
             "event_id": self.current_event_id,
         })
-        cached = self._search_cache.get(cache_key)
-        if cached is not None:
-            now = self.clock.now()
-            epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
-            if (cached.event_id == self.current_event_id and cached.epoch == epoch
-                    and cached.expires_at > now):
-                try:
-                    evidence_views = self.registry.resolve(list(cached.memory_refs), reader)
-                    summary_views = self.registry.resolve(list(cached.summary_refs), reader)
-                    evidence = [render_record(view, self.registry) for view in evidence_views]
-                    summaries = []
-                    for view in summary_views:
-                        if any(source.kind == "memory"
-                               and self.runtime.db.repositories.memories.get(source.target).scope.activity_id
-                               not in activities for source in view.sources):
-                            continue
-                        summary_payload = json.loads(view.data["text"])
-                        summaries.append({
-                            "ref": self.registry.issue(view),
-                            "title": summary_payload["title"],
-                            "text": summary_payload["digest"],
-                            "source_refs": [self.registry.issue(source) for source in view.sources[:20]],
-                        })
-                    self._search_cache.move_to_end(cache_key)
-                    return {"kind": "search", "evidence": evidence, "summaries": summaries,
-                            "retrieval_complete": cached.retrieval_complete}
-                except (AdapterError, KeyError, json.JSONDecodeError):
-                    self._search_cache.pop(cache_key, None)
+        cacheable = not args.get("knowledge_at") and not args.get("fact_at")
+        if cacheable:
+            cached = self._search_cache.get(cache_key)
+            if cached is not None:
+                now = self.clock.now()
+                epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
+                if (cached.event_id == self.current_event_id and cached.epoch == epoch
+                        and cached.expires_at > now):
+                    try:
+                        evidence_views = self.registry.resolve(list(cached.memory_refs), reader)
+                        summary_views = self.registry.resolve(list(cached.summary_refs), reader)
+                        self._cache_metrics["local_hits"] += 1
+                        self._search_cache.move_to_end(cache_key)
+                        return self._render_cached_views(
+                            evidence_views, summary_views, cached.retrieval_complete, activities,
+                        )
+                    except (AdapterError, KeyError, json.JSONDecodeError):
+                        self._cache_metrics["stale"] += 1
+                        self._search_cache.pop(cache_key, None)
+
+            shared = self._shared_cached_search(cache_key, reader, activities)
+            if shared is not None:
+                # 给当前窗口重新签发本地引用，跨窗口不会复用旧句柄。
+                evidence_refs = [item["ref"] for item in shared["evidence"]]
+                summary_refs = [item["ref"] for item in shared["summaries"]]
+                self._search_cache[cache_key] = _SearchCacheEntry(
+                    key=cache_key,
+                    epoch=self.runtime.db.repositories.forgetting.epoch(self.binding.scope),
+                    event_id=self.current_event_id,
+                    expires_at=self.clock.now() + timedelta(seconds=self.adapter.retrieval_cache_ttl_seconds),
+                    memory_refs=tuple(evidence_refs), summary_refs=tuple(summary_refs),
+                    retrieval_complete=shared["retrieval_complete"],
+                )
+                self._search_cache.move_to_end(cache_key)
+                return shared
+            self._cache_metrics["misses"] += 1
 
         result = self.runtime.retrieve(
             args["query"], self.binding.scope,
@@ -317,6 +386,8 @@ class MemorySession:
             read_filter=ReadFilter(activities, tuple(reader.excluded)),
         )
         evidence, summaries = [], []
+        evidence_views = []
+        summary_views = []
         incomplete = False
         for item in result.items:
             try:
@@ -324,6 +395,7 @@ class MemorySession:
             except AdapterError:
                 incomplete = True
                 continue
+            evidence_views.append(view)
             evidence.append(render_record(view, self.registry))
         for hit in result.summaries:
             try:
@@ -334,22 +406,35 @@ class MemorySession:
             except AdapterError:
                 incomplete = True
                 continue
+            summary_views.append(view)
             summaries.append({"ref": self.registry.issue(view), "title": hit.summary.topic, "text": hit.summary.digest,
                               "source_refs": [self.registry.issue(source) for source in view.sources[:20]]})
         incomplete = incomplete or any("预算" in gap for gap in result.gaps)
         retrieval_complete = not incomplete
-        self._search_cache[cache_key] = _SearchCacheEntry(
-            key=cache_key,
-            epoch=self.runtime.db.repositories.forgetting.epoch(self.binding.scope),
-            event_id=self.current_event_id,
-            expires_at=self.clock.now() + timedelta(seconds=self.adapter.retrieval_cache_ttl_seconds),
-            memory_refs=tuple(item["ref"] for item in evidence),
-            summary_refs=tuple(item["ref"] for item in summaries),
-            retrieval_complete=retrieval_complete,
-        )
-        self._search_cache.move_to_end(cache_key)
-        while len(self._search_cache) > self.adapter.retrieval_cache_capacity:
-            self._search_cache.popitem(last=False)
+        if cacheable:
+            now = self.clock.now()
+            epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
+            expires_at = now + timedelta(seconds=self.adapter.retrieval_cache_ttl_seconds)
+            self._search_cache[cache_key] = _SearchCacheEntry(
+                key=cache_key, epoch=epoch, event_id=self.current_event_id,
+                expires_at=expires_at,
+                memory_refs=tuple(item["ref"] for item in evidence),
+                summary_refs=tuple(item["ref"] for item in summaries),
+                retrieval_complete=retrieval_complete,
+            )
+            self._search_cache.move_to_end(cache_key)
+            while len(self._search_cache) > self.adapter.retrieval_cache_capacity:
+                self._search_cache.popitem(last=False)
+            if self.adapter.shared_retrieval_cache:
+                self.runtime.db.repositories.retrieval_cache.put(
+                    cache_key=cache_key, scope_key=_scope_key(self.binding.scope),
+                    current_event_id=self.current_event_id, mutation_epoch=epoch,
+                    memory_ids=[view.target for view in evidence_views],
+                    summary_ids=[view.target for view in summary_views],
+                    memory_revisions={view.target: view.revision for view in evidence_views},
+                    summary_revisions={view.target: view.revision for view in summary_views},
+                    retrieval_complete=retrieval_complete, created_at=now, expires_at=expires_at,
+                )
         return {"kind": "search", "evidence": evidence, "summaries": summaries,
                 "retrieval_complete": retrieval_complete}
 
@@ -370,6 +455,7 @@ class MemorySession:
                 "detail": detail, "max_items": max_items, "max_tokens": max_tokens}
         with self.runtime.db.transaction():
             self._search(args, self._reader())
+        self._cache_metrics["prefetches"] += 1
         return {"status": "ok", "cached": True, "query": query,
                 "ttl_seconds": self.adapter.retrieval_cache_ttl_seconds}
 

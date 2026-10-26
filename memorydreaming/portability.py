@@ -49,7 +49,7 @@ TABLES = (
     "change_proposals",
     "journal_entries",
 )
-DERIVED_TABLES = ("memory_vectors", "memories_fts")
+DERIVED_TABLES = ("memory_vectors", "memories_fts", "retrieval_cache")
 
 PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "core_versions": ("scope_key", "kind", "core_version"),

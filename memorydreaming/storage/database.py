@@ -49,7 +49,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 14：不含正文的健康趋势快照。
 # 版本 15：一般事实/遗忘/检查点提议。
 # 版本 16：可重建实体索引。
-SCHEMA_VERSION = "16"
+# 版本 17：跨进程检索缓存（只存候选 ID 与版本指纹）。
+SCHEMA_VERSION = "17"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
