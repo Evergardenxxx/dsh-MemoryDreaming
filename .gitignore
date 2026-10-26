@@ -35,3 +35,6 @@ coverage/
 .DS_Store
 Thumbs.db
 *.log
+
+# Agent/本地工具的工作记录，不属于项目产物
+.workbuddy/
