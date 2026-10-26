@@ -74,10 +74,12 @@ memorydreaming/
 ├── proposals.py      持久核心候选、来源/版本检查、宿主审批与回执
 ├── mcp.py            MCP stdio：工具与 bootstrap 资源
 ├── consolidation.py  异步整理：任务分发 + 抽取 + 去重合并
-├── worker.py         文件库任务心跳：独立连接续租
+├── worker.py         文件库任务心跳与可唤醒后台整理器
 ├── summarization.py  主题摘要：主题词分组、索引卡生成、卡片匹配
 ├── similarity.py     相似度：字符 n-gram Jaccard + 聚簇（去重共用）
-├── extractors.py     示例抽取器（基于规则，可替换成模型）
+├── extractors.py     示例规则抽取器（覆盖四类显式候选）
+├── llm_extractor.py  不绑定供应商的 JSON/Schema LLM 抽取适配器
+├── formation.py      四类记忆候选统一格式与来源校验
 ├── evaluation.py     检索评估：固定用例 + Recall/MRR + 观察项
 ├── cli.py            命令行入口
 ├── demo.py           可运行场景
@@ -131,6 +133,11 @@ tests/
 | 8 | `retrieval/decay.py` + `context.py` | 为什么「同样相关」的记忆还要再排一次序；上下文为什么要加围栏 |
 
 `demo.py` 是这八步的活教材：一边读代码，一边对照它的输出。
+
+接入模型抽取时不需要把供应商 SDK 放进引擎：实现一个接收 `prompt`（可选接收
+`schema`）并返回 JSON 的 provider，传给 `LLMExtractor(provider)`，再作为
+`MemoryRuntime(consolidation_extractor=...)` 的抽取器。模型输出仍会经过来源片段、
+四类正文和作用域校验；文件库可用 `Settings(auto_consolidation=True)` 自动消费队列。
 
 ## 一次对话发生了什么
 
