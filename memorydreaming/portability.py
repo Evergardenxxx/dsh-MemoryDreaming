@@ -40,6 +40,7 @@ TABLES = (
     "tombstone_sources",
     "scope_mutations",
     "scope_purges",
+    "health_snapshots",
     "core_field_tombstones",
     "host_deliveries",
     "core_proposals",
@@ -62,6 +63,7 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "tombstone_sources": ("tombstone_id", "event_id", "span_start", "span_end"),
     "scope_mutations": ("scope_key",),
     "scope_purges": ("scope_key",),
+    "health_snapshots": ("snapshot_id",),
     "core_field_tombstones": ("scope_key", "kind", "field_key"),
     "host_deliveries": ("event_id",),
     "core_proposals": ("proposal_id",),
@@ -330,7 +332,7 @@ _IMPORT_ORDER = (
     "events", "activities", "core_versions", "session_handoffs", "memories",
     "memory_revisions", "memory_links", "summaries", "consolidation_jobs",
     "forgotten_events", "scope_mutations", "scope_purges", "memory_tombstones",
-    "tombstone_sources", "core_field_tombstones", "host_deliveries",
+    "tombstone_sources", "core_field_tombstones", "health_snapshots", "host_deliveries",
     "core_proposals", "journal_entries",
 )
 

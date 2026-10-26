@@ -669,6 +669,36 @@ class MemoryRuntime:
             "gaps": gaps,
         }
 
+    def record_memory_health(self, scope: Scope) -> dict[str, Any]:
+        """持久化一份不含记忆正文的健康快照，供趋势/告警系统读取。"""
+        captured_at = self._clock.now()
+        payload = self.memory_health(scope)
+        snapshot_id = new_id("health")
+        with self._db.transaction():
+            self._db.connection.execute(
+                """INSERT INTO health_snapshots (
+                    snapshot_id, scope_key, user_id, character_id, relationship_id,
+                    activity_id, domain, payload_json, captured_at
+                ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (snapshot_id, _scope_key(scope), scope.user_id, scope.character_id,
+                 scope.relationship_id, scope.activity_id, scope.domain,
+                 json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                 captured_at.isoformat()),
+            )
+        return {"snapshot_id": snapshot_id, "captured_at": captured_at.isoformat(), "health": payload}
+
+    def memory_health_trend(self, scope: Scope, *, limit: int = 30) -> list[dict[str, Any]]:
+        """读取最近健康快照；只返回计数、缺口和审计状态。"""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 365:
+            raise ValueError("limit 必须为 1..365")
+        visible, params = scope_sql(scope, "h")
+        rows = self._db.connection.execute(
+            "SELECT snapshot_id, captured_at, payload_json FROM health_snapshots h WHERE "
+            + visible + " ORDER BY captured_at DESC LIMIT ?", [*params, limit],
+        ).fetchall()
+        return [{"snapshot_id": row["snapshot_id"], "captured_at": row["captured_at"],
+                 "health": json.loads(row["payload_json"])} for row in rows]
+
     def journal_entries(self, scope: Scope | None = None, limit: int = 100) -> list[dict[str, Any]]:
         """读取审计链元数据；默认只返回最近记录，不包含对话正文。"""
         return self._repos.journal.list(scope=scope, limit=limit)
@@ -834,7 +864,7 @@ class MemoryRuntime:
         affected: set[Scope] = {scope}
         explicit_tables = (
             "activities", "session_handoffs", "events", "memories", "memory_revisions",
-            "summaries", "consolidation_jobs",
+            "summaries", "consolidation_jobs", "health_snapshots",
         )
         for table in explicit_tables:
             rows = conn.execute(f"SELECT user_id, character_id, relationship_id, activity_id, domain FROM {table}").fetchall()
@@ -896,7 +926,7 @@ class MemoryRuntime:
                 conn.execute("DELETE FROM tombstone_sources WHERE tombstone_id IN (" + ",".join("?" for _ in tombstone_ids) + ")", tombstone_ids)
 
             for table in ("memory_revisions", "memories", "summaries", "consolidation_jobs",
-                          "session_handoffs", "events", "activities"):
+                          "health_snapshots", "session_handoffs", "events", "activities"):
                 delete_scoped(table)
             if scope_keys:
                 placeholders = ",".join("?" for _ in scope_keys)

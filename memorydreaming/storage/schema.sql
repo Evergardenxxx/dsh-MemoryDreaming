@@ -372,6 +372,21 @@ CREATE TABLE IF NOT EXISTS scope_purges (
 );
 CREATE INDEX IF NOT EXISTS idx_scope_purges_identity
     ON scope_purges (user_id, character_id, domain, purged_at DESC);
+
+-- 只保存不含正文的运维健康快照，用于趋势和告警；不会进入模型上下文。
+CREATE TABLE IF NOT EXISTS health_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    relationship_id TEXT,
+    activity_id TEXT,
+    domain TEXT NOT NULL DEFAULT 'real',
+    payload_json TEXT NOT NULL,
+    captured_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_health_snapshots_scope
+    ON health_snapshots (user_id, character_id, domain, captured_at DESC);
 CREATE TABLE IF NOT EXISTS core_field_tombstones (
     scope_key TEXT NOT NULL,
     kind TEXT NOT NULL,

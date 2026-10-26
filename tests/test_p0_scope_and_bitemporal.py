@@ -102,6 +102,16 @@ class P0ScopeAndBitemporalTest(unittest.TestCase):
         self.assertEqual([item["memory"].memory_id for item in related], [second.memory_id])
         self.assertEqual(related[0]["relation"], "supports")
 
+    def test_health_snapshots_provide_scope_bound_trend_without正文(self):
+        scope = Scope("u", "c", "r1")
+        self._insert(scope, "健康趋势")
+        first = self.runtime.record_memory_health(scope)
+        self.clock.set(self.now + timedelta(hours=1))
+        second = self.runtime.record_memory_health(scope)
+        trend = self.runtime.memory_health_trend(scope)
+        self.assertEqual([item["snapshot_id"] for item in trend], [second["snapshot_id"], first["snapshot_id"]])
+        self.assertNotIn("健康趋势", json.dumps(trend, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     unittest.main()

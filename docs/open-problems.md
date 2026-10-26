@@ -86,7 +86,7 @@ v0.6 已迁移核心键：身份按用户/角色/领域、关系再按 relations
 
 ## 6. P1：图关系、便携恢复、语义质量与预算计量
 
-已增加 `MemoryRuntime.related_memories()` 的有界双向图遍历，沿 `supports/derived_from/supersedes/part_of` 关系回溯时仍检查作用域、遗忘账本和状态，不把关系边提升为事实。便携快照现在支持经过 dry-run 校验后的原子导入；不同遗忘密钥仍默认拒绝直接导入，避免旧账本复活。
+已增加 `MemoryRuntime.related_memories()` 的有界双向图遍历，沿 `supports/derived_from/supersedes/part_of` 关系回溯时仍检查作用域、遗忘账本和状态，不把关系边提升为事实。便携快照现在支持经过 dry-run 校验后的原子导入；不同遗忘密钥仍默认拒绝直接导入，避免旧账本复活。`record_memory_health()` / `memory_health_trend()` 持久化不含正文的健康计数，便于宿主做趋势告警。
 
 LLM `memory_search` 已能显式传入 `knowledge_at` / `fact_at`，宿主能力声明同步更新；`recorded` / `valid` 的 `time_range` 仍明确返回 unsupported，避免静默误查。
 
