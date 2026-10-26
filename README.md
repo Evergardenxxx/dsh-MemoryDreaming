@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.16，增加双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照、实体索引、跨进程候选缓存、摘要派生生命周期和可选变更提议审批**。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 325 个回归测试通过。跨机器打包、真实 Harness 热加载、完整外部备份清理和健康趋势告警仍待完成。
+当前状态：**v0.16，增加双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照、实体索引、跨进程候选缓存、摘要派生生命周期和可选变更提议审批**。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 326 个回归测试通过。跨机器打包、真实 Harness 热加载、完整外部备份清理和健康趋势告警仍待完成。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -36,7 +36,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部测试（当前 325 项）
+python -m unittest                # 跑全部测试（当前 326 项）
 python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 python -X utf8 examples/core_proposal.py
 ```

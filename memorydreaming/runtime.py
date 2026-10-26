@@ -634,6 +634,7 @@ class MemoryRuntime:
             + " GROUP BY status", summary_params,
         ).fetchall()
         summaries = {row["status"]: int(row["n"]) for row in summary_rows}
+        retrieval_cache = self._repos.retrieval_cache.stats(scope, self._clock.now())
 
         job_where, job_params = scope_sql(scope, "j")
         job_rows = conn.execute(
@@ -663,6 +664,7 @@ class MemoryRuntime:
             "memories": memories,
             "inferred_without_source": int(inferred),
             "summaries": summaries,
+            "retrieval_cache": retrieval_cache,
             "jobs": jobs,
             "working": {"active_activities": len(activities), "open_loops": open_loops},
             "journal": journal,

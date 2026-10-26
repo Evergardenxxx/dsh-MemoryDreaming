@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.helpers import RuntimeTestCase
 from memorydreaming.models import EpistemicStatus, MemoryType
+from memorydreaming.host import HostAdapter, SessionBinding
 
 
 class MemoryHealthTests(RuntimeTestCase):
@@ -16,5 +17,17 @@ class MemoryHealthTests(RuntimeTestCase):
         self.assertGreaterEqual(health["memories"]["semantic"]["active"], 2)
         self.assertEqual(health["working"]["open_loops"], 1)
         self.assertEqual(health["inferred_without_source"], 1)
+        self.assertNotIn("海边", str(health))
+
+    def test_health_includes_cache_counts_without_cache_contents(self):
+        session = HostAdapter(self.runtime, clock=self.clock).open_session(
+            SessionBinding("u1", "c1", "r1", "health-cache")
+        )
+        try:
+            session.prefetch("海边")
+            health = self.runtime.memory_health(self.scope.__class__("u1", "c1", "r1"))
+        finally:
+            session.close()
+        self.assertEqual(health["retrieval_cache"]["active"], 1)
         self.assertNotIn("海边", str(health))
 

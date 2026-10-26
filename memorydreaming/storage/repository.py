@@ -2342,6 +2342,16 @@ class RetrievalCacheRepository:
         )
         return cursor.rowcount
 
+    def stats(self, scope: Scope, now: datetime) -> dict[str, int]:
+        """返回指定精确绑定的缓存计数，不读取缓存正文。"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS total, SUM(expires_at > ?) AS active "
+            "FROM retrieval_cache WHERE scope_key=?",
+            (to_utc_iso(now), _scope_key(scope)),
+        ).fetchone()
+        return {"total": int(row["total"] or 0), "active": int(row["active"] or 0),
+                "expired": int((row["total"] or 0) - (row["active"] or 0))}
+
 
 # ---------------------------------------------------------------------------
 # Durable journal / hash chain
