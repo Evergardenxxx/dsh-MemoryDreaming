@@ -90,7 +90,7 @@ v0.6 已迁移核心键：身份按用户/角色/领域、关系再按 relations
 
 LLM `memory_search` 已能显式传入 `knowledge_at` / `fact_at`，宿主能力声明同步更新；`recorded` / `valid` 的 `time_range` 仍明确返回 unsupported，避免静默误查。
 
-实体索引、图关系遍历、快照实体映射和 SQLite 跨进程候选缓存已完成。待完成：更丰富的提议类型（核心以外的批量修改）、派生物 `withdrawn/rolled_back`、后台 prefetch 调度与长期指标聚合、真实中文 embedding/DeepSeek 抽取评估、精确 tokenizer 预算，以及真实 Harness 主程序重启/取消/异常退出验收。
+实体索引、图关系遍历、快照实体映射、SQLite 跨进程候选缓存和 `ExactTokenCounter` 宿主注入接口已完成。待完成：更丰富的提议类型（核心以外的批量修改）、派生物 `withdrawn/rolled_back`、后台 prefetch 调度与长期指标聚合、真实中文 embedding/DeepSeek 抽取评估、DeepSeek 目标 tokenizer 的宿主接入，以及真实 Harness 主程序重启/取消/异常退出验收。
 
 ## 7. P2：评估、人格成长和预算计量
 

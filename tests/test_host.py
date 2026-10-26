@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from memorydreaming.extractors import RuleBasedExtractor
 from memorydreaming.host import HostAdapter, SessionBinding, MEMORY_RULES
-from memorydreaming.llm import AdapterError, dumps, tool_catalog
+from memorydreaming.llm import AdapterError, ExactTokenCounter, dumps, tool_catalog
 from memorydreaming.models import (CoreKind, ForgetSelector, LinkRelation, MemoryStatus, MemoryType, Scope,
                                    Summary, new_id)
 from memorydreaming.runtime import MemoryRuntime
@@ -68,6 +68,12 @@ class HostTest(RuntimeTestCase):
             self.assertEqual(other.opened["data"]["relationship_fields"][0]["value"], "爸爸")
             self.assertNotEqual(other.opened["data"]["identity_ref"], self.session.opened["data"]["identity_ref"])
             self.assert_error(self.read([self.session.opened["data"]["identity_ref"]], session=other), "NOT_FOUND_OR_FORBIDDEN")
+
+    def test_exact_token_counter_wraps_host_tokenizer(self):
+        counter = ExactTokenCounter(lambda value: len(value))
+        self.assertEqual(counter.count("爸爸"), 2)
+        exact = HostAdapter(self.runtime, clock=self.clock, token_counter=counter)
+        self.assertTrue(exact.capabilities["exact_token_counting"])
 
     def test_every_prepare_refreshes_core_and_never_uses_core_text_as_system_instruction(self):
         one = self.session.prepare_turn("m1", "你好")

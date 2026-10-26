@@ -6,7 +6,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .retrieval.context import estimate_tokens
 
@@ -33,6 +33,28 @@ class EstimatedTokenCounter:
 
     def count(self, text: str) -> int:
         return estimate_tokens(text)
+
+
+class ExactTokenCounter:
+    """把宿主提供的真实 tokenizer 封装成协议计数器。
+
+    引擎不绑定某个供应商 tokenizer；宿主可以传入
+    ``lambda text: len(tokenizer.encode(text))``。返回值严格要求为非负整数，
+    这样错误的 tokenizer 配置会在预算边界处立即暴露，而不会静默回退成估计值。
+    """
+
+    mode = "exact"
+
+    def __init__(self, counter: Callable[[str], int]) -> None:
+        if not callable(counter):
+            raise TypeError("counter 必须是可调用对象")
+        self._counter = counter
+
+    def count(self, text: str) -> int:
+        value = self._counter(text)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("精确 tokenizer 必须返回非负整数")
+        return value
 
 
 def dumps(value: Any) -> str:

@@ -144,6 +144,8 @@ tests/
 `MemoryRuntime(consolidation_extractor=...)` 的抽取器。模型输出仍会经过来源片段、
 四类正文和作用域校验；文件库可用 `Settings(auto_consolidation=True)` 自动消费队列。
 
+如果宿主拥有目标模型的 tokenizer，可以传入 `ExactTokenCounter` 获取真实预算；引擎默认使用标记为 `estimated` 的零依赖估算，不会自行下载供应商 tokenizer。
+
 ## 一次对话发生了什么
 
 ```
