@@ -8,7 +8,7 @@ from pathlib import Path
 
 from memorydreaming.clock import FixedClock
 from memorydreaming.config import Settings
-from memorydreaming.models import MemoryItem, MemoryType, Scope, new_id
+from memorydreaming.models import LinkRelation, MemoryItem, MemoryType, Scope, new_id
 from memorydreaming.runtime import MemoryRuntime
 
 
@@ -68,6 +68,39 @@ class P0ScopeAndBitemporalTest(unittest.TestCase):
         self.assertFalse(preflight["ready"])
         self.assertTrue(any(error["code"] in {"GENERATION_MISMATCH", "PURGED_SCOPE"}
                             for error in preflight["errors"]))
+
+    def test_snapshot_import_is_atomic_after_preflight(self):
+        scope = Scope("u", "c")
+        item = self._insert(scope, "可恢复")
+        source_path = Path(self.temp.name) / "source.json"
+        self.runtime.export_snapshot(str(source_path))
+        source_key = self.runtime.db.meta_get("forgetting_hmac_key")
+        self.runtime.close()
+
+        target_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(target_dir.cleanup)
+        target = MemoryRuntime(Settings(db_path=Path(target_dir.name) / "target.db"), clock=FixedClock(self.now))
+        self.addCleanup(target.close)
+        target.db.meta_set("forgetting_hmac_key", source_key)
+        report = target.import_snapshot(str(source_path))
+        self.assertEqual(report["mode"], "applied")
+        self.assertIsNotNone(target.db.repositories.memories.get(item.memory_id))
+
+    def test_related_memories_is_bounded_scope_checked_graph_traversal(self):
+        scope = Scope("u", "c", "r1")
+        other_scope = Scope("u", "c", "r2")
+        first = self._insert(scope, "第一条")
+        second = self._insert(scope, "第二条")
+        foreign = self._insert(other_scope, "不应泄露")
+        now = self.clock.now()
+        with self.runtime.db.transaction():
+            self.runtime.db.repositories.links.add(first.memory_id, second.memory_id,
+                                                   LinkRelation.SUPPORTS, now)
+            self.runtime.db.repositories.links.add(first.memory_id, foreign.memory_id,
+                                                   LinkRelation.SUPPORTS, now)
+        related = self.runtime.related_memories(first.memory_id, scope, depth=1)
+        self.assertEqual([item["memory"].memory_id for item in related], [second.memory_id])
+        self.assertEqual(related[0]["relation"], "supports")
 
 
 if __name__ == "__main__":

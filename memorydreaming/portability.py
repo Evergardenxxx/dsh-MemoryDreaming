@@ -310,3 +310,75 @@ def preflight_snapshot_file(db: Database, path: str | Path) -> dict[str, Any]:
     """读取文件并执行 validate_snapshot 的便捷入口。"""
     return validate_snapshot(db, load_snapshot(path))
 
+
+def _decode_jsonable(value: Any) -> Any:
+    if isinstance(value, dict) and set(value) == {"__bytes__"}:
+        try:
+            return base64.b64decode(value["__bytes__"])
+        except (TypeError, ValueError):
+            raise ValueError("快照包含无效二进制字段")
+    if isinstance(value, dict):
+        return {key: _decode_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_jsonable(item) for item in value]
+    return value
+
+
+# 外键依赖决定的写入顺序。派生表不会出现在此列表中，导入完成后由
+# 当前数据库的触发器/重建流程产生。
+_IMPORT_ORDER = (
+    "events", "activities", "core_versions", "session_handoffs", "memories",
+    "memory_revisions", "memory_links", "summaries", "consolidation_jobs",
+    "forgotten_events", "scope_mutations", "scope_purges", "memory_tombstones",
+    "tombstone_sources", "core_field_tombstones", "host_deliveries",
+    "core_proposals", "journal_entries",
+)
+
+
+def import_snapshot(db: Database, snapshot: dict[str, Any], *, allow_partial: bool = True) -> dict[str, Any]:
+    """在预检通过后原子导入主数据快照。
+
+    导入只接受本项目生成的、遗忘密钥一致的快照；相同主键的相同记录幂等
+    跳过，不同内容会在 validate_snapshot 阶段拒绝。任何一张表写入失败都会
+    回滚整个事务，向量/FTS 等派生数据列入 residuals 供宿主重建。
+    """
+    manifest = snapshot.get("manifest") or {}
+    if manifest.get("partial") and not allow_partial:
+        raise ValueError("当前调用方禁止导入作用域快照")
+    check = validate_snapshot(db, snapshot)
+    if not check.get("ready"):
+        raise ValueError(json.dumps(check, ensure_ascii=False, sort_keys=True))
+
+    tables = snapshot.get("tables") or {}
+    counts: dict[str, int] = {}
+    with db.transaction():
+        for table in _IMPORT_ORDER:
+            rows = tables.get(table, [])
+            if not rows:
+                counts[table] = 0
+                continue
+            columns = [row["name"] for row in db.connection.execute(f"PRAGMA table_info({table})").fetchall()]
+            if not columns:
+                raise ValueError(f"目标数据库缺少表：{table}")
+            placeholders = ",".join("?" for _ in columns)
+            sql = f"INSERT OR IGNORE INTO {table} ({','.join(columns)}) VALUES ({placeholders})"
+            inserted = 0
+            for raw in rows:
+                if not isinstance(raw, dict):
+                    raise ValueError(f"快照表 {table} 包含非对象记录")
+                values = [_decode_jsonable(raw.get(column)) for column in columns]
+                cursor = db.connection.execute(sql, values)
+                inserted += max(cursor.rowcount, 0)
+            counts[table] = inserted
+
+        # 导入后重建 FTS 触发器无法覆盖历史版本的手工差异，显式重建最稳妥。
+        db.connection.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+    return {
+        "ready": True,
+        "mode": "applied",
+        "partial": bool(manifest.get("partial")),
+        "counts": counts,
+        "residuals": {"derived_tables_to_rebuild": list(DERIVED_TABLES),
+                       "vectors_imported": False},
+    }
+

@@ -60,9 +60,9 @@ from .llm_extractor import (
 from .formation import MemoryFormationPolicy
 from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 from .proposals import CoreProposalPolicy
-from .portability import export_snapshot, load_snapshot, validate_snapshot, write_snapshot
+from .portability import export_snapshot, import_snapshot, load_snapshot, validate_snapshot, write_snapshot
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 __all__ = [
     "MemoryRuntime",
@@ -110,6 +110,7 @@ __all__ = [
     "EXTRACTION_SCHEMA",
     "MemoryFormationPolicy",
     "export_snapshot",
+    "import_snapshot",
     "write_snapshot",
     "load_snapshot",
     "validate_snapshot",

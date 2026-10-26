@@ -110,7 +110,8 @@ class HostAdapter:
     @property
     def capabilities(self):
         return {"protocol_version": "1.0", "provider_mode": "neutral",
-                "tools": [tool["name"] for tool in self.tools], "temporal_axes": ["occurred"],
+                "tools": [tool["name"] for tool in self.tools],
+                "temporal_axes": ["occurred", "knowledge_at", "fact_at"],
                 "detail_modes": ["auto", "overview", "evidence"], "automatic_bootstrap": True,
                 "exact_token_counting": self.counter.mode == "exact", "full_forgetting": False,
                 "core_proposals": self.core_policy.enabled, "checkpoint_proposals": False,
@@ -270,6 +271,7 @@ class MemorySession:
             "query": args["query"], "activity_ref": args["activity_ref"],
             "time_range": interval, "detail": args["detail"],
             "max_items": args["max_items"], "max_tokens": args["max_tokens"],
+            "knowledge_at": args.get("knowledge_at"), "fact_at": args.get("fact_at"),
             "event_id": self.current_event_id,
         })
         cached = self._search_cache.get(cache_key)
@@ -304,6 +306,8 @@ class MemorySession:
         result = self.runtime.retrieve(
             args["query"], self.binding.scope,
             time_range=(timestamp(interval["start"]), timestamp(interval["end"])) if interval else None,
+            knowledge_at=timestamp(args["knowledge_at"]) if args.get("knowledge_at") else None,
+            fact_at=timestamp(args["fact_at"]) if args.get("fact_at") else None,
             max_items=args["max_items"] or 12, token_budget=4096, detail=args["detail"],
             read_filter=ReadFilter(activities, tuple(reader.excluded)),
         )

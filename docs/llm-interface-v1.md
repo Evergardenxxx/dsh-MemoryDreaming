@@ -2,7 +2,7 @@
 
 状态：**查询与核心候选/审批已实现，其余为设计契约**。本文固定宿主、对话 LLM、抽取 LLM 三种调用者的边界。业务架构见 [架构 v0.2](architecture-v0.2.md)，算法见 [算法 v0.2](algorithms-v0.2.md)。协议 v1 与 Python 包 v0.8、SQLite schema v8 是不同版本号。
 
-v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` / `memory_read`，可通过 MCP stdio 调用，见 [接入指南](host-adapter.md)。v0.8 增加可选 `memory_core_propose` 与带外宿主审批，见 [核心候选](core-proposals.md)。它采用结构化字段补丁，补充原通用修改目标契约。通用纠错/删除、检查点建议仍未完成；`full_forgetting` 为 false。
+v0.7 实现 HostAdapter、可信会话绑定、受控引用和 `memory_search` / `memory_read`，可通过 MCP stdio 调用，见 [接入指南](host-adapter.md)。v0.8 增加可选 `memory_core_propose` 与带外宿主审批，见 [核心候选](core-proposals.md)。`memory_search` 现在支持可选 `knowledge_at` / `fact_at` 双时间查询。通用纠错/删除、检查点建议仍未完成；`full_forgetting` 为 false。
 
 机器可读文件：
 
@@ -44,7 +44,7 @@ binding、request_id、deadline、idempotency_key、当前用户事件 ID、scop
   "protocol_version": "1.0",
   "provider_mode": "native_tools",
   "tools": ["memory_search", "memory_read"],
-  "temporal_axes": ["occurred"],
+  "temporal_axes": ["occurred", "knowledge_at", "fact_at"],
   "detail_modes": ["auto", "overview", "evidence"],
   "automatic_bootstrap": true,
   "exact_token_counting": false,
@@ -57,7 +57,7 @@ binding、request_id、deadline、idempotency_key、当前用户事件 ID、scop
 }
 ```
 
-这是默认能力结构样例；HostAdapter 的 provider_mode 为 neutral，core_proposals 与 tools 随字段白名单配置变化。automatic_bootstrap 指宿主调用 open_session / prepare_turn 的路径，不能推导成任意 MCP 客户端已安装自动 hook。pre-compress handoff 通过宿主生命周期 API 提供，不注册为模型工具。recorded/valid、完整遗忘、检查点建议及通用修改仍关闭。
+这是默认能力结构样例；HostAdapter 的 provider_mode 为 neutral，core_proposals 与 tools 随字段白名单配置变化。automatic_bootstrap 指宿主调用 open_session / prepare_turn 的路径，不能推导成任意 MCP 客户端已安装自动 hook。pre-compress handoff 通过宿主生命周期 API 提供，不注册为模型工具。`recorded` / `valid` 时间范围仍关闭，完整遗忘、检查点建议及通用修改仍关闭。
 
 ## 3. 对话 LLM 的工具
 
@@ -84,7 +84,7 @@ search 示例：
 }
 ```
 
-`detail=auto` 交给规划器；overview 优先主题索引再按需展开；evidence 优先逐条依据。detail 不等于扩大权限，也不能绕过时间/来源检查。time_range 不为空时为 `{axis,start,end}`，start/end 必须有时区、start < end，结束点不包含在区间内。首版只开放 occurred 轴；暂不把本地简化 as_of 伪装成完整双时间查询。
+`detail=auto` 交给规划器；overview 优先主题索引再按需展开；evidence 优先逐条依据。detail 不等于扩大权限，也不能绕过时间/来源检查。time_range 不为空时为 `{axis,start,end}`，start/end 必须有时区、start < end，结束点不包含在区间内；当前只执行 `occurred` 轴，`recorded` / `valid` 会明确返回 unsupported。`knowledge_at` 和 `fact_at` 是带时区的 ISO 时间字符串，可分别冻结系统知识和事实有效时间。
 
 activity_ref 为 null 时沿用宿主焦点；也可指定活动目录里已授权的引用。选定活动时仍可检索当前关系内无活动归属的共享事实；不能借此读取其他关系或未授权活动。适配器需要实现受控联合检索，不能只把选定活动 ID 填入当前 Scope 后就声称共享事实也已覆盖。
 

@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.11，增加压缩前 handoff、低信息检索门控、派生摘要来源校验和 durable journal**。Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 300 个回归测试通过。跨机器打包、真实 Harness 热加载、完整擦除和健康趋势告警仍待完成。
+当前状态：**v0.12，增加双时间修订回放、作用域物理清除、原子快照导入和有界关系图遍历**。Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 310 个回归测试通过。跨机器打包、真实 Harness 热加载、完整外部备份清理和健康趋势告警仍待完成。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -35,7 +35,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部 265 个测试
+python -m unittest                # 跑全部测试（当前 310 项）
 python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 python -X utf8 examples/core_proposal.py
 ```
@@ -227,7 +227,7 @@ SQLite 默认分词器会把一整句中文当一个词，查「海边」永远�
 新事实带 `supersedes` 链接。覆盖会丢掉「他以前叫林鸥」这个事实，
 而陪伴角色恰恰需要解释「你以前是这么叫我的」。
 触发条件是规则化的：单值谓词（名字/住处/生日…）换值，或同宾语的否定翻转（喜欢→不喜欢）。
-「喜欢猫」和「喜欢狗」不算冲突；复杂语义矛盾仍需单独判断。当前没有完整修订日志，不能声称已实现双时间数据库。
+「喜欢猫」和「喜欢狗」不算冲突；复杂语义矛盾仍需单独判断。当前 `memory_revisions` 支持记忆层的双时间回放，核心和摘要的完整历史仍在后续计划中。
 
 **逻辑删除为什么还要查「有没有别的来源」？**
 抄的是 Zep 的 `remove_episode` 规则：一条派生记忆由 A、B 两条证据支撑时，

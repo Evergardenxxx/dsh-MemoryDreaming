@@ -43,6 +43,7 @@ from .models import (
     LinkRelation,
     MemoryItem,
     MemoryStatus,
+    MemoryStatus,
     ObserveResult,
     Query,
     ReadFilter,
@@ -59,7 +60,7 @@ from .retrieval.vector import VectorIndex
 from .summarization import build_summaries
 from .storage.database import Database
 from .storage.repository import scope_sql, _scope_key
-from .portability import preflight_snapshot_file, write_snapshot
+from .portability import import_snapshot, load_snapshot, preflight_snapshot_file, write_snapshot
 from .worker import ConsolidationWorker
 
 
@@ -259,6 +260,60 @@ class MemoryRuntime:
     ) -> MemoryItem | None:
         """按双时间轴恢复单条记忆，供审计/回放工具使用。"""
         return self._repos.memories.at(memory_id, knowledge_at, fact_at=fact_at)
+
+    def related_memories(
+        self,
+        memory_id: str,
+        scope: Scope,
+        *,
+        depth: int = 2,
+        limit: int = 50,
+        relation: LinkRelation | str | None = None,
+    ) -> list[dict[str, Any]]:
+        """沿记忆关系图做有界双向遍历，返回可校验的邻居与跳数。
+
+        图遍历只补充检索证据，仍受作用域、遗忘账本和记忆状态过滤；它不会
+        自动提升证据等级，也不会把关系边本身当作事实正文注入模型。
+        """
+        if isinstance(depth, bool) or not isinstance(depth, int) or not 1 <= depth <= 4:
+            raise ValueError("depth 必须为 1..4")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise ValueError("limit 必须为 1..200")
+        root = self._repos.memories.get(memory_id)
+        if root is None or not self._scope_matches(root.scope, scope):
+            raise ScopeNotFound(f"找不到作用域内记忆 {memory_id}")
+        if relation is not None and not isinstance(relation, LinkRelation):
+            try:
+                relation = LinkRelation(str(relation))
+            except ValueError as exc:
+                raise ValueError("relation 不是支持的记忆关系") from exc
+
+        queue: deque[tuple[str, int]] = deque([(memory_id, 0)])
+        visited = {memory_id}
+        result: list[dict[str, Any]] = []
+        while queue and len(result) < limit:
+            current, current_depth = queue.popleft()
+            if current_depth >= depth:
+                continue
+            edges = self._repos.links.neighbors(current, relation=relation)
+            edges += self._repos.links.incoming(current, relation=relation)
+            for target, edge_relation in edges:
+                if target in visited:
+                    continue
+                visited.add(target)
+                item = self._repos.memories.get(target)
+                if item is None or not self._scope_matches(item.scope, scope):
+                    continue
+                if item.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED):
+                    continue
+                if self._repos.forgetting.is_suppressed(item):
+                    continue
+                next_depth = current_depth + 1
+                result.append({"memory": item, "relation": edge_relation, "depth": next_depth})
+                if len(result) >= limit:
+                    break
+                queue.append((target, next_depth))
+        return result
 
     # -- 3. 观察（保存原始对话） -------------------------------------------
 
@@ -629,6 +684,10 @@ class MemoryRuntime:
     def preflight_snapshot(self, path: str) -> dict[str, Any]:
         """只读检查快照能否导入当前库，失败时不修改任何数据。"""
         return preflight_snapshot_file(self._db, path)
+
+    def import_snapshot(self, path: str, *, allow_partial: bool = True) -> dict[str, Any]:
+        """校验并原子导入快照；失败时整个事务回滚。"""
+        return import_snapshot(self._db, load_snapshot(path), allow_partial=allow_partial)
 
     # -- 5. 核心档案 -------------------------------------------------------
 

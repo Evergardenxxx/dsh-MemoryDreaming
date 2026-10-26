@@ -78,9 +78,20 @@ def validate_tool(name: str, arguments: Any, *, include_core_proposals=False) ->
     if name not in schemas:
         raise AdapterError("UNSUPPORTED", "该工具尚未开放")
     schema = schemas[name]
-    if not isinstance(arguments, dict) or set(arguments) != set(schema["required"]):
-        invalid("参数必须包含工具定义中的全部字段，且不能包含其他字段")
+    if not isinstance(arguments, dict):
+        invalid("参数必须为对象")
+    required = set(schema["required"])
+    allowed = set(schema.get("properties", {}))
+    if not required.issubset(arguments) or set(arguments) - allowed:
+        invalid("参数必须包含工具定义中的必需字段，且不能包含其他字段")
     args = dict(arguments)
+    if name == "memory_search":
+        args.setdefault("knowledge_at", None)
+        args.setdefault("fact_at", None)
+        if args["knowledge_at"] is not None:
+            timestamp(args["knowledge_at"])
+        if args["fact_at"] is not None:
+            timestamp(args["fact_at"])
     if args["max_tokens"] is not None:
         integer(args["max_tokens"], "max_tokens", 128, 4096)
     if name == "memory_core_propose":

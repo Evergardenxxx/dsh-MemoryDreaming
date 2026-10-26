@@ -1550,6 +1550,26 @@ class LinkRepository:
         ).fetchall()
         return [row[0] for row in rows]
 
+    def neighbors(self, memory_id: str, *, relation: LinkRelation | None = None) -> list[tuple[str, str]]:
+        """返回一跳图邻居 ``(target_id, relation)``，方向为 from → to。"""
+        sql = "SELECT to_memory_id, relation FROM memory_links WHERE from_memory_id = ?"
+        params: list[object] = [memory_id]
+        if relation is not None:
+            sql += " AND relation = ?"
+            params.append(relation.value)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [(row["to_memory_id"], row["relation"]) for row in rows]
+
+    def incoming(self, memory_id: str, *, relation: LinkRelation | None = None) -> list[tuple[str, str]]:
+        """返回一跳反向邻居 ``(source_id, relation)``，用于派生链回溯。"""
+        sql = "SELECT from_memory_id, relation FROM memory_links WHERE to_memory_id = ?"
+        params: list[object] = [memory_id]
+        if relation is not None:
+            sql += " AND relation = ?"
+            params.append(relation.value)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [(row["from_memory_id"], row["relation"]) for row in rows]
+
 
 # ---------------------------------------------------------------------------
 # 整理任务队列
