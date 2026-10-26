@@ -11,6 +11,16 @@ export const name = 'memorydreaming'
 // no tools and therefore adds no MCP/tool schema to model requests.
 export const inject = []
 
+const DEFAULT_MAX_TOKENS = 1200
+const MIN_MAX_TOKENS = 128
+const HARD_MAX_TOKENS = 4096
+
+function boundedMaxTokens(value) {
+  return Number.isInteger(value) && value >= MIN_MAX_TOKENS && value <= HARD_MAX_TOKENS
+    ? value
+    : DEFAULT_MAX_TOKENS
+}
+
 function textOfContent(content) {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -56,7 +66,7 @@ class BridgeClient {
     const python = this.config.pythonCommand ?? process.env.MEMORYDREAMING_PYTHON ?? 'python'
     const repoPath = this.config.repoPath ?? REPO_ROOT
     const dbPath = this.config.dbPath ?? resolve(repoPath, '.memorydreaming', 'deepseek-harness.db')
-    const maxTokens = Number.isInteger(this.config.maxTokens) ? this.config.maxTokens : 1200
+    const maxTokens = boundedMaxTokens(this.config.maxTokens)
     const extractor = this.config.extractor === 'deepseek' ? 'deepseek' : 'rules'
     const args = [
       '-X', 'utf8', '-m', 'memorydreaming', '--db', dbPath, 'bridge',
@@ -258,7 +268,7 @@ export function apply(ctx, config = {}) {
           conversation_id: sessionId(session),
           message_id: state.pendingUser.messageId,
           content: state.pendingUser.content,
-          max_tokens: Number.isInteger(config.maxTokens) ? config.maxTokens : 1200,
+          max_tokens: boundedMaxTokens(config.maxTokens),
         }, payload?.signal)
         state.prepared = true
         state.userEventId = prepared.user_event_id
@@ -308,7 +318,7 @@ export function apply(ctx, config = {}) {
         state: data && typeof data === 'object' ? data : null,
         expected_version: Number.isInteger(payload?.expected_version) ? payload.expected_version : undefined,
         idempotency_key: typeof payload?.idempotency_key === 'string' ? payload.idempotency_key : undefined,
-        max_tokens: Number.isInteger(config.maxTokens) ? config.maxTokens : 1200,
+        max_tokens: boundedMaxTokens(config.maxTokens),
       }, payload?.signal)
     } catch (error) {
       logger.warn?.(`[memorydreaming] pre_compress skipped: ${error.message}`)
@@ -325,4 +335,4 @@ export function apply(ctx, config = {}) {
   })
 }
 
-export const __testing = { textOfContent, hasMemoryContext, BridgeClient }
+export const __testing = { textOfContent, hasMemoryContext, boundedMaxTokens, BridgeClient }

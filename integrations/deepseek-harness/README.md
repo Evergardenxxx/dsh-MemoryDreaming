@@ -19,7 +19,7 @@
 
 ### 上下文占用
 
-MemoryDreaming 不注册工具，因此不会增加工具 schema。它只按 `maxTokens`（默认 1200）注入当前回合记忆；如果上下文仍然很大，应在 Harness 的上下文面板按命名空间检查其他 MCP server（例如 `mcp__rea__*`）。
+MemoryDreaming 不注册工具，因此不会增加工具 schema。它只按 `maxTokens`（默认 1200，插件硬上限 4096）注入当前回合记忆；超出范围的配置会回退到 1200。如果总上下文仍然很大，应在 Harness 的上下文面板按命名空间检查其他 MCP server（例如 `mcp__rea__*`）。
 
 ### 当前限制
 
