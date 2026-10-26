@@ -26,6 +26,7 @@ from typing import Any, Protocol
 
 from .clock import Clock, ensure_utc
 from .errors import JobLeaseLost, SourceRevisionChanged
+from .formation import MemoryFormationPolicy
 from .models import (
     EpistemicStatus,
     EventRecord,
@@ -240,14 +241,19 @@ def _run_extract(
     suppressed = 0
     now = clock.now()
 
+    policy = MemoryFormationPolicy()
+    # 先统一校验整批候选，再进入事务。任何一条格式错误都会让任务按
+    # 原有退避策略重试，避免一批候选部分写入后留下不可解释状态。
+    validated = [policy.validate(event, draft) for draft in drafts]
+
     with db.transaction():
-        memories = [_build_memory(draft, event, clock) for draft in drafts]
+        memories = [_build_memory(draft, event, clock) for draft in validated]
         # 相同断言的新来源也须记录，防止以后从这条消息换格式抽取而复活。
         # 先处理整批来源，使区间不明时的保守隔离不受候选顺序影响。
         for memory in memories:
             if repos.forgetting.assertion_tombstone(memory) is not None:
                 repos.forgetting.suppress(memory, now)
-        for draft, memory in zip(drafts, memories):
+        for draft, memory in zip(validated, memories):
             if repos.forgetting.is_suppressed(memory):
                 suppressed += 1
                 continue

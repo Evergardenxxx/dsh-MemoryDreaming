@@ -56,6 +56,7 @@ from .retrieval.pipeline import RetrievalPipeline
 from .retrieval.vector import VectorIndex
 from .summarization import build_summaries
 from .storage.database import Database
+from .worker import ConsolidationWorker
 
 
 class MemoryRuntime:
@@ -67,6 +68,7 @@ class MemoryRuntime:
         clock: Clock | None = None,
         db_path: str | None = None,
         embedder: Embedder | None = None,
+        consolidation_extractor: MemoryExtractor | None = None,
     ) -> None:
         self._settings = settings or Settings.from_env()
         if db_path:
@@ -77,6 +79,7 @@ class MemoryRuntime:
         self._tz = load_timezone(self._settings.timezone)
         self._db = Database.open(self._settings.db_path)
         self._repos = self._db.repositories
+        self._consolidator: ConsolidationWorker | None = None
 
         # 嵌入模型同样可替换。默认的哈希嵌入是零依赖占位实现，
         # 换成真实模型时只需实现 Embedder 协议并从构造函数传进来。
@@ -84,6 +87,25 @@ class MemoryRuntime:
         self._pipeline = RetrievalPipeline(
             self._db, self._settings, self._clock, self._tz, vector_index=self._vectors
         )
+        if (
+            self._settings.auto_consolidation
+            and consolidation_extractor is not None
+            and self._db.path is not None
+        ):
+            self._consolidator = ConsolidationWorker(
+                self._db.path,
+                self._clock,
+                consolidation_extractor,
+                embedder=embedder,
+                timezone=self._settings.timezone,
+                interval_seconds=self._settings.consolidation_interval_seconds,
+                batch_size=self._settings.consolidation_batch_size,
+                lease_seconds=self._settings.job_lease_seconds,
+                retry_base_seconds=self._settings.job_retry_base_seconds,
+                retry_max_seconds=self._settings.job_retry_max_seconds,
+                max_attempts=self._settings.job_max_attempts,
+            )
+            self._consolidator.start()
 
     # -- 生命周期 ---------------------------------------------------------
 
@@ -94,7 +116,14 @@ class MemoryRuntime:
         self.close()
 
     def close(self) -> None:
+        if self._consolidator is not None:
+            self._consolidator.stop()
         self._db.close()
+
+    @property
+    def consolidator(self) -> ConsolidationWorker | None:
+        """后台整理器状态；未启用时为 None。"""
+        return self._consolidator
 
     @property
     def settings(self) -> Settings:
@@ -268,6 +297,9 @@ class MemoryRuntime:
         if activity_id:
             activity = self._repos.activities.get(activity_id)
             version = activity.checkpoint_version if activity else None
+
+        if self._consolidator is not None and job_id is not None:
+            self._consolidator.wake()
 
         return ObserveResult(
             event=stored,

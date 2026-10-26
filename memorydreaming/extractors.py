@@ -106,6 +106,38 @@ def _preference_draft(match: re.Match[str]) -> MemoryDraft:
     )
 
 
+def _episodic_draft(match: re.Match[str]) -> MemoryDraft:
+    """把明确的用户经历保存为情景记忆；不把普通聊天全部变成长期事件。"""
+    happened = match.group(0).strip("，。！ ")
+    return MemoryDraft(
+        memory_type=MemoryType.EPISODIC,
+        body={"what_happened": happened, "participants": ["用户"], "context": ""},
+        candidate_key="rule:episode",
+        epistemic_status=EpistemicStatus.USER_REPORT,
+        modality=Modality.OCCURRED,
+        importance=0.5,
+    )
+
+
+def _procedural_draft(match: re.Match[str]) -> MemoryDraft:
+    trigger = match.group("trigger").strip()
+    steps = [part.strip() for part in re.split(r"(?:然后|并且|、)", match.group("step")) if part.strip()]
+    return MemoryDraft(
+        memory_type=MemoryType.PROCEDURAL,
+        body={
+            "trigger": trigger,
+            "preconditions": [],
+            "steps": steps,
+            "exceptions": [],
+            "expected_outcome": "",
+        },
+        candidate_key="rule:procedure",
+        epistemic_status=EpistemicStatus.EXPLICIT_SETTING,
+        modality=Modality.OCCURRED,
+        importance=0.8,
+    )
+
+
 _RULES: list[tuple[re.Pattern[str], Callable[[re.Match[str]], MemoryDraft]]] = [
     # 称呼请求与姓名陈述使用互斥规则，避免同一短语同时改写姓名和偏好。
     (
@@ -121,8 +153,31 @@ _RULES: list[tuple[re.Pattern[str], Callable[[re.Match[str]], MemoryDraft]]] = [
         _name_draft,
     ),
     (re.compile(r"^(?:我们约好|说好|答应你)\s*(?P<value>[^。！？]{1,30})$"), _commitment_draft),
+    # 稳定相处规则：必须是显式的「以后/每次/当我 + 条件 + 动作」结构，
+    # 避免把普通愿望或假设误记成程序记忆。
+    (
+        re.compile(r"^(?:以后|每次|当我)\s*(?P<trigger>[^，,：:]{1,20})(?:，|,|：|:)\s*"
+                   r"(?:请|就|都)?\s*(?P<step>[^。！？]{1,40})$"),
+        _procedural_draft,
+    ),
+    # 有明确行动动词的用户自述才进入情景记忆；「我喜欢/我想」由其他规则处理。
+    (
+        re.compile(r"^(?:(?:今天|昨天|前天|上次|刚刚)\s*)?我(?:去|去了|遇到|看见|看到|参加|完成|做了|买了|读了|搬到|开始)[^。！？]{1,40}$"),
+        _episodic_draft,
+    ),
+    (
+        re.compile(r"^我们(?:一起)?(?:去|去了|聊了|完成了|做了|看了)[^。！？]{1,40}$"),
+        _episodic_draft,
+    ),
     (re.compile(r"^我(?P<neg>不)?喜欢\s*(?P<value>[^。！？]{1,30})$"), _preference_draft),
 ]
+
+# 逗号是程序记忆格式的一部分，而普通事实分句会在逗号处分割；
+# 因此在分句前单独识别完整的条件→动作句。
+_PROCEDURE_PATTERN = re.compile(
+    r"^(?:以后|每次|当我)\s*(?P<trigger>[^，,：:]{1,20})(?:，|,|：|:)\s*"
+    r"(?:请|就|都)?\s*(?P<step>[^。！？]{1,40})$"
+)
 
 
 # 示例抽取器只接受可以直接识别的自述。复杂语境留给更完整的抽取器，
@@ -162,6 +217,11 @@ class RuleBasedExtractor:
             return []
 
         drafts: list[MemoryDraft] = []
+        for match in _PROCEDURE_PATTERN.finditer(event.content.strip()):
+            draft = _procedural_draft(match)
+            draft.candidate_key += f":procedure:{match.start()}"
+            draft.source_span = (match.start(), match.end())
+            drafts.append(draft)
         for clause_index, (clause, clause_start) in enumerate(_declarative_clauses(event.content)):
             for pattern, builder in _RULES:
                 for match in pattern.finditer(clause):

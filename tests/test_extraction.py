@@ -107,6 +107,19 @@ class ConsolidationTest(RuntimeTestCase):
         memory = self.repos.memories.list_by_scope(self.scope)[0]
         self.assertEqual(memory.body["predicate"], "不喜欢")
 
+    def test_explicit_episode_and_procedure_use_their_own_memory_shapes(self) -> None:
+        self.runtime.observe(self.make_turn("昨天我去了海边"), self.scope, "episode")
+        self.runtime.observe(self.make_turn("以后睡不着时，请讲一个短故事然后把灯调暗"), self.scope, "procedure")
+        report = self.runtime.run_consolidation(self.extractor)
+
+        self.assertEqual(report.created, 2)
+        memories = self.repos.memories.list_by_scope(self.scope)
+        episode = next(item for item in memories if item.memory_type is MemoryType.EPISODIC)
+        procedure = next(item for item in memories if item.memory_type is MemoryType.PROCEDURAL)
+        self.assertIn("去了海边", episode.body["what_happened"])
+        self.assertEqual(procedure.body["trigger"], "睡不着时")
+        self.assertEqual(procedure.body["steps"], ["讲一个短故事", "把灯调暗"])
+
 
 if __name__ == "__main__":
     unittest.main()

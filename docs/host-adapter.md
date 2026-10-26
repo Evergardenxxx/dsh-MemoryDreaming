@@ -1,6 +1,6 @@
 # 宿主适配与 MCP 只读接入（v0.7）
 
-这一阶段把 [接口协议 v1](llm-interface-v1.md) 的只读部分做成可执行代码：Python 宿主生命周期、受控引用、`memory_search` / `memory_read`，以及 MCP stdio 服务。仍只依赖 Python 标准库和 SQLite。当前包版本 0.8.0，数据库 schema v8；新增的可选 Python 核心建议与审批见 [核心候选指南](core-proposals.md)，MCP 仍只读。
+这一阶段把 [接口协议 v1](llm-interface-v1.md) 的只读部分做成可执行代码：Python 宿主生命周期、受控引用、`memory_search` / `memory_read`，以及 MCP stdio 服务。仍只依赖 Python 标准库和 SQLite。当前包版本 0.9.0，数据库 schema v8；新增的可选 Python 核心建议与审批见 [核心候选指南](core-proposals.md)，MCP 仍只读。原生聊天桥接可选启动独立后台整理器，自动消费事件队列。
 
 ## 先运行跨窗口示例
 

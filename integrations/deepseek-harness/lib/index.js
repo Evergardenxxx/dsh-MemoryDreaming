@@ -65,6 +65,7 @@ class BridgeClient {
       '--domain', String(this.config.domain ?? 'real'),
       '--max-tokens', String(maxTokens),
     ]
+    if (this.config.autoConsolidation !== false) args.push('--auto-consolidation')
     const child = spawn(python, args, {
       cwd: repoPath,
       env: { ...process.env, PYTHONUTF8: '1' },

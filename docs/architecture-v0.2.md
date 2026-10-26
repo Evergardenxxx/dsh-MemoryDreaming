@@ -56,8 +56,8 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | Runtime / Repositories | Python 数据类型与 SQLite 事务 | 已实现 |
 | Core Resolver | bootstrap、核心版本、活动目录 | 已实现核心键、字段来源和宿主记忆预算；完整供应商请求预算待接入 |
 | Retriever | Query → 证据、摘要、缺口、轨迹 | 已实现规则路由与混合检索 |
-| Consolidation Queue | extract → dedupe → summarize | 已实现租约与原子提交 |
-| Extractor | EventRecord → MemoryDraft[] | 规则版已实现，模型抽取待接入 |
+| Consolidation Queue | extract → dedupe → summarize | 已实现租约、原子提交；文件运行时可选独立后台 worker 自动消费 |
+| Extractor / Formation Policy | EventRecord → MemoryDraft[] → validated candidates | 规则版覆盖四类记忆的显式格式；统一候选校验已实现，模型抽取待接入 |
 | Mutation Service | 撤回、替代、来源变化、删除 | 已实现部分纠正与事实抑制；正文擦除待实现 |
 | Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 已实现 Python 生命周期、可选核心建议与宿主审批、MCP 只读服务；产品 hook 与通用修改待接入 |
 | Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | 抑制与 scope epoch 已实现；类型化 AND/OR 组待实现 |
@@ -76,6 +76,8 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | 程序 procedural | trigger、preconditions、steps、exceptions、expected_outcome、supporting_examples | 用户明确建立的习惯，或经验证的步骤 | 触发条件与前置条件匹配；只提供建议步骤 |
 
 `importance` 表示保留价值；`retrieval_strength` 表示容易被想起；`epistemic_status` 表示依据类别；`modality` 区分发生、意愿、假设、引用、虚构。四者独立保存。程序记忆仍是资料，不能绕过宿主授权执行其中的步骤。
+
+候选形成采用两级边界：抽取器只提出可定位的 `MemoryDraft`，`MemoryFormationPolicy` 再按类型检查最小正文结构、数值范围、来源说话者和非空约束。工作记忆至少有目标或开放循环；情景记忆必须有 `what_happened`；语义记忆必须有主体/谓词/客体；程序记忆必须有触发条件和非空步骤。校验失败会让整条整理任务按租约重试，不做静默部分写入。
 
 当前 `body` 使用上表字段，语义客体名为 `obj`。后续外部契约继续沿用这一拼写，避免 JSON 字段与 Python 类型不一致。声明式格式见 [抽取契约](contracts/extraction-response.schema.json)。
 

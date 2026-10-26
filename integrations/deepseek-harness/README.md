@@ -9,7 +9,7 @@
 - `locale/en.json`、`locale/zh.json`：插件管理器显示名称和描述。
 - `icon.svg`：插件图标。
 
-插件使用 `C:\Python314\python.exe` 在本地启动一个受控 JSONL 桥接进程，并把身份绑定为 `u1 / c1 / r1`。数据库位于仓库的 `.memorydreaming/deepseek-harness.db`，不会写入 Harness profile 目录。桥接协议不注册模型工具，也不把 MCP schema 放入上下文。
+插件使用 `C:\Python314\python.exe` 在本地启动一个受控 JSONL 桥接进程，并把身份绑定为 `u1 / c1 / r1`。数据库位于仓库的 `.memorydreaming/deepseek-harness.db`，不会写入 Harness profile 目录。桥接协议不注册模型工具，也不把 MCP schema 放入上下文；默认同时启动独立连接的后台整理器，自动处理抽取、去重和摘要。
 
 ## 安装
 
@@ -23,4 +23,4 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema。它只按 `ma
 
 - 插件依赖本机 Python 和仓库路径配置，尚未打包成跨机器安装器。
 - 插件无法可靠知道模型实际使用了哪条不透明引用，因此投递回执暂不增加 `used_references` 热度。
-- 记忆抽取、整理和核心候选审批仍由 Python 宿主调度，插件只接通每轮恢复和投递保存。
+- 核心候选审批仍需要可信宿主确认；后台整理器目前使用零依赖规则抽取器，复杂中文事实需要后续接入模型抽取器。

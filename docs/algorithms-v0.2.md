@@ -68,6 +68,8 @@ dedupe_key = event_id + ':' + extractor_version + ':' + candidate_key
 
 模型输出重试规则：先按 JSON Schema 和语义校验；至多一次格式修复请求，仍不合格即记录任务失败并走队列退避。模型置信度只代表生成器自评，不等于事实概率。无模型服务时继续规则基线，明确报告能力下降。
 
+当前工程实现补充一层 `MemoryFormationPolicy`：在 `_build_memory` 之前对整批候选执行 fail-closed 校验。它要求四类正文分别满足 `working: goal/open_loops`、`episodic: what_happened`、`semantic: subject/predicate/obj`、`procedural: trigger/steps`，并校验候选键、importance、来源说话者和列表字段。整批有一条不合法时任务不提交任何候选，由租约重试；这条策略只保证结构和来源边界，不把模型自评置信度当成事实概率。
+
 ## C. 多标签路由与候选预算
 
 四种记忆对应四个相关度 `s_t ∈ [0,1]`，每个回答“这一类是否可能有用”，不要求相加为 1。没有校准集之前称为相关度，不称为概率。
@@ -291,6 +293,8 @@ owned = status==running AND claim_token matches AND lease_until > now
 ```
 
 到期按上限回收为 pending 或 failed，旧 worker 的所有写入回滚。当前指数实现限制指数避免溢出，默认租约 120 秒，最多尝试 3 次，失败退避 5 秒起、最多 300 秒。完整说明见 [队列设计](reliable-consolidation.md)。目标再加入 G3 的内容代次校验，租约本身不能解决遗忘后复活。
+
+文件数据库运行时可选启动后台整理器：它以独立连接周期等待或被 `observe()` 唤醒，每批领取有限任务，复用同一套租约、心跳和原子提交；手工调用与后台调用可以并发，重复领取由 claim token 互斥。关闭时先停止 worker 再关闭宿主连接。`:memory:` 数据库不启动后台线程，测试和一次性导入继续使用显式 `run_consolidation()`。
 
 ## J. 算法验收与对照
 

@@ -88,6 +88,12 @@ class Settings:
     job_retry_base_seconds: int = 5
     job_retry_max_seconds: int = 300
 
+    # 后台整理器默认关闭，便于批处理、单元测试和显式控制。
+    # 原生聊天插件应显式打开；它会使用独立数据库连接，不阻塞对话请求。
+    auto_consolidation: bool = False
+    consolidation_interval_seconds: float = 1.0
+    consolidation_batch_size: int = 4
+
     def __post_init__(self) -> None:
         for name in ("job_lease_seconds", "job_max_attempts", "job_retry_base_seconds", "job_retry_max_seconds"):
             value = getattr(self, name)
@@ -95,6 +101,16 @@ class Settings:
                 raise ValueError(f"{name} 必须为正整数")
         if self.job_retry_max_seconds < self.job_retry_base_seconds:
             raise ValueError("job_retry_max_seconds 不能小于 job_retry_base_seconds")
+        if not isinstance(self.auto_consolidation, bool):
+            raise ValueError("auto_consolidation 必须为布尔值")
+        if (isinstance(self.consolidation_interval_seconds, bool)
+                or not isinstance(self.consolidation_interval_seconds, (int, float))
+                or self.consolidation_interval_seconds <= 0):
+            raise ValueError("consolidation_interval_seconds 必须为正数")
+        if (isinstance(self.consolidation_batch_size, bool)
+                or not isinstance(self.consolidation_batch_size, int)
+                or self.consolidation_batch_size < 1):
+            raise ValueError("consolidation_batch_size 必须为正整数")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -109,6 +125,9 @@ class Settings:
             job_max_attempts=_env_int("JOB_MAX_ATTEMPTS", 3),
             job_retry_base_seconds=_env_int("JOB_RETRY_BASE_SECONDS", 5),
             job_retry_max_seconds=_env_int("JOB_RETRY_MAX_SECONDS", 300),
+            auto_consolidation=_env_str("AUTO_CONSOLIDATION", "0").lower() in {"1", "true", "yes", "on"},
+            consolidation_interval_seconds=float(_env_str("CONSOLIDATION_INTERVAL_SECONDS", "1")),
+            consolidation_batch_size=_env_int("CONSOLIDATION_BATCH_SIZE", 4),
         )
 
     def with_db(self, db_path: str | Path) -> "Settings":

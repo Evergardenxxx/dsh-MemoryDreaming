@@ -19,6 +19,7 @@ import argparse
 import json
 import uuid
 import sys
+from dataclasses import replace
 from contextlib import redirect_stdout
 
 from .clock import load_timezone, utcnow
@@ -92,6 +93,8 @@ def _build_parser() -> argparse.ArgumentParser:
     bridge.add_argument("--domain", default="real")
     bridge.add_argument("--max-tokens", type=int, default=1200,
                         help="每轮记忆消息预算，默认 1200")
+    bridge.add_argument("--auto-consolidation", action="store_true",
+                        help="启动后台记忆整理器；事件入队后自动抽取、去重和摘要")
     return parser
 
 
@@ -99,7 +102,11 @@ def _open_runtime(args: argparse.Namespace) -> MemoryRuntime:
     settings = Settings.from_env()
     if args.db:
         settings = settings.with_db(args.db)
-    return MemoryRuntime(settings)
+    extractor = None
+    if getattr(args, "command", None) == "bridge" and getattr(args, "auto_consolidation", False):
+        settings = replace(settings, auto_consolidation=True)
+        extractor = RuleBasedExtractor()
+    return MemoryRuntime(settings, consolidation_extractor=extractor)
 
 
 def main(argv: list[str] | None = None) -> int:
