@@ -284,6 +284,19 @@ class MemoryRuntime:
 
             job_id: str | None = None
             if not duplicate:
+                self._repos.journal.append(
+                    "event.recorded",
+                    scope=event_scope,
+                    entity_id=stored.event_id,
+                    payload={
+                        "conversation_id": turn.conversation_id,
+                        "speaker": turn.speaker,
+                        "occurred_at": turn.occurred_at.isoformat(),
+                        "content_digest": self._repos.journal.payload_digest({"content": turn.content}),
+                    },
+                    now=now,
+                    idempotency_key=f"event:{stored.event_id}",
+                )
                 if activity_id:
                     self._repos.activities.touch_last_event(activity_id, event.occurred_at)
                 job_id = self._repos.jobs.enqueue(
@@ -293,6 +306,14 @@ class MemoryRuntime:
                     now=now,
                     activity_id=activity_id,
                     max_attempts=self.settings.job_max_attempts,
+                )
+                self._repos.journal.append(
+                    "consolidation.enqueued",
+                    scope=event_scope,
+                    entity_id=job_id,
+                    payload={"job_type": "extract", "event_id": stored.event_id},
+                    now=now,
+                    idempotency_key=f"job:{job_id}:enqueued",
                 )
 
         version = None
@@ -340,6 +361,14 @@ class MemoryRuntime:
         )
         with self._db.transaction():
             self._repos.activities.create(activity)
+            self._repos.journal.append(
+                "activity.created",
+                scope=scope,
+                entity_id=activity.activity_id,
+                payload={"title": title, "goal_digest": self._repos.journal.payload_digest({"goal": goal})},
+                now=now,
+                idempotency_key=f"activity:{activity.activity_id}:created",
+            )
         return activity
 
     def checkpoint(
@@ -367,7 +396,7 @@ class MemoryRuntime:
             status = ActivityStatus(status)
 
         with self._db.transaction():
-            return self._repos.activities.update_checkpoint(
+            new_version = self._repos.activities.update_checkpoint(
                 activity_id=activity_id,
                 expected_version=expected_version,
                 now=self._clock.now(),
@@ -377,6 +406,19 @@ class MemoryRuntime:
                 checkpoint=state.get("checkpoint"),
                 status=status,
             )
+            activity = self._repos.activities.get(activity_id)
+            if activity is not None:
+                self._repos.journal.append(
+                    "activity.checkpoint",
+                    scope=activity.scope,
+                    entity_id=activity_id,
+                    payload={"expected_version": expected_version,
+                             "new_version": new_version,
+                             "fields": sorted(state)},
+                    now=self._clock.now(),
+                    idempotency_key=f"checkpoint:{activity_id}:{new_version}",
+                )
+            return new_version
 
     def save_handoff(
         self,
@@ -423,7 +465,21 @@ class MemoryRuntime:
             created_at=now,
             updated_at=now,
         )
-        return self._repos.handoffs.upsert(handoff)
+        stored, duplicate = self._repos.handoffs.upsert(handoff)
+        if not duplicate:
+            self._repos.journal.append(
+                "handoff.created",
+                scope=handoff_scope,
+                entity_id=stored.handoff_id,
+                payload={
+                    "conversation_id": conversation_id,
+                    "activity_version": activity_version,
+                    "payload_digest": self._repos.journal.payload_digest(payload),
+                },
+                now=now,
+                idempotency_key=f"handoff:{stored.handoff_id}:created",
+            )
+        return stored, duplicate
 
     def checkpoint_and_save_handoff(
         self,
@@ -520,6 +576,9 @@ class MemoryRuntime:
             gaps.append({"code": "FAILED_JOBS", "message": "部分后台整理任务达到重试上限"})
         if inferred:
             gaps.append({"code": "INFERRED_WITHOUT_SOURCE", "message": "存在没有事件来源的推断候选"})
+        journal = self._repos.journal.verify()
+        if not journal["valid"]:
+            gaps.append({"code": "JOURNAL_INTEGRITY", "message": "持久审计链完整性校验失败"})
         return {
             "status": "ok",
             "scope": {"user_id": scope.user_id, "character_id": scope.character_id,
@@ -529,8 +588,17 @@ class MemoryRuntime:
             "summaries": summaries,
             "jobs": jobs,
             "working": {"active_activities": len(activities), "open_loops": open_loops},
+            "journal": journal,
             "gaps": gaps,
         }
+
+    def journal_entries(self, scope: Scope | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """读取审计链元数据；默认只返回最近记录，不包含对话正文。"""
+        return self._repos.journal.list(scope=scope, limit=limit)
+
+    def verify_journal(self) -> dict[str, Any]:
+        """校验从 genesis 到当前 head 的全局哈希链。"""
+        return self._repos.journal.verify()
 
     # -- 5. 核心档案 -------------------------------------------------------
 

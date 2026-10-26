@@ -44,7 +44,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 9：事件级遗忘账本，保留事件行但撤销读取、抽取和来源贡献。
 # 版本 10：上下文压缩/窗口结束的持久 handoff 交接记录。
 # 版本 11：摘要保存来源指纹和生成算法版本。
-SCHEMA_VERSION = "11"
+# 版本 12：追加式 durable journal/hash-chain 审计链。
+SCHEMA_VERSION = "12"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 

@@ -7,6 +7,7 @@ from .repository import (
     EventRepository,
     JobRecord,
     JobRepository,
+    JournalRepository,
     LinkRepository,
     MemoryRepository,
     Repositories,
@@ -24,6 +25,7 @@ __all__ = [
     "LinkRepository",
     "JobRepository",
     "JobRecord",
+    "JournalRepository",
     "VectorRepository",
     "SummaryRepository",
 ]

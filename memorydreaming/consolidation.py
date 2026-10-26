@@ -153,6 +153,16 @@ def run_pending_jobs(
     for job_id in job_ids:
         with db.transaction():
             claimed = repos.jobs.claim(1, clock.now(), job_ids=[job_id], lease_seconds=lease_seconds)
+            if claimed:
+                claimed_job = claimed[0]
+                repos.journal.append(
+                    "consolidation.claimed",
+                    scope=claimed_job.scope,
+                    entity_id=claimed_job.job_id,
+                    payload={"job_type": claimed_job.job_type, "attempt": claimed_job.attempts},
+                    now=clock.now(),
+                    idempotency_key=f"job:{claimed_job.job_id}:attempt:{claimed_job.attempts}:claimed",
+                )
         if not claimed:
             continue  # 其他 worker 已领取本批候选
         job = claimed[0]
@@ -176,6 +186,14 @@ def run_pending_jobs(
                         with db.transaction():
                             repos.jobs.assert_owned(job.job_id, job.claim_token, clock.now())
                             repos.jobs.complete(job.job_id, job.claim_token, clock.now())
+                            repos.journal.append(
+                                "consolidation.completed",
+                                scope=job.scope,
+                                entity_id=job.job_id,
+                                payload={"job_type": job.job_type, "skipped": "forgotten_event"},
+                                now=clock.now(),
+                                idempotency_key=f"job:{job.job_id}:attempt:{job.attempts}:completed",
+                            )
                         continue
                     drafts = extractor.extract(event)
 
@@ -196,6 +214,21 @@ def run_pending_jobs(
                     if repos.forgetting.epoch(job.scope) != epoch:
                         raise SourceRevisionChanged("提交前内容代次变化")
                     repos.jobs.complete(job.job_id, job.claim_token, clock.now())
+                    repos.journal.append(
+                        "consolidation.completed",
+                        scope=job.scope,
+                        entity_id=job.job_id,
+                        payload={
+                            "job_type": job.job_type,
+                            "created": created,
+                            "duplicates": duplicates,
+                            "merged": merged,
+                            "summarized": summarized,
+                            "suppressed": suppressed,
+                        },
+                        now=clock.now(),
+                        idempotency_key=f"job:{job.job_id}:attempt:{job.attempts}:completed",
+                    )
             # 只有事务真正提交后才把结果计入报告。
             report.created += created
             report.duplicates += duplicates
@@ -208,6 +241,14 @@ def run_pending_jobs(
             try:
                 with db.transaction():
                     repos.jobs.release(job.job_id, job.claim_token, clock.now())
+                    repos.journal.append(
+                        "consolidation.released",
+                        scope=job.scope,
+                        entity_id=job.job_id,
+                        payload={"job_type": job.job_type, "reason": "source_revision_changed"},
+                        now=clock.now(),
+                        idempotency_key=f"job:{job.job_id}:attempt:{job.attempts}:released",
+                    )
             except JobLeaseLost:
                 report.lease_lost += 1
         except JobLeaseLost as exc:
@@ -220,6 +261,14 @@ def run_pending_jobs(
                     repos.jobs.fail(
                         job.job_id, job.claim_token, str(exc), clock.now(),
                         retry_base_seconds=retry_base_seconds, retry_max_seconds=retry_max_seconds,
+                    )
+                    repos.journal.append(
+                        "consolidation.failed",
+                        scope=job.scope,
+                        entity_id=job.job_id,
+                        payload={"job_type": job.job_type, "error_digest": repos.journal.payload_digest({"error": str(exc)})},
+                        now=clock.now(),
+                        idempotency_key=f"job:{job.job_id}:attempt:{job.attempts}:failed",
                     )
                 report.failed += 1
             except JobLeaseLost:
@@ -393,13 +442,21 @@ def _enqueue_follow_up(db: Database, job: JobRecord, clock: Clock, max_attempts:
     repos = db.repositories
     with db.transaction():
         if not repos.jobs.has_pending("dedupe", job.scope):
-            repos.jobs.enqueue(
+            follow_up_id = repos.jobs.enqueue(
                 job_type="dedupe",
                 scope=job.scope,
                 payload={"reason": "extract-follow-up"},
                 now=clock.now(),
                 activity_id=job.activity_id,
                 max_attempts=max_attempts,
+            )
+            repos.journal.append(
+                "consolidation.enqueued",
+                scope=job.scope,
+                entity_id=follow_up_id,
+                payload={"job_type": "dedupe", "parent_job_id": job.job_id},
+                now=clock.now(),
+                idempotency_key=f"job:{follow_up_id}:enqueued",
             )
 
 
@@ -415,13 +472,21 @@ def _enqueue_summarize(db: Database, job: JobRecord, clock: Clock, max_attempts:
 
     with db.transaction():
         if not repos.jobs.has_pending("summarize", job.scope):
-            repos.jobs.enqueue(
+            follow_up_id = repos.jobs.enqueue(
                 job_type="summarize",
                 scope=job.scope,
                 payload={"reason": "dedupe-follow-up"},
                 now=clock.now(),
                 activity_id=job.activity_id,
                 max_attempts=max_attempts,
+            )
+            repos.journal.append(
+                "consolidation.enqueued",
+                scope=job.scope,
+                entity_id=follow_up_id,
+                payload={"job_type": "summarize", "parent_job_id": job.job_id},
+                now=clock.now(),
+                idempotency_key=f"job:{follow_up_id}:enqueued",
             )
 
 

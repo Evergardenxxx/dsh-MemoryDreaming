@@ -1858,6 +1858,190 @@ class SummaryRepository:
 
 
 # ---------------------------------------------------------------------------
+# Durable journal / hash chain
+# ---------------------------------------------------------------------------
+
+
+class JournalRepository:
+    """追加式状态审计链。
+
+    journal 只保存事件元数据和 payload 指纹，避免把原始对话再复制一份。
+    所有调用者须把 append 放在自己的业务事务里；这样链上的记录与状态变更
+    要么一起提交，要么一起回滚。
+    """
+
+    GENESIS = "0" * 64
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    @staticmethod
+    def payload_digest(payload: dict[str, Any]) -> str:
+        material = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _scope_values(scope: Scope | None) -> tuple[str, str | None, str | None, str | None, str | None, str | None]:
+        if scope is None:
+            return "", None, None, None, None, None
+        return (
+            _scope_key(scope), scope.user_id, scope.character_id, scope.relationship_id,
+            scope.activity_id, scope.domain,
+        )
+
+    @classmethod
+    def _entry_material(
+        cls,
+        *,
+        journal_id: str,
+        sequence: int,
+        scope_key: str,
+        event_type: str,
+        entity_id: str | None,
+        payload_json: str,
+        prev_hash: str,
+        created_at: str,
+    ) -> str:
+        return json.dumps(
+            [journal_id, sequence, scope_key, event_type, entity_id,
+             json.loads(payload_json), prev_hash, created_at],
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+
+    def append(
+        self,
+        event_type: str,
+        *,
+        scope: Scope | None = None,
+        entity_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        now: datetime,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """追加一条链记录，返回可用于日志的元数据。
+
+        ``idempotency_key`` 仅用于同一个作用域和事件类型的业务重试；没有键的
+        记录允许无限追加。SQLite 写事务保证 sequence 与 prev_hash 不会分叉。
+        """
+        if not isinstance(event_type, str) or not event_type.strip():
+            raise ValueError("journal event_type 必须为非空字符串")
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            raise ValueError("journal payload 必须为对象")
+        if idempotency_key is not None and not isinstance(idempotency_key, str):
+            raise ValueError("journal idempotency_key 必须为字符串或 null")
+
+        scope_key, user_id, character_id, relationship_id, activity_id, domain = self._scope_values(scope)
+        if idempotency_key is not None:
+            existing = self._conn.execute(
+                "SELECT * FROM journal_entries WHERE scope_key=? AND event_type=? AND idempotency_key=?",
+                (scope_key, event_type, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+
+        row = self._conn.execute(
+            "SELECT sequence, entry_hash FROM journal_entries ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()
+        sequence = int(row["sequence"]) + 1 if row else 1
+        prev_hash = row["entry_hash"] if row else self.GENESIS
+        journal_id = new_id("journal")
+        created_at = to_utc_iso(now)
+        payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        material = self._entry_material(
+            journal_id=journal_id, sequence=sequence, scope_key=scope_key,
+            event_type=event_type, entity_id=entity_id, payload_json=payload_json,
+            prev_hash=prev_hash, created_at=created_at,
+        )
+        entry_hash = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        self._conn.execute(
+            """
+            INSERT INTO journal_entries (
+                journal_id, sequence, scope_key, user_id, character_id, relationship_id,
+                activity_id, domain, event_type, entity_id, idempotency_key,
+                payload_json, prev_hash, entry_hash, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                journal_id, sequence, scope_key, user_id, character_id, relationship_id,
+                activity_id, domain, event_type, entity_id, idempotency_key,
+                payload_json, prev_hash, entry_hash, created_at,
+            ),
+        )
+        return {
+            "journal_id": journal_id,
+            "sequence": sequence,
+            "scope_key": scope_key,
+            "event_type": event_type,
+            "entity_id": entity_id,
+            "payload": payload,
+            "prev_hash": prev_hash,
+            "entry_hash": entry_hash,
+            "created_at": created_at,
+        }
+
+    def list(self, *, scope: Scope | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("journal limit 必须为正整数")
+        if scope is None:
+            rows = self._conn.execute(
+                "SELECT * FROM journal_entries ORDER BY sequence DESC LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            visible, params = scope_sql(scope)
+            rows = self._conn.execute(
+                "SELECT * FROM journal_entries WHERE " + visible
+                + " ORDER BY sequence DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        return [self._public(row) for row in rows]
+
+    @staticmethod
+    def _public(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        try:
+            value["payload"] = json.loads(value.pop("payload_json") or "{}")
+        except (TypeError, ValueError):
+            value["payload"] = None
+            value.pop("payload_json", None)
+        return value
+
+    def verify(self) -> dict[str, Any]:
+        """从 genesis 重算整条链，报告首个不一致位置。"""
+        rows = self._conn.execute("SELECT * FROM journal_entries ORDER BY sequence ASC").fetchall()
+        previous = self.GENESIS
+        expected_sequence = 1
+        for row in rows:
+            if row["sequence"] != expected_sequence:
+                return {"valid": False, "checked": expected_sequence - 1,
+                        "error": "sequence_gap", "sequence": row["sequence"]}
+            if row["prev_hash"] != previous:
+                return {"valid": False, "checked": expected_sequence - 1,
+                        "error": "prev_hash_mismatch", "sequence": row["sequence"]}
+            try:
+                payload_json = json.dumps(json.loads(row["payload_json"] or "{}"),
+                                          ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                material = self._entry_material(
+                    journal_id=row["journal_id"], sequence=row["sequence"],
+                    scope_key=row["scope_key"], event_type=row["event_type"],
+                    entity_id=row["entity_id"], payload_json=payload_json,
+                    prev_hash=row["prev_hash"], created_at=row["created_at"],
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {"valid": False, "checked": expected_sequence - 1,
+                        "error": "payload_invalid", "sequence": row["sequence"]}
+            actual = hashlib.sha256(material.encode("utf-8")).hexdigest()
+            if row["entry_hash"] != actual:
+                return {"valid": False, "checked": expected_sequence - 1,
+                        "error": "entry_hash_mismatch", "sequence": row["sequence"]}
+            previous = row["entry_hash"]
+            expected_sequence += 1
+        return {"valid": True, "checked": len(rows),
+                "head_sequence": len(rows), "head_hash": previous}
+
+
+# ---------------------------------------------------------------------------
 # 仓储集合
 # ---------------------------------------------------------------------------
 
@@ -1876,6 +2060,7 @@ class Repositories:
     vectors: VectorRepository
     summaries: SummaryRepository
     forgetting: ForgetRepository
+    journal: JournalRepository
 
 
 def build_repositories(conn: sqlite3.Connection) -> Repositories:
@@ -1890,4 +2075,5 @@ def build_repositories(conn: sqlite3.Connection) -> Repositories:
         vectors=VectorRepository(conn),
         summaries=SummaryRepository(conn),
         forgetting=ForgetRepository(conn),
+        journal=JournalRepository(conn),
     )

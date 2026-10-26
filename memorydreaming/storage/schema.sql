@@ -349,6 +349,35 @@ CREATE TABLE IF NOT EXISTS host_deliveries (
     evidence_complete INTEGER NOT NULL DEFAULT 1 CHECK(evidence_complete IN (0,1))
 );
 
+-- 持久审计链：只记录状态变更的元数据和摘要指纹，不复制对话正文。
+-- sequence + prev_hash + entry_hash 组成单调追加的全局链；任何历史行被改写、
+-- 删除或插入都会在 verify 时暴露。幂等键只由仓储层按作用域和事件类型解释。
+CREATE TABLE IF NOT EXISTS journal_entries (
+    journal_id      TEXT PRIMARY KEY,
+    sequence        INTEGER NOT NULL UNIQUE,
+    scope_key       TEXT NOT NULL DEFAULT '',
+    user_id         TEXT,
+    character_id    TEXT,
+    relationship_id TEXT,
+    activity_id     TEXT,
+    domain          TEXT,
+    event_type      TEXT NOT NULL,
+    entity_id       TEXT,
+    idempotency_key TEXT,
+    payload_json    TEXT NOT NULL DEFAULT '{}',
+    prev_hash       TEXT NOT NULL,
+    entry_hash      TEXT NOT NULL UNIQUE,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_journal_scope_time
+    ON journal_entries (scope_key, sequence DESC);
+CREATE INDEX IF NOT EXISTS idx_journal_type_time
+    ON journal_entries (event_type, sequence DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_idempotency
+    ON journal_entries (scope_key, event_type, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
 -- 核心建议与生效记录分开；终态记录用于幂等审批和回执查询。
 CREATE TABLE IF NOT EXISTS core_proposals (
     proposal_id TEXT PRIMARY KEY,
