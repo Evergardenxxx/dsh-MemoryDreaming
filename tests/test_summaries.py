@@ -10,7 +10,7 @@ import unittest
 
 from memorydreaming.models import ForgetSelector, MemoryType
 
-from tests.helpers import RuntimeTestCase
+from tests.helpers import NOW, RuntimeTestCase
 
 
 class SummaryBuildTest(RuntimeTestCase):
@@ -75,6 +75,32 @@ class SummaryBuildTest(RuntimeTestCase):
 
         self.assertEqual(first.summary_id, second.summary_id)
         self.assertEqual(len(self.repos.summaries.list_active(self.scope)), 1)
+
+    def test_summary_records_source_fingerprint(self) -> None:
+        self.runtime.build_summaries(self.scope)
+
+        card = self.repos.summaries.list_active(self.scope)[0]
+
+        self.assertTrue(card.source_digest)
+        self.assertEqual(card.algorithm_version, "extractive-v1")
+
+    def test_source_fingerprint_hides_projection_after_in_place_change(self) -> None:
+        self.runtime.build_summaries(self.scope)
+        card = self.repos.summaries.list_active(self.scope)[0]
+
+        # 模拟旧版本或外部修复把摘要恢复为 active，但来源正文已变。
+        self.repos.memories.update_content(
+            self.beach_episode.memory_id,
+            {"what_happened": "第一次去山里，捡了一整袋松果"},
+            NOW,
+        )
+        self.runtime.db.connection.execute(
+            "UPDATE summaries SET status='active' WHERE summary_id=?",
+            (card.summary_id,),
+        )
+
+        self.assertEqual(self.repos.summaries.list_active(self.scope), [])
+        self.assertFalse(self.repos.summaries.is_fresh(self.repos.summaries.get(card.summary_id)))
 
     def test_topic_disappearing_marks_card_stale(self) -> None:
         self.runtime.build_summaries(self.scope)

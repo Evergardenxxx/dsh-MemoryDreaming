@@ -43,6 +43,7 @@ from ..models import (
     Summary,
     SessionHandoff,
     body_to_text,
+    memory_source_digest,
     new_id,
 )
 
@@ -269,6 +270,8 @@ def _summary_from_row(row: sqlite3.Row) -> Summary:
         digest=row["digest"],
         source_memory_ids=_load_list(row["source_memory_ids_json"]),
         source_event_ids=_load_list(row["source_event_ids_json"]),
+        source_digest=row["source_digest"] if "source_digest" in row.keys() else "",
+        algorithm_version=row["algorithm_version"] if "algorithm_version" in row.keys() else "extractive-v1",
         span_start=from_utc_iso(row["span_start"]),
         span_end=from_utc_iso(row["span_end"]),
         importance=row["importance"],
@@ -1721,11 +1724,26 @@ class SummaryRepository:
         result = []
         for summary in summaries:
             sources = MemoryRepository(self._conn).fetch_many(summary.source_memory_ids)
-            if any(item.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED)
-                   or ForgetRepository(self._conn).is_suppressed(item) for item in sources.values()):
+            if (len(sources) != len(set(summary.source_memory_ids))
+                    or any(item.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED)
+                           or ForgetRepository(self._conn).is_suppressed(item) for item in sources.values())
+                    or (summary.source_digest and memory_source_digest(
+                        list(sources.values()), summary.algorithm_version) != summary.source_digest)):
                 continue
             result.append(summary)
         return result
+
+    def is_fresh(self, summary: Summary) -> bool:
+        """逐跳读取摘要时再次核对来源，避免旧派生物绕过列表过滤。"""
+        if not summary.source_digest:
+            return True
+        sources = MemoryRepository(self._conn).fetch_many(summary.source_memory_ids)
+        return (len(sources) == len(set(summary.source_memory_ids))
+                and all(item.status not in (MemoryStatus.DELETED, MemoryStatus.RETRACTED)
+                        and not ForgetRepository(self._conn).is_suppressed(item)
+                        for item in sources.values())
+                and memory_source_digest(list(sources.values()), summary.algorithm_version)
+                == summary.source_digest)
 
     def upsert(self, summary: Summary, now: datetime) -> Summary:
         """写入或更新一张索引卡，返回真正落库的那条（id 保持不变）。"""
@@ -1738,6 +1756,8 @@ class SummaryRepository:
                     digest = ?,
                     source_memory_ids_json = ?,
                     source_event_ids_json = ?,
+                    source_digest = ?,
+                    algorithm_version = ?,
                     span_start = ?,
                     span_end = ?,
                     importance = ?,
@@ -1749,6 +1769,8 @@ class SummaryRepository:
                     summary.digest,
                     _json_list(summary.source_memory_ids),
                     _json_list(summary.source_event_ids),
+                    summary.source_digest,
+                    summary.algorithm_version,
                     to_utc_iso(summary.span_start),
                     to_utc_iso(summary.span_end),
                     summary.importance,
@@ -1763,6 +1785,8 @@ class SummaryRepository:
                 digest=summary.digest,
                 source_memory_ids=list(summary.source_memory_ids),
                 source_event_ids=list(summary.source_event_ids),
+                source_digest=summary.source_digest,
+                algorithm_version=summary.algorithm_version,
                 span_start=summary.span_start,
                 span_end=summary.span_end,
                 importance=summary.importance,
@@ -1777,8 +1801,9 @@ class SummaryRepository:
                 summary_id, user_id, character_id, relationship_id, activity_id, domain, scope_key,
                 topic, digest,
                 source_memory_ids_json, source_event_ids_json,
+                source_digest, algorithm_version,
                 span_start, span_end, importance, status, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 summary.summary_id,
@@ -1792,6 +1817,8 @@ class SummaryRepository:
                 summary.digest,
                 _json_list(summary.source_memory_ids),
                 _json_list(summary.source_event_ids),
+                summary.source_digest,
+                summary.algorithm_version,
                 to_utc_iso(summary.span_start),
                 to_utc_iso(summary.span_end),
                 summary.importance,

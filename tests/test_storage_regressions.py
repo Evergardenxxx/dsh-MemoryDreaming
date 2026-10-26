@@ -199,6 +199,14 @@ class SchemaMigrationTest(unittest.TestCase):
                 old = db.repositories.events.get("evt-old")
                 self.assertEqual(old.content, "旧消息")
                 self.assertEqual(db.repositories.summaries.get("sum-old").status, "stale")
+                summary_columns = {
+                    row["name"] for row in db.connection.execute("PRAGMA table_info(summaries)")
+                }
+                self.assertIn("source_digest", summary_columns)
+                self.assertIn("algorithm_version", summary_columns)
+                migrated_summary = db.repositories.summaries.get("sum-old")
+                self.assertEqual(migrated_summary.source_digest, "")
+                self.assertEqual(migrated_summary.algorithm_version, "extractive-v1")
                 job = db.repositories.jobs.claim(1, NOW)[0]
                 self.assertEqual(job.scope, old.scope)
                 other = EventRecord("evt-new", Scope(user_id="u2", character_id="c1"), "conv", "user", "新消息", NOW,

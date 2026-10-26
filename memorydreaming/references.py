@@ -184,7 +184,8 @@ class ViewReader:
 
     def _summary(self, target: str) -> RecordView:
         item = self.repos.summaries.get(target)
-        if item is None or item.status != "active" or not self.visible(item.scope):
+        if (item is None or item.status != "active" or not self.visible(item.scope)
+                or not self.repos.summaries.is_fresh(item)):
             raise forbidden()
         if not item.source_memory_ids:
             raise forbidden()

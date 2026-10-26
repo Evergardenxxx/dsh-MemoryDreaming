@@ -262,6 +262,8 @@ CREATE TABLE IF NOT EXISTS summaries (
     digest          TEXT NOT NULL,
     source_memory_ids_json TEXT NOT NULL DEFAULT '[]',
     source_event_ids_json  TEXT NOT NULL DEFAULT '[]',
+    source_digest   TEXT NOT NULL DEFAULT '',
+    algorithm_version TEXT NOT NULL DEFAULT 'extractive-v1',
     span_start      TEXT,
     span_end        TEXT,
     importance      REAL NOT NULL DEFAULT 0.5,

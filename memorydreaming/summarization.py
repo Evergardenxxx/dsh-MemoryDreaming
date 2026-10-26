@@ -28,7 +28,8 @@ from __future__ import annotations
 from datetime import datetime, tzinfo
 
 from .clock import Clock
-from .models import MemoryItem, MemoryStatus, ReadFilter, Scope, Summary, SummaryHit, new_id
+from .models import (MemoryItem, MemoryStatus, ReadFilter, Scope, Summary, SummaryHit,
+                     memory_source_digest, new_id)
 from .retrieval.keyword import text_shingles
 from .storage.database import Database
 
@@ -41,6 +42,7 @@ MAX_TOPICS = 8
 
 # 摘要正文上限。摘要一旦变长就会开始承担事实职责，那条线不能越。
 MAX_DIGEST_CHARS = 180
+SUMMARY_ALGORITHM_VERSION = "extractive-v1"
 
 # 选主题词时要排除的高频虚词：它们出现在每条记忆里，区分度为零。
 _TOPIC_STOPWORDS = {
@@ -83,6 +85,8 @@ def build_summaries(
             digest=digest,
             source_memory_ids=[item.memory_id for item in group],
             source_event_ids=sorted({eid for item in group for eid in item.source_event_ids}),
+            source_digest=memory_source_digest(group, SUMMARY_ALGORITHM_VERSION),
+            algorithm_version=SUMMARY_ALGORITHM_VERSION,
             span_start=span_start,
             span_end=span_end,
             importance=importance,

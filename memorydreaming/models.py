@@ -25,6 +25,8 @@
 from __future__ import annotations
 
 import uuid
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -480,12 +482,33 @@ class Summary:
     digest: str
     source_memory_ids: list[str] = field(default_factory=list)
     source_event_ids: list[str] = field(default_factory=list)
+    source_digest: str = ""
+    algorithm_version: str = "extractive-v1"
     span_start: datetime | None = None
     span_end: datetime | None = None
     importance: float = 0.5
     status: str = "active"  # active=可用；stale=来源已变化，等下一次重建
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
+
+
+def memory_source_digest(items: list[MemoryItem], algorithm_version: str) -> str:
+    """为派生摘要计算稳定来源指纹，不复制原文到摘要表。"""
+    material = [
+        {
+            "memory_id": item.memory_id,
+            "memory_type": item.memory_type.value,
+            "body": item.body,
+            "source_event_ids": sorted(item.source_event_ids),
+            "status": item.status.value,
+            "valid_from": item.valid_from.isoformat() if item.valid_from else None,
+            "valid_to": item.valid_to.isoformat() if item.valid_to else None,
+        }
+        for item in sorted(items, key=lambda value: value.memory_id)
+    ]
+    payload = json.dumps([algorithm_version, material], ensure_ascii=False,
+                         sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass

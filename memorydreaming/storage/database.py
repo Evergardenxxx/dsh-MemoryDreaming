@@ -43,7 +43,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 8：核心候选与宿主审批回执，纯新增表。
 # 版本 9：事件级遗忘账本，保留事件行但撤销读取、抽取和来源贡献。
 # 版本 10：上下文压缩/窗口结束的持久 handoff 交接记录。
-SCHEMA_VERSION = "10"
+# 版本 11：摘要保存来源指纹和生成算法版本。
+SCHEMA_VERSION = "11"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -182,6 +183,8 @@ class Database:
                     self._migrate_job_leases()
                 if version < 6:
                     self._migrate_forgetting(sql)
+                if version < 11:
+                    self._migrate_summary_metadata()
                 for statement in self._statements(sql):
                     self._conn.execute(statement)
                 if self.meta_get("forgetting_hmac_key") is None:
@@ -250,6 +253,17 @@ class Database:
             )
         self._conn.execute("DROP TABLE core_versions")
         self._conn.execute(f"ALTER TABLE {replacement} RENAME TO core_versions")
+
+    def _migrate_summary_metadata(self) -> None:
+        if not self._table_exists("summaries"):
+            return
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(summaries)")}
+        if "source_digest" not in columns:
+            self._conn.execute("ALTER TABLE summaries ADD COLUMN source_digest TEXT NOT NULL DEFAULT ''")
+        if "algorithm_version" not in columns:
+            self._conn.execute(
+                "ALTER TABLE summaries ADD COLUMN algorithm_version TEXT NOT NULL DEFAULT 'extractive-v1'"
+            )
 
     @staticmethod
     def _statements(sql: str) -> list[str]:
