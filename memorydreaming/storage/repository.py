@@ -308,7 +308,7 @@ def _job_from_row(row: sqlite3.Row) -> JobRecord:
 
 
 class EventRepository:
-    """原始事件读写。事件是 append-only 的：只插入，不更新正文。"""
+    """原始事件读写。正常事件只追加；事件级遗忘允许逻辑擦除正文。"""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
