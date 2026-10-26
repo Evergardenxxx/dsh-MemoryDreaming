@@ -121,6 +121,7 @@ class QueryPlanner:
             expansion_mode=expansion_mode,
             max_items=query.max_items or self._settings.max_context_items,
             token_budget=query.token_budget or self._settings.context_token_budget,
+            as_of=query.as_of,
             generated_at=now,
         )
 

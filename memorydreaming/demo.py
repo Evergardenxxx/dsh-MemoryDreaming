@@ -146,9 +146,15 @@ def run_demo(db_path: str | Path | None = None) -> Path:
     for item in stored:
         print(f"· [{item.memory_type.label_zh}] {item.summary(60)}（{item.epistemic_status.value}）")
 
-    # 抽取完成后会自动排一条去重任务，这里把它执行掉
+    # 抽取完成后会自动排一条去重任务，去重完再排一条摘要任务，走完整条链
     follow_up = runtime.run_consolidation()
     print(f"· 后续去重任务：合并 {follow_up.merged} 条重复记忆，失败 {follow_up.failed} 个")
+
+    summary_report = runtime.run_consolidation()
+    print(
+        f"· 摘要任务：生成 {summary_report.summarized} 张主题卡"
+        f"（少于 3 条同主题记忆时不生成，这是设计使然）"
+    )
 
     print()
     print("→ 用户明确说了「以后叫我阿鸥」，这属于关系设定，不能由模型自己改：")

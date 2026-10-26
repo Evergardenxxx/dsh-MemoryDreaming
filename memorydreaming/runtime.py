@@ -43,6 +43,7 @@ from .models import (
     ObserveResult,
     Query,
     RetrievalResult,
+    RetrievedItem,
     Scope,
     Turn,
     new_id,
@@ -50,6 +51,7 @@ from .models import (
 from .retrieval.embedding import Embedder
 from .retrieval.pipeline import RetrievalPipeline
 from .retrieval.vector import VectorIndex
+from .summarization import build_summaries
 from .storage.database import Database
 
 
@@ -138,6 +140,7 @@ class MemoryRuntime:
         highlights = self._repos.memories.list_important(
             scope, self._settings.bootstrap_highlight_limit
         )
+        summaries = self._repos.summaries.list_active(scope, limit=5)
 
         warning = None
         if identity is None:
@@ -153,6 +156,7 @@ class MemoryRuntime:
             activities=activities,
             selected_activity=selected,
             highlights=highlights,
+            summaries=summaries,
             core_version=identity.core_version if identity else None,
             recovery_warning=warning,
         )
@@ -167,8 +171,13 @@ class MemoryRuntime:
         precision: str | None = None,
         max_items: int | None = None,
         token_budget: int | None = None,
+        as_of: datetime | None = None,
     ) -> RetrievalResult:
-        """检索证据。返回结果自带检索轨迹与缺口说明。"""
+        """检索证据。返回结果自带检索轨迹与缺口说明。
+
+        as_of 是「时间旅行」：给一个过去的时刻，只返回那一刻已经存在、
+        并且当时有效的记忆。复盘「我们当时是怎么以为的」时用得上。
+        """
         query = Query(
             text=query_text,
             scope=scope,
@@ -176,6 +185,7 @@ class MemoryRuntime:
             precision=precision,
             max_items=max_items,
             token_budget=token_budget,
+            as_of=as_of,
         )
         return self._pipeline.run(query)
 
@@ -462,10 +472,49 @@ class MemoryRuntime:
             extractor=extractor,
             vector_index=self._vectors,
             limit=limit,
+            tz=self._tz,
         )
 
     def pending_jobs(self) -> int:
         return self._repos.jobs.pending_count()
+
+    # -- 8. 主题摘要 -------------------------------------------------------
+
+    def build_summaries(self, scope: Scope) -> int:
+        """立即重建主题摘要，返回卡片数。
+
+        平时不用手动调：extract → dedupe → summarize 会自动串起来。
+        这个方法用于「刚导入一批历史数据，想马上有索引」的场景。
+        """
+        return build_summaries(self._db, scope, self._clock, self._tz)
+
+    def expand_summary(self, summary_id: str, limit: int = 5) -> list[RetrievedItem]:
+        """把一张索引卡回源展开成原始记忆。
+
+        这是「先摘要后展开」的后半段：模型看到摘要后如果觉得相关，
+        再用这个方法取具体证据，而不是一上来就塞十条记忆。
+        """
+        summary = self._repos.summaries.get(summary_id)
+        if summary is None:
+            raise ScopeNotFound(f"找不到摘要 {summary_id}")
+
+        memories = self._repos.memories.fetch_many(summary.source_memory_ids)
+        now = self._clock.now()
+
+        items = [
+            RetrievedItem(
+                memory=memory,
+                # 展开结果不带检索分：它的相关性由摘要决定，不是由这一层重新算
+                score=summary.importance,
+                channels=["summary_expand"],
+                valid_now=memory.is_current(now),
+                note="来自主题摘要展开",
+            )
+            for memory in memories.values()
+            if memory.status not in (MemoryStatus.RETRACTED, MemoryStatus.DELETED)
+        ]
+        items.sort(key=lambda item: (-item.memory.importance, item.memory.recorded_at))
+        return items[:limit]
 
     # -- 内部实现 ---------------------------------------------------------
 

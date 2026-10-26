@@ -36,6 +36,7 @@ from ..models import (
     MemoryType,
     Modality,
     Scope,
+    Summary,
     body_to_text,
     new_id,
 )
@@ -190,6 +191,27 @@ class JobRecord:
     last_error: str | None
     created_at: datetime
     updated_at: datetime
+
+
+def _summary_from_row(row: sqlite3.Row) -> Summary:
+    return Summary(
+        summary_id=row["summary_id"],
+        scope=Scope(
+            user_id=row["user_id"],
+            character_id=row["character_id"],
+            activity_id=row["activity_id"],
+        ),
+        topic=row["topic"],
+        digest=row["digest"],
+        source_memory_ids=_load_list(row["source_memory_ids_json"]),
+        source_event_ids=_load_list(row["source_event_ids_json"]),
+        span_start=from_utc_iso(row["span_start"]),
+        span_end=from_utc_iso(row["span_end"]),
+        importance=row["importance"],
+        status=row["status"],
+        created_at=from_utc_iso(row["created_at"]) or ensure_utc(datetime.min),
+        updated_at=from_utc_iso(row["updated_at"]) or ensure_utc(datetime.min),
+    )
 
 
 def _job_from_row(row: sqlite3.Row) -> JobRecord:
@@ -469,6 +491,17 @@ class MemoryRepository:
             (scope.user_id, scope.character_id, limit),
         ).fetchall()
         return [_memory_from_row(row) for row in rows]
+
+    def count_active(self, scope: Scope) -> int:
+        """这个角色名下有多少条有效记忆。用来决定「够不够生成摘要」。"""
+        row = self._conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM memories
+            WHERE user_id = ? AND character_id = ? AND status = 'active'
+            """,
+            (scope.user_id, scope.character_id),
+        ).fetchone()
+        return int(row["n"])
 
     def update_status(self, memory_id: str, status: MemoryStatus, now: datetime) -> None:
         self._conn.execute(
@@ -1139,6 +1172,133 @@ class VectorRepository:
 
 
 # ---------------------------------------------------------------------------
+# 主题摘要
+# ---------------------------------------------------------------------------
+
+
+class SummaryRepository:
+    """主题索引卡的读写。
+
+    upsert 的语义是「更新同一张卡」：主题在角色内唯一，
+    重建摘要不会产生新的 summary_id，外部引用不会失效。
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get(self, summary_id: str) -> Summary | None:
+        row = self._conn.execute(
+            "SELECT * FROM summaries WHERE summary_id = ?", (summary_id,)
+        ).fetchone()
+        return _summary_from_row(row) if row else None
+
+    def get_by_topic(self, scope: Scope, topic: str) -> Summary | None:
+        row = self._conn.execute(
+            "SELECT * FROM summaries WHERE user_id = ? AND character_id = ? AND topic = ?",
+            (scope.user_id, scope.character_id, topic),
+        ).fetchone()
+        return _summary_from_row(row) if row else None
+
+    def list_active(self, scope: Scope, limit: int = 50) -> list[Summary]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM summaries
+            WHERE user_id = ? AND character_id = ? AND status = 'active'
+            ORDER BY importance DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (scope.user_id, scope.character_id, limit),
+        ).fetchall()
+        return [_summary_from_row(row) for row in rows]
+
+    def upsert(self, summary: Summary, now: datetime) -> Summary:
+        """写入或更新一张索引卡，返回真正落库的那条（id 保持不变）。"""
+        existing = self.get_by_topic(summary.scope, summary.topic)
+
+        if existing is not None:
+            self._conn.execute(
+                """
+                UPDATE summaries SET
+                    digest = ?,
+                    source_memory_ids_json = ?,
+                    source_event_ids_json = ?,
+                    span_start = ?,
+                    span_end = ?,
+                    importance = ?,
+                    status = 'active',
+                    updated_at = ?
+                WHERE summary_id = ?
+                """,
+                (
+                    summary.digest,
+                    _json_list(summary.source_memory_ids),
+                    _json_list(summary.source_event_ids),
+                    to_utc_iso(summary.span_start),
+                    to_utc_iso(summary.span_end),
+                    summary.importance,
+                    to_utc_iso(now),
+                    existing.summary_id,
+                ),
+            )
+            return Summary(
+                summary_id=existing.summary_id,
+                scope=summary.scope,
+                topic=summary.topic,
+                digest=summary.digest,
+                source_memory_ids=list(summary.source_memory_ids),
+                source_event_ids=list(summary.source_event_ids),
+                span_start=summary.span_start,
+                span_end=summary.span_end,
+                importance=summary.importance,
+                status="active",
+                created_at=existing.created_at,
+                updated_at=now,
+            )
+
+        self._conn.execute(
+            """
+            INSERT INTO summaries (
+                summary_id, user_id, character_id, activity_id, topic, digest,
+                source_memory_ids_json, source_event_ids_json,
+                span_start, span_end, importance, status, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                summary.summary_id,
+                summary.scope.user_id,
+                summary.scope.character_id,
+                summary.scope.activity_id,
+                summary.topic,
+                summary.digest,
+                _json_list(summary.source_memory_ids),
+                _json_list(summary.source_event_ids),
+                to_utc_iso(summary.span_start),
+                to_utc_iso(summary.span_end),
+                summary.importance,
+                "active",
+                to_utc_iso(now),
+                to_utc_iso(now),
+            ),
+        )
+        return summary
+
+    def mark_stale(self, summary_ids: Sequence[str], now: datetime) -> int:
+        """把不再对应任何主题的旧卡标成 stale。
+
+        为什么不直接删？因为外部可能正引用它，
+        标成 stale 至少还能解释「这张卡为什么没内容了」。
+        """
+        if not summary_ids:
+            return 0
+        cursor = self._conn.execute(
+            f"UPDATE summaries SET status = 'stale', updated_at = ? "
+            f"WHERE summary_id IN ({_placeholders(len(summary_ids))})",
+            [to_utc_iso(now), *summary_ids],
+        )
+        return cursor.rowcount
+
+
+# ---------------------------------------------------------------------------
 # 仓储集合
 # ---------------------------------------------------------------------------
 
@@ -1154,6 +1314,7 @@ class Repositories:
     links: LinkRepository
     jobs: JobRepository
     vectors: VectorRepository
+    summaries: SummaryRepository
 
 
 def build_repositories(conn: sqlite3.Connection) -> Repositories:
@@ -1165,4 +1326,5 @@ def build_repositories(conn: sqlite3.Connection) -> Repositories:
         links=LinkRepository(conn),
         jobs=JobRepository(conn),
         vectors=VectorRepository(conn),
+        summaries=SummaryRepository(conn),
     )

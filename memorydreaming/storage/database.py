@@ -29,7 +29,8 @@ from .repository import Repositories, build_repositories
 #
 # 版本 2：新增 memory_vectors（向量索引）。它是纯新增表，老库打开时会由
 #         CREATE TABLE IF NOT EXISTS 自动补上，不需要数据迁移。
-SCHEMA_VERSION = "2"
+# 版本 3：新增 summaries（主题摘要）。同样是纯新增表，无需迁移。
+SCHEMA_VERSION = "3"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 

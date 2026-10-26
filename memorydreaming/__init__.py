@@ -42,12 +42,14 @@ from .models import (
     QueryPlan,
     RetrievalResult,
     Scope,
+    Summary,
+    SummaryHit,
     Turn,
 )
 from .retrieval.embedding import Embedder, HashingEmbedder
 from .runtime import MemoryRuntime
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "MemoryRuntime",
@@ -70,6 +72,8 @@ __all__ = [
     "Query",
     "QueryPlan",
     "RetrievalResult",
+    "Summary",
+    "SummaryHit",
     "BootstrapResult",
     "ObserveResult",
     "Correction",

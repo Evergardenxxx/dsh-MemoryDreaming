@@ -2,16 +2,16 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.2 可运行骨架**。架构文档前两阶段的主要能力都已落地——身份与关系恢复、原始事件保存、四类记忆、持久工作检查点、混合检索、去重巩固、纠错与删除，外加一套检索评估。60 个单元测试全绿。设计提案见 [长期记忆引擎架构草案 v0.1](docs/memory-engine-architecture-v0.1.md)。
+当前状态：**v0.3 可运行骨架**。身份与关系恢复、原始事件保存、四类记忆、持久工作检查点、混合检索、主题摘要与两阶段展开、去重巩固、可用性衰减、时间旅行回放、纠错与删除都已落地，81 个单元测试全绿。设计提案见 [长期记忆引擎架构草案 v0.1](docs/memory-engine-architecture-v0.1.md)，**卡住的工程问题**见 [待研究的工程问题](docs/open-problems.md)。
 
 ## 先跑起来
 
 要求 Python 3.10 以上（开发用的是 3.13），**没有任何第三方依赖**，clone 下来就能跑。
 
 ```bash
-python -m memorydreaming demo     # 完整场景：建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
-python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝率
-python -m unittest                # 跑全部 60 个测试
+python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
+python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
+python -m unittest                # 跑全部 81 个测试
 ```
 
 `demo` 会打印每一步在做什么，输出末尾会告诉你数据库文件在哪。想自己看数据，直接用 sqlite3 打开它。
@@ -21,7 +21,7 @@ python -m unittest                # 跑全部 60 个测试
 ```bash
 python -m memorydreaming --db my.db init
 python -m memorydreaming --db my.db observe --user u1 --character c1 --content "我叫林鸥，喜欢猫"
-python -m memorydreaming --db my.db consolidate                      # 抽取 + 去重
+python -m memorydreaming --db my.db consolidate                      # 抽取 + 去重 + 摘要
 python -m memorydreaming --db my.db retrieve --user u1 --character c1 "我喜欢什么"
 python -m memorydreaming --db my.db bootstrap --user u1 --character c1
 python -m memorydreaming --db my.db reindex --user u1 --character c1  # 重建向量索引
@@ -31,12 +31,14 @@ python -m memorydreaming --db my.db reindex --user u1 --character c1  # 重建�
 
 ```
 memorydreaming/
-├── models.py         领域模型：四类记忆、活动、核心快照……整个项目的「共同语言」
+├── models.py         领域模型：四类记忆、摘要卡、活动、核心快照
 ├── clock.py          时钟与时区：UTC 存储、源时区保留、可替换的测试时钟
-├── config.py         配置：48 小时窗口、候选预算、token 预算、向量阈值
+├── config.py         配置：48 小时窗口、候选预算、token 预算、衰减与向量阈值
 ├── errors.py         自定义异常：版本冲突、恢复失败……
 ├── runtime.py        对外门面：bootstrap / retrieve / observe / checkpoint / correct / forget
 ├── consolidation.py  异步整理：任务分发 + 抽取 + 去重合并
+├── summarization.py  主题摘要：主题词分组、索引卡生成、卡片匹配
+├── similarity.py     相似度：字符 n-gram Jaccard + 聚簇（去重共用）
 ├── extractors.py     示例抽取器（基于规则，可替换成模型）
 ├── evaluation.py     检索评估：固定用例 + Recall/MRR + 观察项
 ├── cli.py            命令行入口
@@ -44,7 +46,7 @@ memorydreaming/
 ├── storage/
 │   ├── schema.sql    表结构（带注释，建议先读这个）
 │   ├── database.py   连接、事务、初始化
-│   ├── repository.py 各表的读写 SQL（含向量表）
+│   ├── repository.py 各表的读写 SQL（含向量表、摘要表）
 │   └── __init__.py
 └── retrieval/
     ├── timeexpr.py   中文时间表达 → 明确时间范围
@@ -52,9 +54,10 @@ memorydreaming/
     ├── keyword.py    关键词检索（FTS5 trigram + LIKE 降级）+ n-gram 特征
     ├── embedding.py  嵌入模型协议 + 零依赖的哈希嵌入
     ├── vector.py     向量索引：增量维护 + 暴力余弦检索
+    ├── decay.py      可用性衰减：半衰期随重要度变化，带下限
     ├── fusion.py     RRF 倒数排名融合
-    ├── pipeline.py   检索主流程：计划 → 四通道 → 融合 → 校验 → 预算
-    ├── context.py    把结果渲染成模型能读的上下文
+    ├── pipeline.py   检索主流程：摘要 → 四通道 → 融合 → 校验 → 预算
+    ├── context.py    渲染上下文：主题索引、证据、缺口、记忆围栏
     └── __init__.py
 tests/
 ├── helpers.py            测试脚手架：临时库 + 固定时钟
@@ -62,7 +65,9 @@ tests/
 ├── test_core_activity.py 核心版本、活动检查点、bootstrap
 ├── test_retrieval.py     时间解析、路由、48 小时分级、预算
 ├── test_consolidation.py 抽取后续任务、去重合并
+├── test_summaries.py     主题卡生成、回源展开、失效
 ├── test_vector.py        嵌入性质、索引维护、通道接线
+├── test_decay_time.py    衰减、时间旅行、上下文围栏
 ├── test_correction.py    纠正与删除的传播
 └── test_extraction.py    从事件到记忆的整理流程
 ```
@@ -75,13 +80,14 @@ tests/
 |---|---|---|
 | 1 | `models.py` | 项目里到底有哪几种东西；为什么要区分「事件时间 / 记录时间」「模态 / 认识论状态」 |
 | 2 | `storage/schema.sql` | 这些概念怎么落到表里；为什么四类记忆共用一张表 |
-| 3 | `storage/repository.py` | 每条 SQL 在做什么；幂等、版本号、向量存取怎么实现 |
+| 3 | `storage/repository.py` | 每条 SQL 在做什么；幂等、版本号、向量与摘要怎么存 |
 | 4 | `runtime.py` | 宿主怎么用这套东西；一次 observe / retrieve 的完整动作 |
-| 5 | `retrieval/pipeline.py` | 检索是怎么一步步收窄的 |
+| 5 | `retrieval/pipeline.py` | 检索是怎么一步步收窄的，摘要和四通道怎么配合 |
 | 6 | `retrieval/planner.py` + `timeexpr.py` | 「昨天」「上次」是怎么被翻译成时间范围的 |
-| 7 | `consolidation.py` | 抽取和去重的边界在哪；为什么合并比删除更安全 |
+| 7 | `consolidation.py` + `summarization.py` | 抽取、去重、摘要三者为什么是这个顺序 |
+| 8 | `retrieval/decay.py` + `context.py` | 为什么「同样相关」的记忆还要再排一次序；上下文为什么要加围栏 |
 
-`demo.py` 是这七步的活教材：一边读代码，一边对照它的输出。
+`demo.py` 是这八步的活教材：一边读代码，一边对照它的输出。
 
 ## 一次对话发生了什么
 
@@ -89,24 +95,24 @@ tests/
 用户说话
   └─ observe(turn, scope, idempotency_key)
        ├─ 同一事务写入：原始事件 + 活动检查点时间 + 抽取任务      ← 幂等键防重复
-       └─ 返回后，整理任务异步执行
-            ├─ extract：extractor.extract(event) → 记忆候选 → 校验 → 写入 memories
-            │    └─ dedupe_key = 事件ID + 抽取器版本 + 候选键（重跑不会重复写）
-            │    └─ 然后自动排一个 dedupe 任务
-            └─ dedupe：同类型、同角色内比对字符二元组重合度 ≥ 0.85
-                 └─ 保留「更重要、更早」的主记录，其余标 superseded + part_of 链接
+       └─ 返回后，整理链异步执行
+            ├─ extract：候选 → 校验 → 写入 memories（dedupe_key 防重）
+            ├─ dedupe：同类型内 Jaccard ≥ 0.85 合并，副本标 superseded + part_of
+            └─ summarize：按主题词把 ≥3 条记忆聚成索引卡（只存概述 + 来源 ID）
 
 用户提问
-  └─ retrieve(question, scope)
-       ├─ planner：四类相关度、时间范围、每类候选预算、是否在延续当前交流
+  └─ retrieve(question, scope, as_of?)
+       ├─ planner：四类相关度、时间范围、每类候选预算、是否延续当前交流
+       ├─ 摘要阶段（仅在「宽泛/久远」问题）：先给索引卡，再回源展开
        ├─ 四个通道取候选：
        │    最近 48 小时（仅当问题指向当前对话）
        │    关键词（FTS5 trigram + LIKE）
        │    向量（余弦相似度）
        │    明确时间范围（仅当用户给了硬约束）
-       ├─ RRF 融合 → 回表校验（撤回、越权、硬时间约束、被合并的副本）
+       ├─ RRF 融合 → 回表校验（撤回、越权、硬时间约束、被合并的副本、as_of 快照）
+       ├─ 排序：融合分 → 可用性衰减 → 重要度
        ├─ 按 token 预算截断
-       └─ 返回证据 + 检索轨迹 + 缺口说明
+       └─ 渲染成带围栏的上下文 + 检索轨迹 + 缺口说明
 ```
 
 ## 数据模型速览
@@ -127,14 +133,19 @@ tests/
 3. **效力**：`epistemic_status / modality / occurred_* / valid_* / status`
 4. **权重**：`importance / retrieval_strength / access_count`
 
-`importance` 表示「值得记住」，`retrieval_strength` 表示「容易想起」，`epistemic_status` 表示「凭什么相信」。三者不能互相替代——这是整套设计的地基。
+另有四张派生表，都可以从主表重建：
 
-另外两张派生表：`memories_fts`（FTS5 索引，触发器同步）和 `memory_vectors`（向量，`BLOB` 存 float32）。两者都能从 `memories` 重建。
+| 表 | 作用 | 同步方式 |
+|---|---|---|
+| `memories_fts` | 中文全文索引 | 触发器自动 |
+| `memory_vectors` | 向量索引（float32 BLOB） | 写入时显式建立，可 `reindex` |
+| `summaries` | 主题索引卡（概述 + 来源 ID） | 整理任务重建 |
+| `consolidation_jobs` | 异步任务队列 | — |
 
 ## 关键取舍（以及为什么）
 
 **为什么是 Python + SQLite，不用 ORM？**
-架构文档第 7 节允许 Python 或 TypeScript。选 Python 是因为没有构建步骤；不引 ORM 是因为新手最需要看清「数据到底怎么存的」。每条 SQL 都在 `repository.py` 里，可以直接贴到 sqlite3 命令行验证。
+架构文档第 7 节允许 Python 或 TypeScript。选 Python 是因为没有构建步骤；不引 ORM 是因为新手最需要看清「数据到底是怎么存的」。每条 SQL 都在 `repository.py` 里，可以直接贴到 sqlite3 命令行验证。
 
 **为什么四类记忆共用一张表？**
 检索、纠错、删除的传播逻辑只需要写一遍。代价是 `body` 变成 JSON，失去了列级约束——但换来了「加一种记忆类型不用改表结构」。
@@ -146,45 +157,53 @@ SQLite 默认分词器会把一整句中文当一个词，查「海边」永远�
 只限制**默认展开粒度**，不限制能不能查到旧事。三天后问「第一次说去海边是什么时候」，仍然要能定位到那天的记录——测试 `test_old_memory_is_still_reachable_by_keywords` 就是在守这条线。
 
 **「今天接着讲」里的今天，为什么不算过滤条件？**
-因为它指的是说话时刻，不是要查的事件时间。planner 会把这类「向前看」的句子里的时间词降级为软提示。这是「事件时间 ≠ 记录时间」的另一种变体，也是规则引擎最容易搞错的地方。
+因为它指的是说话时刻，不是要查的事件时间。planner 会把这类「向前看」的句子里的时间词降级为软提示。
 
 **最近 48 小时的记忆，为什么不是「总会端上来」？**
-架构文档把这条通道的用途限定为「继续当前交流」。如果无条件启用，「量子力学是什么」也会带上今天的聊天记录——那不是记得住，是什么都能扯上。所以只有出现「刚才 / 继续 / 我们聊」这类说法时才开（`plan.prefers_recent`）。
+架构文档把这条通道的用途限定为「继续当前交流」。如果无条件启用，「量子力学是什么」也会带上今天的聊天记录。所以只有出现「刚才 / 继续 / 我们聊」这类说法时才开（`plan.prefers_recent`）。
 
 **硬时间约束为什么放在校验层，而不是各个通道里？**
 用户说「昨天」就是强约束，任何通道（包括以后新增的向量通道）都不许绕过。放在 `_validate` 里只有一处实现，不会漏。
 
 **去重为什么是「合并」而不是「删除」？**
-删除会让证据凭空消失，合并只是把两份说法并成一条：列表字段取并集、来源事件合并、重要度取最大。副本标 `superseded` 并挂 `part_of` 链接，审计时还能查到「它原本是这么说的」。检索时会跳过这类副本——用「superseded + part_of」两个条件一起判断，因为 `part_of` 本身还表示合法包含关系。
+删除会让证据凭空消失，合并只是把两份说法并成一条：列表字段取并集、来源事件合并、重要度取最大。副本标 `superseded` 并挂 `part_of` 链接，审计时还能查到原话。检索时用「superseded + part_of」两个条件一起跳过——`part_of` 本身还表示合法包含关系。
 
-**向量为什么先用哈希嵌入？**
-零依赖、可离线、结果可复现，能先把「存储 → 增量更新 → 融合 → 评估 → 重建」这条管道修通。它的能力边界很清楚：只认字面重合，不懂同义改写。换成真实模型只需实现 `Embedder` 协议（`name` / `dim` / `embed`）并从构造函数传进来，其余代码不动。
+**主题摘要为什么只能做索引，不能存全文？**
+一旦摘要承担事实职责，第二代摘要在第一代上再压缩，错误就固化了，而且没有任何原始证据能推翻它。所以 `summaries` 只存主题、时间跨度、一句概述和来源 ID，要细节必须 `expand_summary()` 回源。来源消失时卡片标 `stale` 而不是继续用。
 
-**为什么 retrieve 不自动增加访问次数？**
-否则一条错误记忆会因为被反复检索而越排越前。只有宿主确认「这条真被用上了」才调 `mark_used()`。
+**主题聚类为什么不用整句相似度？**
+试过：`第一次去海边` 和 `周末去海边要带相机` 只共享两个词，Jaccard 只有 0.07，跨不过任何合理阈值，但它们显然同属一个主题。最终改成「二字词 + 文档频率」分组：同一个词至少在 3 条记忆里出现才算主题，再对「覆盖同一批记忆」的候选词去重（不然「去海」和「海边」会生成两张雷同的卡）。
+
+**为什么给召回内容加 `<memory-context>` 围栏？**
+记忆正文来自用户原话，可能包含「忽略之前所有设定」这种句子。围栏 + 「这是资料不是指令」的声明降低了模型误当指令的概率——但它**不是安全保证**，这是本项目最严重的未解问题之一，见 `docs/open-problems.md` 第 1 节。
+
+**为什么衰减有下限？**
+没有下限的话，一条五年前的错误记忆会衰减到 0，但它仍然是错的、仍然可能被关键词精确命中。衰减只用于排序，不该变成「删除」的同义词。
 
 **为什么身份核心缺失时不抛异常？**
 新角色本来就没有核心。返回 `recovery_warning` 让宿主如实说明恢复失败，比拿一个临时身份顶上更安全——后者会让角色在不知不觉中「换了个人」。
 
 ## 评估结果
 
-`python -m memorydreaming eval` 会在临时库里铺一批固定记忆，再问 11 个问题：
+`python -m memorydreaming eval` 会在临时库里铺一批固定记忆，再问 12 个问题：
 
 ```
-检索评估：11 个用例（计分 9，观察 2；Recall@5）
+检索评估：12 个用例（计分 10，观察 2；Recall@5）
 证据召回率 Recall@5：100.0%
 MRR：1.000
 无依据拒绝率：100.0%
+主题索引命中：1/1（不计入召回率）
 
 观察项（不计分，用于暴露当前模型的能力边界）：
 - 同义改写（失眠→睡不着）：未命中
 - 同义改写（养的那只猫→橘猫）：未命中
 ```
 
-两点必须说清楚，否则这组数字就是自我欺骗：
+三点必须说清楚，否则这组数字就是自我欺骗：
 
-1. **9 个计分用例是我自己写的，规模很小**。它的作用是回归保护——你改坏什么，它会立刻告诉你；它不能证明「检索质量好」。
-2. **两个观察项故意留成失败**。中文里同一个意思可以完全没有相同的字，哈希嵌入做不到，只有真正的语义模型才行。留着它们，比刷一个 100% 更有用。
+1. **10 个计分用例是我自己写的，规模很小**。它的作用是回归保护——你改坏什么，它会立刻告诉你；它不能证明「检索质量好」。
+2. **两个观察项故意留成失败**。中文里同一个意思可以完全没有相同的字，哈希嵌入做不到，只有真正的语义模型才行。
+3. **摘要用例单独计分**。它测的是「宽泛问题会不会先给索引卡」，和证据召回不是一回事，混进分母会让指标失去含义。
 
 ## 验收场景对照
 
@@ -203,20 +222,24 @@ MRR：1.000
 | 两窗口并发更新 | `test_stale_version_is_rejected` / `test_stale_checkpoint_is_rejected` |
 | 没有足够证据时表达不确定 | `test_empty_result_reports_gap` |
 | 同一件事被重复记下来 | `test_consolidation.py::DedupeTest` |
+| 宽泛问题先给索引再回源 | `test_summaries.py::SummaryRetrievalTest` |
+| 复盘「当时我们是怎么以为的」 | `test_decay_time.py::TimeTravelTest` |
 | 检索质量可回归 | `python -m memorydreaming eval` |
 
 ## 已知限制与下一步
 
 这一版是**骨架**，不是成品。刻意没做的部分：
 
-- **抽取只有三条正则规则**（`extractors.py`）。它证明了接口和流水线能跑通，不代表抽取质量。接模型时只需新写一个实现 `MemoryExtractor` 的类。
+- **抽取只有三条正则规则**。它证明了接口和流水线能跑通，不代表抽取质量。接模型时只需新写一个实现 `MemoryExtractor` 的类。
 - **嵌入是字面哈希**。同义改写召回不了（见评估的观察项）。换真实模型是替换一个类，但要重新标定 `vector_min_score` 并 `reindex`。
-- **向量检索是暴力扫描**。本地几百上千条够用，十万条以上要换 ANN（sqlite-vec / faiss），只改 `vector.py` 的 search。
-- **巩固只做了去重**。`summarize`（主题摘要）和 `propose_core`（核心成长候选）还是任务表里的类型，没有执行器——它们都需要归纳质量，没有模型时实现出来只是假动作。
-- **没有宿主适配层**。真正接进聊天客户端需要会话/请求钩子（架构文档第 2 节提到，仅暴露工具不能保证第一轮回复前完成恢复）。
-- **中文分词是启发式的**。会切出「边那」这种无意义片段，靠命中词数排序压噪。
+- **摘要抽取式生成**。读起来像清单，不是概述；主题词靠二字词频率，遇到指代会失效。
+- **没有矛盾检测**。两条同时有效的冲突事实可以并存；`as_of` 只能按「记录时间 + 有效期」回放。
+- **向量检索是暴力扫描**。本地几百上千条够用，十万条以上要换 ANN。
+- **巩固只有去重和摘要**。`propose_core`（核心成长候选）还是任务表里的类型，没有执行器。
+- **没有宿主适配层**。真正接进聊天客户端需要会话/请求钩子。
+- **单进程任务队列**。多进程会重复取任务，跨设备同步没有方案。
 
-建议的下一步顺序：① 接一个真实嵌入模型，把观察项变成计分项 → ② 接真实抽取器并扩充评估集 → ③ 写 summarize 执行器 → ④ 做宿主适配（MCP 或自有客户端钩子）。
+完整的问题清单、难点分析与可研究方向见 **[docs/open-problems.md](docs/open-problems.md)**，其中第 1、2、3、12 条是真正的硬骨头。
 
 ## 备注
 

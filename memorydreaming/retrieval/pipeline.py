@@ -30,9 +30,12 @@ from ..models import (
     RetrievalResult,
     RetrievalTrace,
     RetrievedItem,
+    SummaryHit,
 )
 from ..storage.database import Database
+from ..summarization import find_summaries
 from .context import estimate_tokens, render_item_line
+from .decay import effective_strength
 from .fusion import ChannelHit, FusedCandidate, fuse
 from .keyword import KeywordIndex
 from .planner import QueryPlanner
@@ -71,8 +74,12 @@ class RetrievalPipeline:
         now = self._clock.now()
         plan = self._planner.plan(query)
 
-        # 1) 多通道取候选。三个通道各自独立，互不依赖。
+        # 0) 摘要优先：主题宽泛或久远的问题，先给索引卡，再回源展开。
+        summary_hits, summary_channels = self._summary_stage(plan, query)
+
+        # 1) 多通道取候选。各通道相互独立，只共享同一份查询计划。
         hits: list[ChannelHit] = []
+        hits.extend(summary_channels)
         hits.extend(self._recent_channel(plan, query, now))
         hits.extend(self._keyword_channel(plan, query))
         hits.extend(self._vector_channel(plan, query))
@@ -106,11 +113,36 @@ class RetrievalPipeline:
             query_text=query.text,
             plan=plan,
             items=selected,
+            summaries=summary_hits,
             trace=trace,
             gaps=gaps,
         )
 
     # -- 通道 -------------------------------------------------------------
+
+    def _summary_stage(
+        self,
+        plan: QueryPlan,
+        query: Query,
+    ) -> tuple[list[SummaryHit], list[ChannelHit]]:
+        """摘要阶段：宽泛/久远的问题先给索引卡，并把卡上的来源作为候选。
+
+        为什么只在 summary_then_expand 模式下启用？
+        用户问「昨天我们聊了什么」时，答案就该是那几条原始记录，
+        先给一张摘要卡反而绕远了。
+        """
+        if plan.expansion_mode != "summary_then_expand":
+            return [], []
+
+        hits = find_summaries(self._db, query.scope, plan.query_text, limit=2)
+        channel_hits: list[ChannelHit] = []
+
+        for rank, hit in enumerate(hits, start=1):
+            # 每张卡只展开三条来源：更多就变成「绕过摘要直接倒记忆」了
+            for memory_id in hit.summary.source_memory_ids[:3]:
+                channel_hits.append(ChannelHit(memory_id, "summary_expand", rank, 0.85))
+
+        return hits, channel_hits
 
     def _recent_channel(self, plan: QueryPlan, query: Query, now: datetime) -> list[ChannelHit]:
         """最近窗口通道：优先把 48 小时内的细节端上来。
@@ -268,6 +300,12 @@ class RetrievalPipeline:
                 dropped += 1
                 continue
 
+            # 时间旅行：只要 as_of 那一刻还不存在、或当时尚未生效的记忆，
+            # 都不该出现在「当时的视角」里。
+            if not self._exists_at(memory, plan):
+                dropped += 1
+                continue
+
             # 硬时间约束在这里统一执行。
             # 为什么不放在各个通道里？因为「昨天」是用户给出的强约束，
             # 任何通道（包括以后新增的向量通道）都不应该绕过它。
@@ -308,7 +346,22 @@ class RetrievalPipeline:
         这是 RRF 的应有结果。重要度（importance）作为次要键，
         用于同分时优先给「值得记住」的条目。
         """
-        ordered = sorted(items, key=lambda item: (-item.score, -item.memory.importance))
+        # 排序：先看融合分；同分时看「可用性」（越近越常用越靠前）；
+        # 再同分才看重要度。衰减只影响排序，不改变一条记忆是否成立。
+        now = self._clock.now()
+        ordered = sorted(
+            items,
+            key=lambda item: (
+                -item.score,
+                -effective_strength(
+                    item.memory,
+                    now,
+                    base_half_life_hours=self._settings.decay_half_life_hours,
+                    floor=self._settings.decay_floor,
+                ),
+                -item.memory.importance,
+            ),
+        )
 
         selected: list[RetrievedItem] = []
         used_tokens = 0
@@ -325,6 +378,20 @@ class RetrievalPipeline:
         return selected, used_tokens
 
     # -- 辅助 -------------------------------------------------------------
+
+    @staticmethod
+    def _exists_at(memory: MemoryItem, plan: QueryPlan) -> bool:
+        """这条记忆在 plan.as_of 那一刻是否已经存在且有效。"""
+        moment = plan.as_of
+        if moment is None:
+            return True
+        if memory.recorded_at > moment:
+            return False
+        if memory.valid_from is not None and memory.valid_from > moment:
+            return False
+        if memory.valid_to is not None and memory.valid_to <= moment:
+            return False
+        return True
 
     @staticmethod
     def _violates_hard_time(memory: MemoryItem, plan: QueryPlan) -> bool:

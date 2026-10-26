@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import tzinfo, timezone
 from typing import Any, Protocol
 
 from .clock import Clock
@@ -34,10 +35,15 @@ from .models import (
     Scope,
     new_id,
 )
-from .retrieval.keyword import text_shingles
+from .similarity import cluster as cluster_by_similarity
+from .summarization import build_summaries
 from .retrieval.vector import VectorIndex
 from .storage.database import Database
 from .storage.repository import JobRecord
+
+# 有效记忆少于这个数就不生成主题摘要：两三条记忆凑不出主题，
+# 生成出来的「摘要」只是换句话重复一遍，还会挤占检索预算。
+SUMMARY_TRIGGER_MEMORIES = 4
 
 # 去重的默认相似度阈值：两条记忆的字符二元组重合度达到 85% 就视为同一件事。
 # 调高的后果是漏合并（同一件事留两条），调低则可能把「相关但不是同一件」的两条
@@ -67,6 +73,7 @@ class ConsolidationReport:
     created: int = 0          # 新建多少条记忆
     duplicates: int = 0       # 因幂等键命中而跳过
     merged: int = 0           # 去重合并掉多少条
+    summarized: int = 0       # 生成/更新了多少张主题摘要卡
     skipped: int = 0          # 因缺少处理条件而退回队列
     failed: int = 0           # 失败任务数
     errors: list[str] = field(default_factory=list)
@@ -78,6 +85,7 @@ def run_pending_jobs(
     extractor: MemoryExtractor | None = None,
     vector_index: VectorIndex | None = None,
     limit: int = 10,
+    tz: tzinfo = timezone.utc,
 ) -> ConsolidationReport:
     """取出待处理任务并逐条执行。
 
@@ -89,6 +97,7 @@ def run_pending_jobs(
                       这样可以只跑去重任务——例如换嵌入模型后的批量整理。
         vector_index: 传入后，新写入的记忆会顺带建立向量索引；
                       不传则跳过（检索时就没有语义通道）。
+        tz:           生成摘要时用来把 UTC 时间转成用户本地日期。
     """
     repos = db.repositories
     report = ConsolidationReport()
@@ -116,6 +125,10 @@ def run_pending_jobs(
 
             elif job.job_type == "dedupe":
                 report.merged += _run_dedupe(db, job.scope, clock, vector_index)
+                _enqueue_summarize(db, job, clock)
+
+            elif job.job_type == "summarize":
+                report.summarized += build_summaries(db, job.scope, clock, tz)
 
             else:
                 raise NotImplementedError(f"暂未实现的任务类型：{job.job_type}")
@@ -196,6 +209,27 @@ def _enqueue_follow_up(db: Database, job: JobRecord, clock: Clock) -> None:
             )
 
 
+def _enqueue_summarize(db: Database, job: JobRecord, clock: Clock) -> None:
+    """去重之后排一个摘要任务。
+
+    摘要依赖去重后的结果：如果先摘要、后去重，摘要里会留下已经被合并掉的来源。
+    顺序是 extract → dedupe → summarize，一条链走完再结束。
+    """
+    repos = db.repositories
+    if repos.memories.count_active(job.scope) < SUMMARY_TRIGGER_MEMORIES:
+        return
+
+    with db.transaction():
+        if not repos.jobs.has_pending("summarize", job.scope):
+            repos.jobs.enqueue(
+                job_type="summarize",
+                scope=job.scope,
+                payload={"reason": "dedupe-follow-up"},
+                now=clock.now(),
+                activity_id=job.activity_id,
+            )
+
+
 def _build_memory(draft: MemoryDraft, event: EventRecord, clock: Clock) -> MemoryItem:
     """把候选 + 来源事件组装成一条待入库的记忆。
 
@@ -245,7 +279,8 @@ def _run_dedupe(
     memories = repos.memories.list_by_scope(
         scope, limit=500, statuses=(MemoryStatus.ACTIVE,)
     )
-    clusters = _cluster_duplicates(memories, threshold)
+    # 去重要求「同类型 + 高阈值」：工作记忆和情景记忆本来就不是一回事
+    clusters = cluster_by_similarity(memories, threshold, respect_type=True)
     if not clusters:
         return 0
 
@@ -283,59 +318,6 @@ def _run_dedupe(
                 vector_index.index_memory(refreshed, now)
 
     return merged
-
-
-def _cluster_duplicates(
-    memories: list[MemoryItem],
-    threshold: float,
-) -> list[list[MemoryItem]]:
-    """把互为重复的记忆聚成簇。
-
-    做法是朴素的 O(n²) 两两比较，但加了两个廉价剪枝：
-      1. 类型不同直接跳过；
-      2. 长度比已经小于阈值时，Jaccard 不可能达标，直接跳过。
-    本地几百条记忆完全够用；真到几万条，应该先按时间窗口或向量近邻粗筛。
-    """
-    prepared: list[tuple[MemoryItem, set[str]]] = []
-    for memory in memories:
-        shingles = text_shingles(memory.body_text)
-        if len(shingles) >= 3:  # 太短的正文（比如只有两个字）不参与，误判风险太高
-            prepared.append((memory, shingles))
-
-    used: set[str] = set()
-    clusters: list[list[MemoryItem]] = []
-
-    for index, (memory, shingles) in enumerate(prepared):
-        if memory.memory_id in used:
-            continue
-
-        group = [memory]
-        used.add(memory.memory_id)
-
-        for other, other_shingles in prepared[index + 1 :]:
-            if other.memory_id in used or other.memory_type is not memory.memory_type:
-                continue
-
-            shorter, longer = sorted((len(shingles), len(other_shingles)))
-            if longer == 0 or shorter / longer < threshold:
-                continue  # Jaccard 的上界就是 min/max，先排掉明显不可能的组合
-
-            if _jaccard(shingles, other_shingles) >= threshold:
-                group.append(other)
-                used.add(other.memory_id)
-
-        if len(group) > 1:
-            clusters.append(group)
-
-    return clusters
-
-
-def _jaccard(left: set[str], right: set[str]) -> float:
-    """两个集合的交并比，取值 0~1。"""
-    union = left | right
-    if not union:
-        return 0.0
-    return len(left & right) / len(union)
 
 
 def _choose_canonical(group: list[MemoryItem]) -> tuple[MemoryItem, list[MemoryItem]]:

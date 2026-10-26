@@ -64,6 +64,10 @@ class Settings:
     # RRF（倒数排名融合）的平滑常数，取 60 是信息检索里的常见默认值
     rrf_k: int = 60
 
+    # 可用性衰减：60 天半衰期 + 0.3 下限（见 retrieval/decay.py）
+    decay_half_life_hours: int = 24 * 60
+    decay_floor: float = 0.3
+
     # 单次关键词检索最多取多少条候选
     keyword_candidate_limit: int = 40
 

@@ -429,6 +429,38 @@ class CoreSnapshot:
 
 
 @dataclass
+class Summary:
+    """主题摘要：一段时期内若干条记忆的「索引卡」。
+
+    它刻意不是第五类记忆，也不存全文：
+    摘要是**派生索引**，只保留主题、时间范围和一句概述，
+    真正的事实仍然在它引用的记忆里。这样做的原因很实际——
+    摘要在反复压缩中会失真，如果它成了唯一底座，错误就再也回不去了。
+    """
+
+    summary_id: str
+    scope: Scope
+    topic: str
+    digest: str
+    source_memory_ids: list[str] = field(default_factory=list)
+    source_event_ids: list[str] = field(default_factory=list)
+    span_start: datetime | None = None
+    span_end: datetime | None = None
+    importance: float = 0.5
+    status: str = "active"  # active=可用；stale=来源已变化，等下一次重建
+    created_at: datetime = field(default_factory=utcnow)
+    updated_at: datetime = field(default_factory=utcnow)
+
+
+@dataclass
+class SummaryHit:
+    """一次摘要检索的命中，score 与记忆检索同口径（越大越相关）。"""
+
+    summary: Summary
+    score: float
+
+
+@dataclass
 class EventRecord:
     """原始事件：用户实际说过的话。append-only，是全部记忆的证据底座。
 
@@ -484,6 +516,8 @@ class Query:
     precision: str | None = None
     max_items: int | None = None
     token_budget: int | None = None
+    # 时间旅行：「按 as_of 那一刻的状态来回答」。用于复盘「当时我们是怎么以为的」
+    as_of: datetime | None = None
 
 
 @dataclass
@@ -508,6 +542,7 @@ class QueryPlan:
     expansion_mode: str = "summary_then_expand"  # detail / summary_then_expand / exact_lookup
     max_items: int = 12
     token_budget: int = 1800
+    as_of: datetime | None = None
     generated_at: datetime = field(default_factory=utcnow)
 
     def top_types(self, limit: int = 2) -> list[MemoryType]:
@@ -550,16 +585,20 @@ class RetrievalTrace:
 
 @dataclass
 class RetrievalResult:
-    """检索结果。items 是证据，gaps 是「我没找到什么」。"""
+    """检索结果。items 是证据，summaries 是「先看哪几张索引卡」，gaps 是缺口。"""
 
     query_text: str
     plan: QueryPlan
     items: list[RetrievedItem] = field(default_factory=list)
+    summaries: list[SummaryHit] = field(default_factory=list)
     trace: RetrievalTrace = field(default_factory=RetrievalTrace)
     gaps: list[str] = field(default_factory=list)
 
     def memory_ids(self) -> list[str]:
         return [item.memory_id for item in self.items]
+
+    def summary_ids(self) -> list[str]:
+        return [hit.summary.summary_id for hit in self.summaries]
 
 
 @dataclass
@@ -576,6 +615,8 @@ class BootstrapResult:
     activities: list[Activity] = field(default_factory=list)
     selected_activity: Activity | None = None
     highlights: list[MemoryItem] = field(default_factory=list)
+    # 主题索引卡：让角色一开口就知道「我们之间有哪些话题」，而不是逐条翻记忆
+    summaries: list[Summary] = field(default_factory=list)
     core_version: int | None = None
     recovery_warning: str | None = None
 

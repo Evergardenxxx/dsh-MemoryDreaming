@@ -53,6 +53,8 @@ class EvalCase:
     expected_ids: list[str] = field(default_factory=list)
     expect_empty: bool = False
     optional: bool = False
+    # 期望命中的主题摘要词（宽泛问题才用得上，见「先摘要后展开」）
+    expect_summary_contains: str | None = None
 
 
 @dataclass
@@ -94,6 +96,11 @@ class EvalReport:
         lines.append(f"证据召回率 Recall@{self.k}：{self.recall:.1%}")
         lines.append(f"MRR：{self.mrr:.3f}")
         lines.append(f"无依据拒绝率：{self.no_evidence_accuracy:.1%}")
+
+        summary_cases = [result for result in scored if result.case.expect_summary_contains]
+        if summary_cases:
+            passed = sum(1 for result in summary_cases if result.passed)
+            lines.append(f"主题索引命中：{passed}/{len(summary_cases)}（不计入召回率）")
 
         if optional:
             lines.append("")
@@ -145,6 +152,8 @@ def run_evaluation(db_path: str | Path | None = None) -> EvalReport:
             ]
             runtime.rebuild_vectors(scope)
             runtime.rebuild_vectors(other_scope)
+            # 摘要不是检索时顺手生成的，评估前先建一次索引
+            runtime.build_summaries(scope)
 
             results = [_run_case(runtime, scope, case) for case in cases]
             results += [_run_case(runtime, other_scope, case) for case in empty_cases]
@@ -168,6 +177,10 @@ def _run_case(runtime: MemoryRuntime, scope: Scope, case: EvalCase) -> CaseResul
 
     if case.expect_empty:
         passed = not returned
+    elif case.expect_summary_contains is not None:
+        passed = any(
+            case.expect_summary_contains in hit.summary.topic for hit in result.summaries
+        )
     else:
         passed = rank is not None
 
@@ -184,7 +197,11 @@ def _summarise(results: list[CaseResult]) -> EvalReport:
     # 观察项不参与打分：它们的失败是已知的模型能力问题，
     # 混进分母只会让指标变成一个说不清含义的数字。
     scored = [result for result in results if not result.case.optional]
-    answerable = [result for result in scored if not result.case.expect_empty]
+    # 只有「期望命中某条记忆」的用例才进召回率。
+    # 摘要用例和「期望为空」的用例口径不同，混进分母会让指标失去意义。
+    answerable = [
+        result for result in scored if result.case.expected_ids and not result.case.expect_empty
+    ]
     unanswerable = [result for result in scored if result.case.expect_empty]
 
     hit = [result for result in answerable if result.rank is not None]
@@ -223,6 +240,8 @@ def _seed(runtime: MemoryRuntime, scope: Scope) -> dict[str, str]:
          {"subject": "用户", "predicate": "养了", "obj": "一只叫豆豆的橘猫"}, 25, 0.8),
         ("beach", MemoryType.EPISODIC,
          {"what_happened": "第一次去海边，捡了一整袋贝壳"}, 20, 0.7),
+        ("beach_sunset", MemoryType.SEMANTIC,
+         {"subject": "用户", "predicate": "喜欢", "obj": "海边的日落"}, 15, 0.6),
         ("ritual", MemoryType.PROCEDURAL,
          {"trigger": "用户说睡不着",
           "steps": ["讲一个短故事", "把灯调暗"],
@@ -317,6 +336,11 @@ def _build_cases(ids: dict[str, str]) -> list[EvalCase]:
             name="名字指代到实体",
             query="豆豆是谁",
             expected_ids=[ids["cat"]],
+        ),
+        EvalCase(
+            name="宽泛问题走主题索引",
+            query="海边那次的事还记得吗",
+            expect_summary_contains="海边",
         ),
         # 下面是「观察项」：中文里同一个意思可以完全没有相同的字，
         # 只有真正的语义嵌入才能召回。留着它们，是为了让评估不撒谎。

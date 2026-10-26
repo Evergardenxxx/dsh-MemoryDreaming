@@ -201,6 +201,35 @@ CREATE TABLE IF NOT EXISTS memory_vectors (
 CREATE INDEX IF NOT EXISTS idx_vectors_model ON memory_vectors (model);
 
 -- ----------------------------------------------------------------------------
+-- 主题摘要：一段时期内若干记忆的索引卡
+-- ----------------------------------------------------------------------------
+-- 设计要点：摘要只做索引，不做事实底座。
+-- digest 是一句概述，真正的内容仍然在 source_memory_ids 指向的记忆里。
+-- 主题在同一个角色内唯一：重建摘要是「更新同一张卡」，不是「再发一张卡」，
+-- 这样外部（宿主、日志）引用的 summary_id 不会失效。
+CREATE TABLE IF NOT EXISTS summaries (
+    summary_id      TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    character_id    TEXT NOT NULL,
+    activity_id     TEXT,
+    topic           TEXT NOT NULL,
+    digest          TEXT NOT NULL,
+    source_memory_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_event_ids_json  TEXT NOT NULL DEFAULT '[]',
+    span_start      TEXT,
+    span_end        TEXT,
+    importance      REAL NOT NULL DEFAULT 0.5,
+    status          TEXT NOT NULL DEFAULT 'active'
+                         CHECK (status IN ('active', 'stale')),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE (user_id, character_id, topic)
+);
+
+CREATE INDEX IF NOT EXISTS idx_summaries_scope
+    ON summaries (user_id, character_id, status, importance DESC);
+
+-- ----------------------------------------------------------------------------
 -- 异步整理任务：抽取、去重、归纳、核心更新候选
 -- ----------------------------------------------------------------------------
 -- 架构文档第 6 节：每轮先把消息、检查点、整理任务写进同一个事务，再异步处理。
