@@ -34,11 +34,11 @@
 
 已验收：匹配断言与已知片段在重提取、重建、重启和核心恢复后不复活；同消息其他已定位片段保留。后续验收还包括正文擦除、恢复备份前同步删除账本，以及 forget_event 仅撤销一个独立来源时保留仍有其他来源支持的事实。
 
-## 3. 部分完成（v0.10）：宿主恢复与核心候选/审批；P1：产品接入验收
+## 3. 部分完成（v0.11）：宿主恢复与核心候选/审批；P1：产品接入验收
 
 已实现 HostAdapter / SessionBinding、逐轮 prepare_turn、实际投递 after_delivery、受控引用和两个只读工具，并提供 MCP stdio 服务。DeepSeek Harness 另有原生 Cordis 插件：它监听用户消息、模型请求和回合结束事件，通过本地 JSONL 桥接调用同一 HostAdapter，且不注册 MCP 工具。共享/活动范围和本轮事件排除在候选 LIMIT 前生效；核心、记忆、摘要、原话及助手投递来源逐跳复核。入口、示例与边界见 [接入指南](host-adapter.md)。
 
-本轮新增 schema v10 的持久 handoff：宿主可在上下文压缩前调用 `session.pre_compress(state, expected_version)`，先以活动检查点版本号保存目标、开放循环和当前场景，再写入幂等的短 briefing。新窗口 bootstrap 只恢复最新 briefing，不复制完整历史；重复调用同一幂等键不会再次推进检查点。JSONL bridge 已提供 `pre_compress` 操作，原生插件兼容 `agent/context-compressing` 与 `session/context-compressing` 生命周期事件。若宿主版本没有这些事件，仍可在自己的压缩回调中直接调用 bridge。
+本轮新增 schema v10 的持久 handoff：宿主可在上下文压缩前调用 `session.pre_compress(state, expected_version)`，先以活动检查点版本号保存目标、开放循环和当前场景，再写入幂等的短 briefing。新窗口 bootstrap 只恢复最新 briefing，不复制完整历史；重复调用同一幂等键不会再次推进检查点。JSONL bridge 已提供 `pre_compress` 操作，原生插件兼容 `agent/context-compressing` 与 `session/context-compressing` 生命周期事件。若宿主版本没有这些事件，仍可在自己的压缩回调中直接调用 bridge。当前插件还把注入预算硬限制在 128..4096 token，异常配置回退 1200，避免配置把整段历史重新塞回请求。
 
 v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段白名单、实际用户事件绑定、来源/版本快照、到期失效、幂等审批和原子回执。模型不能自行批准；MCP 保持只读。自动从长期互动归纳人格、检查点建议与通用修改/删除工具仍未完成。
 
