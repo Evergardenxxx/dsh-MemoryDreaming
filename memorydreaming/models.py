@@ -489,7 +489,7 @@ class Summary:
     span_start: datetime | None = None
     span_end: datetime | None = None
     importance: float = 0.5
-    status: str = "active"  # active=可用；stale=来源已变化，等下一次重建
+    status: str = "active"  # active / stale / withdrawn / rolled_back
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
 

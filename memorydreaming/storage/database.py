@@ -50,7 +50,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 15：一般事实/遗忘/检查点提议。
 # 版本 16：可重建实体索引。
 # 版本 17：跨进程检索缓存（只存候选 ID 与版本指纹）。
-SCHEMA_VERSION = "17"
+# 版本 18：摘要派生物增加 withdrawn / rolled_back 生命周期状态。
+SCHEMA_VERSION = "18"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -191,6 +192,8 @@ class Database:
                     self._migrate_forgetting(sql)
                 if version < 11:
                     self._migrate_summary_metadata()
+                if version < 18:
+                    self._migrate_summary_lifecycle()
                 for statement in self._statements(sql):
                     self._conn.execute(statement)
                 if version < 13:
@@ -244,6 +247,49 @@ class Database:
                     row["recorded_at"], None, row["recorded_at"],
                 ),
             )
+
+    def _migrate_summary_lifecycle(self) -> None:
+        """重建旧摘要表以扩大 status CHECK，保留所有摘要 ID 和来源。"""
+        if not self._table_exists("summaries"):
+            return
+        self._conn.execute(
+            """CREATE TABLE summaries_v18 (
+                summary_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                relationship_id TEXT,
+                activity_id TEXT,
+                domain TEXT NOT NULL DEFAULT 'real',
+                scope_key TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                digest TEXT NOT NULL,
+                source_memory_ids_json TEXT NOT NULL DEFAULT '[]',
+                source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+                source_digest TEXT NOT NULL DEFAULT '',
+                algorithm_version TEXT NOT NULL DEFAULT 'extractive-v1',
+                span_start TEXT,
+                span_end TEXT,
+                importance REAL NOT NULL DEFAULT 0.5,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'stale', 'withdrawn', 'rolled_back')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (scope_key, topic)
+            )"""
+        )
+        self._conn.execute(
+            """INSERT INTO summaries_v18 (
+                summary_id,user_id,character_id,relationship_id,activity_id,domain,scope_key,
+                topic,digest,source_memory_ids_json,source_event_ids_json,source_digest,
+                algorithm_version,span_start,span_end,importance,status,created_at,updated_at
+            ) SELECT
+                summary_id,user_id,character_id,relationship_id,activity_id,domain,scope_key,
+                topic,digest,source_memory_ids_json,source_event_ids_json,source_digest,
+                algorithm_version,span_start,span_end,importance,status,created_at,updated_at
+            FROM summaries"""
+        )
+        self._conn.execute("DROP TABLE summaries")
+        self._conn.execute("ALTER TABLE summaries_v18 RENAME TO summaries")
 
     def _table_exists(self, name: str) -> bool:
         return self._conn.execute(

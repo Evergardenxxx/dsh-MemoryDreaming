@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS summaries (
     span_end        TEXT,
     importance      REAL NOT NULL DEFAULT 0.5,
     status          TEXT NOT NULL DEFAULT 'active'
-                         CHECK (status IN ('active', 'stale')),
+                         CHECK (status IN ('active', 'stale', 'withdrawn', 'rolled_back')),
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     UNIQUE (scope_key, topic)

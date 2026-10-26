@@ -2225,6 +2225,27 @@ class SummaryRepository:
         )
         return cursor.rowcount
 
+    def mark_withdrawn(self, summary_ids: Sequence[str], now: datetime) -> int:
+        """永久撤回派生卡的当前版本；来源记忆仍由主表保存。"""
+        return self._mark_lifecycle(summary_ids, "withdrawn", now)
+
+    def mark_rolled_back(self, summary_ids: Sequence[str], now: datetime) -> int:
+        """标记算法或人工重建被回滚的派生卡，等待后续显式重建。"""
+        return self._mark_lifecycle(summary_ids, "rolled_back", now)
+
+    def _mark_lifecycle(self, summary_ids: Sequence[str], status: str, now: datetime) -> int:
+        if status not in {"withdrawn", "rolled_back"}:
+            raise ValueError("未知的摘要生命周期状态")
+        ids = list(dict.fromkeys(summary_ids))
+        if not ids:
+            return 0
+        cursor = self._conn.execute(
+            f"UPDATE summaries SET status=?, updated_at=? "
+            f"WHERE summary_id IN ({_placeholders(len(ids))})",
+            [status, to_utc_iso(now), *ids],
+        )
+        return cursor.rowcount
+
 
 # ---------------------------------------------------------------------------
 # 跨进程检索缓存（只保存候选 ID 与版本指纹）

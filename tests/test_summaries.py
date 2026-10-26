@@ -115,6 +115,25 @@ class SummaryBuildTest(RuntimeTestCase):
         self.assertEqual(self.repos.summaries.list_active(self.scope), [])
         self.assertEqual(self.repos.summaries.get(card.summary_id).status, "stale")
 
+    def test_withdrawn_and_rolled_back_are_terminal_projection_states(self) -> None:
+        self.runtime.build_summaries(self.scope)
+        card = self.repos.summaries.list_active(self.scope)[0]
+
+        withdrawn = self.runtime.withdraw_summaries([card.summary_id], self.scope)
+        self.assertEqual(withdrawn["changed"], 1)
+        self.assertEqual(self.repos.summaries.get(card.summary_id).status, "withdrawn")
+        self.assertEqual(self.repos.summaries.list_active(self.scope), [])
+
+        rolled_back = self.runtime.rollback_summaries([card.summary_id], self.scope)
+        self.assertEqual(rolled_back["changed"], 1)
+        self.assertEqual(self.repos.summaries.get(card.summary_id).status, "rolled_back")
+        self.assertEqual(self.runtime.expand_summary(card.summary_id), [])
+
+        # 显式重建可以复用同一张卡的 ID，并把最新来源投影重新激活。
+        self.runtime.build_summaries(self.scope)
+        rebuilt = self.repos.summaries.list_active(self.scope)[0]
+        self.assertEqual(rebuilt.summary_id, card.summary_id)
+
 
 class SummaryRetrievalTest(SummaryBuildTest):
     def test_broad_query_returns_card_and_expanded_sources(self) -> None:

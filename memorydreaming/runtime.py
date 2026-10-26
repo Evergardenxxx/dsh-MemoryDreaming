@@ -1193,6 +1193,39 @@ class MemoryRuntime:
         """
         return build_summaries(self._db, scope, self._clock, self._tz)
 
+    def withdraw_summaries(self, summary_ids: list[str], scope: Scope) -> dict[str, Any]:
+        """可信宿主撤回摘要派生物；不会删除其来源记忆。"""
+        return self._transition_summaries(summary_ids, scope, "withdrawn")
+
+    def rollback_summaries(self, summary_ids: list[str], scope: Scope) -> dict[str, Any]:
+        """可信宿主回滚摘要派生物，等待下一次显式重建。"""
+        return self._transition_summaries(summary_ids, scope, "rolled_back")
+
+    def _transition_summaries(self, summary_ids: list[str], scope: Scope, status: str) -> dict[str, Any]:
+        if not isinstance(summary_ids, list) or not 1 <= len(summary_ids) <= 100:
+            raise ValueError("summary_ids 必须包含 1..100 项")
+        ids = list(dict.fromkeys(summary_ids))
+        summaries = []
+        for summary_id in ids:
+            if not isinstance(summary_id, str) or not summary_id:
+                raise ValueError("summary_id 必须为非空字符串")
+            summary = self._repos.summaries.get(summary_id)
+            if summary is None or not self._scope_matches(summary.scope, scope):
+                raise ScopeNotFound(f"找不到作用域内摘要 {summary_id}")
+            summaries.append(summary)
+        now = self._clock.now()
+        with self._db.transaction():
+            changed = (self._repos.summaries.mark_withdrawn(ids, now)
+                       if status == "withdrawn"
+                       else self._repos.summaries.mark_rolled_back(ids, now))
+            for summary in summaries:
+                self._repos.journal.append(
+                    f"summary.{status}", scope=summary.scope, entity_id=summary.summary_id,
+                    payload={"status": status}, now=now,
+                    idempotency_key=f"summary:{summary.summary_id}:{status}:{now.isoformat()}",
+                )
+        return {"status": status, "summary_ids": ids, "changed": changed}
+
     def expand_summary(self, summary_id: str, limit: int = 5) -> list[RetrievedItem]:
         """把一张索引卡回源展开成原始记忆。
 
