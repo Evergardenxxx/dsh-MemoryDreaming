@@ -25,6 +25,7 @@ from datetime import tzinfo, timezone
 from typing import Any, Protocol
 
 from .clock import Clock, ensure_utc
+from .errors import JobLeaseLost
 from .models import (
     EpistemicStatus,
     EventRecord,
@@ -42,6 +43,7 @@ from .summarization import build_summaries
 from .retrieval.vector import VectorIndex
 from .storage.database import Database
 from .storage.repository import JobRecord
+from .worker import JobHeartbeat
 
 # 有效记忆少于这个数就不生成主题摘要：两三条记忆凑不出主题，
 # 生成出来的「摘要」只是换句话重复一遍，还会挤占检索预算。
@@ -89,6 +91,8 @@ class ConsolidationReport:
     summarized: int = 0       # 生成/更新了多少张主题摘要卡
     skipped: int = 0          # 因没有对应执行器而保留在队列
     failed: int = 0           # 失败任务数
+    recovered: int = 0        # 回收的失联任务（含达到上限的任务）
+    lease_lost: int = 0       # 已失去提交权，交给新持有者或下一批恢复
     errors: list[str] = field(default_factory=list)
 
 
@@ -99,11 +103,17 @@ def run_pending_jobs(
     vector_index: VectorIndex | None = None,
     limit: int = 10,
     tz: tzinfo = timezone.utc,
+    *,
+    lease_seconds: float = 120,
+    retry_base_seconds: float = 5,
+    retry_max_seconds: float = 300,
+    max_attempts: int = 3,
 ) -> ConsolidationReport:
     """取出待处理任务并逐条执行。
 
-    每个任务单独一个事务：一条失败不影响其他任务，
-    失败信息写回任务表，未超过重试上限的会自动退回 pending。
+    每个任务的结果、后续任务和完成确认在同一事务里提交。
+    抽取在写事务外执行，文件库有独立连接续租。失败按指数退避重试，
+    租约失效则放弃全部写入；下一次调用会回收过期任务。
 
     参数:
         extractor:    抽取器。为 None 时不领取 extract 任务（不消耗重试次数），
@@ -114,6 +124,14 @@ def run_pending_jobs(
     """
     repos = db.repositories
     report = ConsolidationReport()
+    if (
+        isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
+        or not 0 < lease_seconds < float("inf")
+        or isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1
+    ):
+        raise ValueError("任务数量、租约时长和尝试上限必须大于 0")
+    if not 0 < retry_base_seconds <= retry_max_seconds < float("inf"):
+        raise ValueError("重试间隔必须为有限正数，且上限不小于基础间隔")
 
     # 只领取当前 worker 能执行的类型。先领再释放会反复卡在最老的 extract，
     # 导致后面的 dedupe/summarize 永远没有机会运行。
@@ -122,40 +140,66 @@ def run_pending_jobs(
         supported_types.append("extract")
     placeholders = ",".join("?" for _ in supported_types)
     with db.transaction():
+        report.recovered = repos.jobs.recover_expired(clock.now())
         report.skipped = int(db.connection.execute(
             f"SELECT COUNT(*) FROM consolidation_jobs WHERE status = 'pending' "
             f"AND job_type NOT IN ({placeholders})", supported_types,
         ).fetchone()[0])
-        jobs = repos.jobs.claim(limit, clock.now(), job_types=supported_types)
-    report.claimed = len(jobs)
+        job_ids = repos.jobs.ready_ids(limit, clock.now(), supported_types)
 
-    for job in jobs:
+    for job_id in job_ids:
+        with db.transaction():
+            claimed = repos.jobs.claim(1, clock.now(), job_ids=[job_id], lease_seconds=lease_seconds)
+        if not claimed:
+            continue  # 其他 worker 已领取本批候选
+        job = claimed[0]
+        report.claimed += 1
         try:
-            if job.job_type == "extract":
-                assert extractor is not None  # 由支持的任务类型保证
-                created, duplicates = _run_extract(db, job, extractor, clock, vector_index)
-                report.created += created
-                report.duplicates += duplicates
-                _enqueue_follow_up(db, job, clock)
+            created = duplicates = merged = summarized = 0
+            # 抽取可调用外部模型，不能在等待网络时持有 SQLite 写锁。
+            with JobHeartbeat(db, job, clock, lease_seconds):
+                event = None
+                drafts: list[MemoryDraft] = []
+                if job.job_type == "extract":
+                    assert extractor is not None
+                    event_id = str(job.payload.get("event_id") or "")
+                    event = repos.events.get(event_id)
+                    if event is None or event.scope != job.scope:
+                        raise ValueError(f"任务引用的原始事件不存在或作用域不匹配：{event_id}")
+                    drafts = extractor.extract(event)
 
-            elif job.job_type == "dedupe":
-                report.merged += _run_dedupe(db, job.scope, clock, vector_index)
-                _enqueue_summarize(db, job, clock)
-
-            elif job.job_type == "summarize":
-                report.summarized += build_summaries(db, job.scope, clock, tz)
-
-            else:
-                raise NotImplementedError(f"暂未实现的任务类型：{job.job_type}")
-
-            with db.transaction():
-                repos.jobs.complete(job.job_id, clock.now())
-
-        except Exception as exc:  # noqa: BLE001 - 单个任务失败不应中断整批
-            report.failed += 1
+                with db.transaction():
+                    repos.jobs.assert_owned(job.job_id, job.claim_token, clock.now())
+                    if job.job_type == "extract":
+                        created, duplicates = _run_extract(
+                            db, event, drafts, extractor.version, clock, vector_index,
+                        )
+                        _enqueue_follow_up(db, job, clock, max_attempts)
+                    elif job.job_type == "dedupe":
+                        merged = _run_dedupe(db, job.scope, clock, vector_index)
+                        _enqueue_summarize(db, job, clock, max_attempts)
+                    elif job.job_type == "summarize":
+                        summarized = build_summaries(db, job.scope, clock, tz)
+                    repos.jobs.complete(job.job_id, job.claim_token, clock.now())
+            # 只有事务真正提交后才把结果计入报告。
+            report.created += created
+            report.duplicates += duplicates
+            report.merged += merged
+            report.summarized += summarized
+        except JobLeaseLost as exc:
+            report.lease_lost += 1
             report.errors.append(f"{job.job_id}: {exc}")
-            with db.transaction():
-                repos.jobs.fail(job.job_id, str(exc), clock.now())
+        except Exception as exc:  # noqa: BLE001 - 单个任务失败不应中断整批
+            report.errors.append(f"{job.job_id}: {exc}")
+            try:
+                with db.transaction():
+                    repos.jobs.fail(
+                        job.job_id, job.claim_token, str(exc), clock.now(),
+                        retry_base_seconds=retry_base_seconds, retry_max_seconds=retry_max_seconds,
+                    )
+                report.failed += 1
+            except JobLeaseLost:
+                report.lease_lost += 1
 
     return report
 
@@ -167,19 +211,14 @@ def run_pending_jobs(
 
 def _run_extract(
     db: Database,
-    job: JobRecord,
-    extractor: MemoryExtractor,
+    event: EventRecord,
+    drafts: list[MemoryDraft],
+    extractor_version: str,
     clock: Clock,
     vector_index: VectorIndex | None,
 ) -> tuple[int, int]:
     """执行一个抽取任务，返回 (新建条数, 幂等跳过条数)。"""
     repos = db.repositories
-    event_id = str(job.payload.get("event_id") or "")
-    event = repos.events.get(event_id)
-    if event is None:
-        raise ValueError(f"任务引用的原始事件不存在：{event_id}")
-
-    drafts = extractor.extract(event)
     created = 0
     duplicates = 0
     now = clock.now()
@@ -194,11 +233,11 @@ def _run_extract(
             if conflicts:
                 memory.supersedes_id = conflicts[0].memory_id
 
-            dedupe_key = f"{event.event_id}:{extractor.version}:{draft.candidate_key}"
+            dedupe_key = f"{event.event_id}:{extractor_version}:{draft.candidate_key}"
             inserted = repos.memories.insert(
                 memory,
                 dedupe_key=dedupe_key,
-                extraction_version=extractor.version,
+                extraction_version=extractor_version,
                 candidate_key=draft.candidate_key,
             )
             if inserted is None:
@@ -308,7 +347,7 @@ def _is_negation(left: str, right: str) -> bool:
     return left == f"不{right}" or right == f"不{left}"
 
 
-def _enqueue_follow_up(db: Database, job: JobRecord, clock: Clock) -> None:
+def _enqueue_follow_up(db: Database, job: JobRecord, clock: Clock, max_attempts: int) -> None:
     """抽取完成后排一个去重任务：新记忆可能和旧记忆在说同一件事。
 
     先检查有没有同类待处理任务，避免每抽一次就堆一条。
@@ -322,10 +361,11 @@ def _enqueue_follow_up(db: Database, job: JobRecord, clock: Clock) -> None:
                 payload={"reason": "extract-follow-up"},
                 now=clock.now(),
                 activity_id=job.activity_id,
+                max_attempts=max_attempts,
             )
 
 
-def _enqueue_summarize(db: Database, job: JobRecord, clock: Clock) -> None:
+def _enqueue_summarize(db: Database, job: JobRecord, clock: Clock, max_attempts: int) -> None:
     """去重之后排一个摘要任务。
 
     摘要依赖去重后的结果：如果先摘要、后去重，摘要里会留下已经被合并掉的来源。
@@ -343,6 +383,7 @@ def _enqueue_summarize(db: Database, job: JobRecord, clock: Clock) -> None:
                 payload={"reason": "dedupe-follow-up"},
                 now=clock.now(),
                 activity_id=job.activity_id,
+                max_attempts=max_attempts,
             )
 
 

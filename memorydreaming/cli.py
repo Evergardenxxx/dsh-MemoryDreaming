@@ -41,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", help="初始化数据库结构")
     sub.add_parser("demo", help="跑一遍完整演示场景")
     sub.add_parser("eval", help="跑一遍检索评估（Recall@5 / MRR / 无依据拒绝）")
-    sub.add_parser("jobs", help="查看待处理的整理任务数")
+    sub.add_parser("jobs", help="查看任务就绪、退避、租约与失败统计")
 
     reindex = sub.add_parser("reindex", help="重建某个角色的向量索引")
     reindex.add_argument("--user", required=True)
@@ -112,7 +112,7 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
         return 0
 
     if args.command == "jobs":
-        print(f"待处理任务：{runtime.pending_jobs()} 个")
+        print(json.dumps(runtime.job_stats(), ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "reindex":
@@ -124,7 +124,7 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
     if args.command == "consolidate":
         report = runtime.run_consolidation(RuleBasedExtractor(), limit=args.limit)
         print(json.dumps(report.__dict__, ensure_ascii=False, indent=2))
-        return 0
+        return 1 if report.failed or report.lease_lost else 0
 
     if args.command == "bootstrap":
         result = runtime.bootstrap(args.user, args.character, args.activity)

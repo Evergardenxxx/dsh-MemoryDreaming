@@ -2,9 +2,9 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.4 可运行骨架，含本轮正确性修复**。已实现身份与关系恢复、原始事件保存、四类记忆、持久工作检查点、混合检索、主题摘要、去重巩固、规则冲突消解、可用性衰减、简化历史查询、纠错与逻辑删除。当前 133 个回归测试通过；完整遗忘、任务崩溃恢复和宿主适配尚未完成。
+当前状态：**v0.5，加入可恢复的巩固任务队列**。已实现身份与关系恢复、原始事件保存、四类记忆、持久工作检查点、混合检索、主题摘要、去重巩固、规则冲突消解、可用性衰减、简化历史查询、纠错与逻辑删除。任务支持租约、心跳、崩溃回收和延迟重试，结果与完成确认原子提交。当前 156 个回归测试通过；完整遗忘和宿主适配尚未完成。
 
-设计提案见 [长期记忆引擎架构草案 v0.1](docs/memory-engine-architecture-v0.1.md)；本轮问题与修复见 [代码审查记录](docs/review-2026-10-26.md)；后续顺序和源码参考见 [待解决问题](docs/open-problems.md)。
+设计提案见 [长期记忆引擎架构草案 v0.1](docs/memory-engine-architecture-v0.1.md)；正确性修复见 [代码审查记录](docs/review-2026-10-26.md)；队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)；后续顺序和源码参考见 [待解决问题](docs/open-problems.md)。
 
 ## 先跑起来
 
@@ -13,7 +13,7 @@
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部 133 个测试
+python -m unittest                # 跑全部 156 个测试
 ```
 
 `demo` 会打印每一步在做什么，输出末尾会告诉你数据库文件在哪。想自己看数据，直接用 sqlite3 打开它。
@@ -23,7 +23,10 @@ python -m unittest                # 跑全部 133 个测试
 ```bash
 python -m memorydreaming --db my.db init
 python -m memorydreaming --db my.db observe --user u1 --character c1 --content "我叫林鸥，喜欢猫"
-python -m memorydreaming --db my.db consolidate                      # 抽取 + 去重 + 摘要
+python -m memorydreaming --db my.db consolidate                      # 抽取，本批新任务留到下一批
+python -m memorydreaming --db my.db consolidate                      # 去重
+python -m memorydreaming --db my.db consolidate                      # 摘要（达到生成条件时）
+python -m memorydreaming --db my.db jobs                             # 就绪、退避、运行、失败统计
 python -m memorydreaming --db my.db retrieve --user u1 --character c1 "我喜欢什么"
 python -m memorydreaming --db my.db bootstrap --user u1 --character c1
 python -m memorydreaming --db my.db reindex --user u1 --character c1  # 重建向量索引
@@ -39,6 +42,7 @@ memorydreaming/
 ├── errors.py         自定义异常：版本冲突、恢复失败……
 ├── runtime.py        对外门面：bootstrap / retrieve / observe / checkpoint / correct / forget
 ├── consolidation.py  异步整理：任务分发 + 抽取 + 去重合并
+├── worker.py         文件库任务心跳：独立连接续租
 ├── summarization.py  主题摘要：主题词分组、索引卡生成、卡片匹配
 ├── similarity.py     相似度：字符 n-gram Jaccard + 聚簇（去重共用）
 ├── extractors.py     示例抽取器（基于规则，可替换成模型）
@@ -67,6 +71,7 @@ tests/
 ├── test_core_activity.py 核心版本、活动检查点、bootstrap
 ├── test_retrieval.py     时间解析、路由、48 小时分级、预算
 ├── test_consolidation.py 抽取后续任务、去重合并
+├── test_job_leases.py    租约、延迟重试、事务回滚、真实进程崩溃与迁移
 ├── test_summaries.py     主题卡生成、回源展开、失效
 ├── test_vector.py        嵌入性质、索引维护、通道接线
 ├── test_decay_time.py    衰减、时间旅行、上下文围栏
@@ -240,6 +245,7 @@ MRR：1.000
 | 复盘「当时我们是怎么以为的」 | `test_decay_time.py::TimeTravelTest` |
 | 新事实顶掉旧事实 | `test_conflict.py::ConflictResolutionTest` |
 | 删一个来源不误伤派生事实 | `test_conflict.py::DeletionSupportTest` |
+| worker 崩溃后恢复，旧 worker 不能重复提交 | `test_job_leases.py` |
 | 检索质量可回归 | `python -m memorydreaming eval` |
 
 ## 已知限制与下一步
@@ -253,12 +259,13 @@ MRR：1.000
 - **向量检索是暴力扫描**。本地几百上千条够用，十万条以上要换 ANN。
 - **巩固只有去重和摘要**。`propose_core`（核心成长候选）还是任务表里的类型，没有执行器。
 - **没有宿主适配层**。真正接进聊天客户端需要会话/请求钩子。
-- **任务队列只做到了原子领取**。进程崩溃后 `running` 任务不会自动回收（缺租约与心跳），跨设备同步也没有方案。
+- **队列需要宿主持续轮询**。每次 `run_consolidation()` 会回收过期任务；库本身不会启动常驻进程。文件库可在耗时抽取时续租，内存库只有同步租约校验。向量计算仍在写事务内，接远程嵌入前需要把这一步移到事务外；跨设备同步尚未实现。
 
-完整问题清单和下一步顺序见 **[docs/open-problems.md](docs/open-problems.md)**。数据库结构已升级到 v4：旧事件与 ID 保留，无法可靠还原范围的旧摘要先标 stale，后续可重建。
+完整问题清单和下一步顺序见 **[docs/open-problems.md](docs/open-problems.md)**。数据库结构已升级到 v5：自动保留旧任务并增加租约字段，旧 running 行会在下一次巩固时按失联任务恢复；从 v3 升级仍保留旧事件与 ID，无法可靠还原范围的旧摘要先标 stale。
 
 ## 备注
 
+- Windows 终端若出现 GBK 编码错误或中文乱码，用 `python -X utf8 -m memorydreaming demo`（其他命令同理）。
 - Windows 上的 Python 默认不带 IANA 时区数据库，`clock.py` 对常用时区做了固定偏移兜底；想要完整的夏令时支持，`pip install tzdata`。
 - `.memorydreaming/`、`*.db` 已在 `.gitignore` 中忽略，本地数据不会进版本库。
 - 配置项见 `.env.example`，都可以用环境变量覆盖。

@@ -82,6 +82,20 @@ class Settings:
     # bootstrap 时附带多少条「重要经历」摘要
     bootstrap_highlight_limit: int = 5
 
+    # 巩固任务：每次领取独立租约，失败延迟重试；上限在入队时持久保存。
+    job_lease_seconds: int = 120
+    job_max_attempts: int = 3
+    job_retry_base_seconds: int = 5
+    job_retry_max_seconds: int = 300
+
+    def __post_init__(self) -> None:
+        for name in ("job_lease_seconds", "job_max_attempts", "job_retry_base_seconds", "job_retry_max_seconds"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} 必须为正整数")
+        if self.job_retry_max_seconds < self.job_retry_base_seconds:
+            raise ValueError("job_retry_max_seconds 不能小于 job_retry_base_seconds")
+
     @classmethod
     def from_env(cls) -> "Settings":
         """从环境变量构造配置，缺省项用上面的默认值。"""
@@ -91,6 +105,10 @@ class Settings:
             recent_detail_window_hours=_env_int("RECENT_WINDOW_HOURS", 48),
             max_context_items=_env_int("MAX_ITEMS", 12),
             context_token_budget=_env_int("TOKEN_BUDGET", 1800),
+            job_lease_seconds=_env_int("JOB_LEASE_SECONDS", 120),
+            job_max_attempts=_env_int("JOB_MAX_ATTEMPTS", 3),
+            job_retry_base_seconds=_env_int("JOB_RETRY_BASE_SECONDS", 5),
+            job_retry_max_seconds=_env_int("JOB_RETRY_MAX_SECONDS", 300),
         )
 
     def with_db(self, db_path: str | Path) -> "Settings":

@@ -17,11 +17,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Iterable, Sequence
 
 from ..clock import ensure_utc, from_utc_iso, to_utc_iso
-from ..errors import VersionConflict
+from ..errors import JobLeaseLost, VersionConflict
 from ..models import (
     Activity,
     ActivityStatus,
@@ -217,6 +217,10 @@ class JobRecord:
     last_error: str | None
     created_at: datetime
     updated_at: datetime
+    max_attempts: int = 3
+    available_at: datetime | None = None
+    claim_token: str | None = None
+    lease_until: datetime | None = None
 
 
 def _summary_from_row(row: sqlite3.Row) -> Summary:
@@ -260,6 +264,10 @@ def _job_from_row(row: sqlite3.Row) -> JobRecord:
         last_error=row["last_error"],
         created_at=from_utc_iso(row["created_at"]) or ensure_utc(datetime.min),
         updated_at=from_utc_iso(row["updated_at"]) or ensure_utc(datetime.min),
+        max_attempts=row["max_attempts"],
+        available_at=from_utc_iso(row["available_at"]),
+        claim_token=row["claim_token"],
+        lease_until=from_utc_iso(row["lease_until"]),
     )
 
 
@@ -1028,7 +1036,7 @@ class LinkRepository:
 
 
 class JobRepository:
-    """异步整理任务。第一版只是一个可靠的任务表，由外部 worker 拉取执行。"""
+    """持久任务队列。多步写入由调用方放在 Database.transaction() 内。"""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -1040,14 +1048,18 @@ class JobRepository:
         payload: dict[str, Any],
         now: datetime,
         activity_id: str | None = None,
+        *,
+        max_attempts: int = 3,
     ) -> str:
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+            raise ValueError("max_attempts 必须为正整数")
         job_id = new_id("job")
         self._conn.execute(
             """
             INSERT INTO consolidation_jobs (
                 job_id, job_type, user_id, character_id, relationship_id, activity_id, domain,
-                payload_json, status, attempts, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                payload_json, status, attempts, created_at, updated_at, max_attempts, available_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 job_id,
@@ -1062,45 +1074,76 @@ class JobRepository:
                 0,
                 to_utc_iso(now),
                 to_utc_iso(now),
+                max_attempts,
+                to_utc_iso(now),
             ),
         )
         return job_id
+
+    def recover_expired(self, now: datetime) -> int:
+        """回收失联任务；包括升级前没有租约的 running 行。"""
+        return self._conn.execute(
+            """UPDATE consolidation_jobs
+               SET status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,
+                   claim_token = NULL, lease_until = NULL, available_at = ?, updated_at = ?,
+                   last_error = 'worker lease expired'
+               WHERE status = 'running' AND (lease_until IS NULL OR lease_until <= ?)""",
+            (to_utc_iso(now), to_utc_iso(now), to_utc_iso(now)),
+        ).rowcount
+
+    @staticmethod
+    def _eligible(
+        now: datetime, job_types: Sequence[str] | None, job_ids: Sequence[str] | None = None,
+    ) -> tuple[str, list[object]]:
+        sql = "status = 'pending' AND available_at <= ? AND attempts < max_attempts"
+        params: list[object] = [to_utc_iso(now)]
+        for column, values in (("job_type", job_types), ("job_id", job_ids)):
+            if values is not None:
+                if not values:
+                    return "0", []
+                sql += f" AND {column} IN ({_placeholders(len(values))})"
+                params.extend(values)
+        return sql, params
+
+    def ready_ids(self, limit: int, now: datetime, job_types: Sequence[str]) -> list[str]:
+        """冻结本批候选集合；真正执行前才领取，避免排队期间租约耗尽。"""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit 必须为正整数")
+        where, params = self._eligible(now, job_types)
+        rows = self._conn.execute(
+            f"SELECT job_id FROM consolidation_jobs WHERE {where} "
+            "ORDER BY created_at, job_id LIMIT ?", [*params, limit],
+        ).fetchall()
+        return [row["job_id"] for row in rows]
 
     def claim(
         self,
         limit: int,
         now: datetime,
         job_types: Sequence[str] | None = None,
+        *,
+        job_ids: Sequence[str] | None = None,
+        lease_seconds: float = 120,
     ) -> list[JobRecord]:
-        """原子地取出待处理任务并标记为 running。
-
-        用一个 `UPDATE ... RETURNING` 完成「挑选 + 占位」：
-        先 SELECT 再逐条 UPDATE 的写法在两个进程同时取任务时会重复领取，
-        而单条 UPDATE 的 WHERE 子查询在 SQLite 里是原子的。
-        （SQLite 3.35+ 支持 RETURNING，本项目要求 3.53 实测可用。）
-
-        参数:
-            job_types: 只取这几类任务；None 表示不限。
-                       抽取任务需要抽取器，去重任务不需要——
-                       调用方可以据此只领自己能处理的那部分。
-        """
+        """原子领取；每行生成新凭证。失联任务须先 recover_expired。"""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or not 0 < lease_seconds < float("inf"):
+            raise ValueError("limit 和有限的 lease_seconds 必须大于 0")
+        where, filters = self._eligible(now, job_types, job_ids)
         sql = """
             UPDATE consolidation_jobs
             SET status = 'running',
                 attempts = attempts + 1,
-                updated_at = ?
+                updated_at = ?, claim_token = lower(hex(randomblob(16))), lease_until = ?
             WHERE job_id IN (
                 SELECT job_id FROM consolidation_jobs
-                WHERE status = 'pending'
         """
-        params: list[object] = [to_utc_iso(now)]
-
-        if job_types:
-            sql += f" AND job_type IN ({_placeholders(len(job_types))})"
-            params.extend(job_types)
+        sql += f" WHERE {where} "
+        params: list[object] = [
+            to_utc_iso(now), to_utc_iso(now + timedelta(seconds=lease_seconds)), *filters,
+        ]
 
         sql += """
-                ORDER BY created_at ASC
+                ORDER BY created_at, job_id
                 LIMIT ?
             )
             RETURNING *
@@ -1127,42 +1170,81 @@ class JobRepository:
         ).fetchone()
         return row is not None
 
-    def release(self, job_id: str, now: datetime) -> None:
-        """把任务退回 pending，且不消耗重试次数。
-
-        用于「这次没条件处理」的情况，例如没传抽取器时的 extract 任务。
-        和 fail() 的区别：fail 是真出错，release 是「先放着」。
-        """
-        self._conn.execute(
-            """
-            UPDATE consolidation_jobs
-            SET status = 'pending',
-                attempts = MAX(0, attempts - 1),
-                updated_at = ?
-            WHERE job_id = ?
-            """,
-            (to_utc_iso(now), job_id),
-        )
-
-    def complete(self, job_id: str, now: datetime) -> None:
-        self._conn.execute(
-            "UPDATE consolidation_jobs SET status = 'done', updated_at = ?, last_error = NULL "
-            "WHERE job_id = ?",
-            (to_utc_iso(now), job_id),
-        )
-
-    def fail(self, job_id: str, error: str, now: datetime, max_attempts: int = 3) -> None:
-        """失败处理：未超过重试上限就退回 pending，否则标记 failed。"""
+    def assert_owned(self, job_id: str, claim_token: str, now: datetime) -> None:
         row = self._conn.execute(
-            "SELECT attempts FROM consolidation_jobs WHERE job_id = ?", (job_id,)
+            "SELECT 1 FROM consolidation_jobs WHERE job_id = ? AND status = 'running' "
+            "AND claim_token = ? AND lease_until > ?",
+            (job_id, claim_token, to_utc_iso(now)),
         ).fetchone()
-        attempts = row["attempts"] if row else max_attempts
-        status = JobStatus.PENDING if attempts < max_attempts else JobStatus.FAILED
-        self._conn.execute(
-            "UPDATE consolidation_jobs SET status = ?, last_error = ?, updated_at = ? "
-            "WHERE job_id = ?",
-            (status.value, error[:2000], to_utc_iso(now), job_id),
+        if row is None:
+            raise JobLeaseLost(f"任务租约失效：{job_id}")
+
+    def _owned_update(
+        self, job_id: str, claim_token: str, now: datetime,
+        assignments: str, params: Sequence[object] = (),
+    ) -> None:
+        cursor = self._conn.execute(
+            f"UPDATE consolidation_jobs SET {assignments}, updated_at = ? "
+            "WHERE job_id = ? AND status = 'running' AND claim_token = ? AND lease_until > ?",
+            [*params, to_utc_iso(now), job_id, claim_token, to_utc_iso(now)],
         )
+        if cursor.rowcount != 1:
+            raise JobLeaseLost(f"任务租约失效：{job_id}")
+
+    def renew(self, job_id: str, claim_token: str, now: datetime, lease_seconds: float = 120) -> None:
+        if not 0 < lease_seconds < float("inf"):
+            raise ValueError("lease_seconds 必须是有限正数")
+        self._owned_update(
+            job_id, claim_token, now, "lease_until = MAX(lease_until, ?)",
+            [to_utc_iso(now + timedelta(seconds=lease_seconds))],
+        )
+
+    def release(self, job_id: str, claim_token: str, now: datetime) -> None:
+        """主动退回，不消耗尝试次数；旧持有者不能释放新持有者的任务。"""
+        self._owned_update(
+            job_id, claim_token, now,
+            "status = 'pending', attempts = MAX(0, attempts - 1), "
+            "claim_token = NULL, lease_until = NULL, available_at = ?", [to_utc_iso(now)],
+        )
+
+    def complete(self, job_id: str, claim_token: str, now: datetime) -> None:
+        self._owned_update(
+            job_id, claim_token, now,
+            "status = 'done', last_error = NULL, claim_token = NULL, lease_until = NULL",
+        )
+
+    def fail(
+        self, job_id: str, claim_token: str, error: str, now: datetime,
+        *, retry_base_seconds: float = 5, retry_max_seconds: float = 300,
+    ) -> None:
+        """带凭证确认失败，重试使用有上限的指数退避。需在事务内调用。"""
+        if not 0 < retry_base_seconds <= retry_max_seconds < float("inf"):
+            raise ValueError("重试间隔必须为有限正数，且上限不小于基础间隔")
+        self.assert_owned(job_id, claim_token, now)
+        row = self._conn.execute(
+            "SELECT attempts FROM consolidation_jobs WHERE job_id = ?", (job_id,),
+        ).fetchone()
+        delay = min(retry_max_seconds, retry_base_seconds * 2 ** min(row["attempts"] - 1, 30))
+        self._owned_update(
+            job_id, claim_token, now,
+            "status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END, "
+            "last_error = ?, available_at = ?, claim_token = NULL, lease_until = NULL",
+            [error[:2000], to_utc_iso(now + timedelta(seconds=delay))],
+        )
+
+    def stats(self, now: datetime) -> dict[str, int]:
+        """只读快照；expired 是 running 的子集，scheduled 是 pending 的子集。"""
+        # 单条 SELECT 保证各计数对应同一快照，避免并发完成时统计互相矛盾。
+        row = self._conn.execute(
+            """SELECT SUM(status = 'pending') AS pending, SUM(status = 'running') AS running,
+                      SUM(status = 'done') AS done, SUM(status = 'failed') AS failed,
+                      SUM(status = 'pending' AND available_at > ?) AS scheduled,
+                      SUM(status = 'pending' AND available_at <= ? AND attempts < max_attempts) AS ready,
+                      SUM(status = 'running' AND (lease_until IS NULL OR lease_until <= ?)) AS expired
+               FROM consolidation_jobs""",
+            (to_utc_iso(now), to_utc_iso(now), to_utc_iso(now)),
+        ).fetchone()
+        return {key: int(row[key] or 0) for key in row.keys()}
 
     def pending_count(self) -> int:
         row = self._conn.execute(

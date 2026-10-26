@@ -251,6 +251,7 @@ class MemoryRuntime:
                     payload={"event_id": stored.event_id, "conversation_id": turn.conversation_id},
                     now=now,
                     activity_id=activity_id,
+                    max_attempts=self.settings.job_max_attempts,
                 )
 
         version = None
@@ -483,8 +484,8 @@ class MemoryRuntime:
     ) -> ConsolidationReport:
         """执行待处理的抽取任务。
 
-        第一版同步执行；真实部署可以把这个方法丢进后台线程或队列 worker，
-        任务本身已经落库；当前尚无租约，崩溃后 running 任务需要人工恢复。
+        每次调用先回收过期租约。各 worker 须使用独立 runtime/数据库连接；
+        文件库会在抽取期间续租，副作用与完成确认在同一事务内提交。
         """
         return run_pending_jobs(
             db=self._db,
@@ -493,10 +494,18 @@ class MemoryRuntime:
             vector_index=self._vectors,
             limit=limit,
             tz=self._tz,
+            lease_seconds=self.settings.job_lease_seconds,
+            retry_base_seconds=self.settings.job_retry_base_seconds,
+            retry_max_seconds=self.settings.job_retry_max_seconds,
+            max_attempts=self.settings.job_max_attempts,
         )
 
     def pending_jobs(self) -> int:
         return self._repos.jobs.pending_count()
+
+    def job_stats(self) -> dict[str, int]:
+        """队列只读状态，包含等待退避、过期租约和最终失败任务。"""
+        return self._repos.jobs.stats(self._clock.now())
 
     # -- 8. 主题摘要 -------------------------------------------------------
 

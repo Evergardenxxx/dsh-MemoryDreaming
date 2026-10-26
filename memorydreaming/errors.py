@@ -47,3 +47,7 @@ class InvalidCorrection(MemoryDreamingError):
 
 class StorageError(MemoryDreamingError):
     """存储层无法完成操作，例如数据库文件不可写、结构版本不兼容。"""
+
+
+class JobLeaseLost(MemoryDreamingError):
+    """任务租约已过期或被另一 worker 接管，当前执行者必须放弃提交。"""

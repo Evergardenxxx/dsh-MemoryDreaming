@@ -34,7 +34,8 @@ from .repository import Repositories, _scope_key, build_repositories
 #         CREATE TABLE IF NOT EXISTS 自动补上，不需要数据迁移。
 # 版本 3：新增 summaries（主题摘要）。同样是纯新增表，无需迁移。
 # 版本 4：事件幂等按作用域隔离，摘要/任务持久保存完整作用域。
-SCHEMA_VERSION = "4"
+# 版本 5：任务租约、提交凭证和延迟重试。
+SCHEMA_VERSION = "5"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -169,6 +170,8 @@ class Database:
             with self.transaction():
                 if version < 4:
                     self._migrate_scope_schema(sql)
+                if version < 5 and self._table_exists("consolidation_jobs"):
+                    self._migrate_job_leases()
                 for statement in self._statements(sql):
                     self._conn.execute(statement)
                 self.meta_set("schema_version", SCHEMA_VERSION)
@@ -182,6 +185,23 @@ class Database:
         return self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
         ).fetchone() is not None
+
+    def _migrate_job_leases(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(consolidation_jobs)")}
+        additions = {
+            "max_attempts": "INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts > 0)",
+            "available_at": "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000000+00:00'",
+            "claim_token": "TEXT",
+            "lease_until": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE consolidation_jobs ADD COLUMN {name} {definition}")
+        self._conn.execute(
+            "UPDATE consolidation_jobs SET available_at = created_at "
+            "WHERE available_at = '1970-01-01T00:00:00.000000+00:00'"
+        )
+        # 旧 running 没有所有权凭证；下一次领取时按失联任务回收。
 
     @staticmethod
     def _statements(sql: str) -> list[str]:

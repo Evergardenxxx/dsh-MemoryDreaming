@@ -1,16 +1,16 @@
 # 待解决问题与参考实现
 
-更新于 2026-10-26。已修复内容见 [代码审查记录](review-2026-10-26.md)。以下是仍未完成的工作；公开项目提供机制参考，最终需要在本项目验证。
+更新于 2026-10-26。正确性修复见 [代码审查记录](review-2026-10-26.md)。以下记录进展与待完成工作；公开项目提供机制参考，最终需要在本项目验证。
 
-## 1. P1：整理任务的崩溃恢复
+## 1. 已完成（v0.5）：整理任务的崩溃恢复
 
-已有原子领取，本轮也修复了无抽取器时的任务饥饿。但领取后进程退出，任务仍会永久停在 running。
+已增加 claim_token、lease_until、available_at 和每任务 max_attempts。过期任务在下一次巩固调用时回收；文件库心跳使用独立连接续租。完成、失败、释放、续租都校验凭证和有效期，旧 worker 无法覆盖新持有者。
 
-建议增加 claim_token、lease_until、available_at。每次领取生成新 token，过期可回收；完成、失败和提交副作用都验证 token。长任务续租，耗时模型调用放在写事务外，结果与后续任务在校验租约的事务内提交。按至少一次执行设计，保留幂等键并为重试增加退避。
+抽取在写事务外执行，记忆、来源变更、向量、后续任务与完成确认在一个事务内提交。失败指数退避，达到尝试上限后进入 failed。任务按批次冻结候选、执行前逐条领取，避免后排任务等待时耗尽租约。机制及边界见 [可靠巩固任务](reliable-consolidation.md)。
 
 参考：[Procrastinate 心跳检测失联任务](https://github.com/procrastinate-org/procrastinate/blob/main/procrastinate/sql/queries.sql#L39)、[Celery visibility timeout](https://github.com/celery/celery/blob/main/docs/getting-started/backends-and-brokers/sqs.rst#L87)、[任务确认与幂等](https://github.com/celery/celery/blob/main/docs/userguide/tasks.rst#L21)。可以用 SQLite 实现这些机制，无须为租约迁移数据库。
 
-验收：领取后结束 worker，重启可恢复；过期 worker 不能提交；重试不重复写事实或丢失后续任务。
+已验证：强制结束写事务中的子进程后重启恢复；过期 worker 的记忆与后续任务全部回滚；索引/入队/确认失败不留下半成品；两连接竞争不重复领取；v4 旧任务迁移与重复打开。尚需宿主轮询、远程嵌入计算移出写事务，以及大规模性能测试。下一优先项是第 2 节完整遗忘。
 
 ## 2. P1：逻辑遗忘与完整内容删除
 

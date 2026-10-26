@@ -254,6 +254,10 @@ CREATE TABLE IF NOT EXISTS consolidation_jobs (
     status         TEXT NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending', 'running', 'done', 'failed')),
     attempts       INTEGER NOT NULL DEFAULT 0,
+    max_attempts   INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts > 0),
+    available_at   TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000000+00:00',
+    claim_token    TEXT,
+    lease_until    TEXT,
     last_error     TEXT,
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
@@ -261,3 +265,7 @@ CREATE TABLE IF NOT EXISTS consolidation_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status
     ON consolidation_jobs (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_available
+    ON consolidation_jobs (status, available_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_lease
+    ON consolidation_jobs (status, lease_until);
