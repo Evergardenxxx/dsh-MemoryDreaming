@@ -70,6 +70,32 @@ CREATE TABLE IF NOT EXISTS activities (
 CREATE INDEX IF NOT EXISTS idx_activities_scope
     ON activities (user_id, character_id, status, updated_at DESC);
 
+-- 上下文压缩/窗口结束时的短交接。它是工作状态的宿主投影，不是新的事实来源。
+-- payload_json 只存下一窗口需要的结构化 briefing；完整历史仍在 events/memories。
+CREATE TABLE IF NOT EXISTS session_handoffs (
+    handoff_id       TEXT PRIMARY KEY,
+    scope_key        TEXT NOT NULL,
+    user_id          TEXT NOT NULL,
+    character_id     TEXT NOT NULL,
+    relationship_id  TEXT,
+    domain           TEXT NOT NULL DEFAULT 'real',
+    conversation_id  TEXT NOT NULL,
+    activity_id      TEXT,
+    source_event_id  TEXT,
+    activity_version INTEGER,
+    payload_json     TEXT NOT NULL DEFAULT '{}',
+    idempotency_key  TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'active'
+                         CHECK (status IN ('active', 'superseded')),
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    UNIQUE (scope_key, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_handoffs_latest
+    ON session_handoffs (user_id, character_id, relationship_id, domain,
+                         activity_id, status, updated_at DESC);
+
 -- ----------------------------------------------------------------------------
 -- 原始事件：append-only 的证据底座
 -- ----------------------------------------------------------------------------

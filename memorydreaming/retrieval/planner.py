@@ -71,6 +71,21 @@ _RECENT_MARKERS = (
     "我们聊", "你说过", "我说过", "说到哪", "下一句",
 )
 
+_TRIVIAL_QUERIES = frozenset({
+    "你好", "您好", "嗨", "哈喽", "hello", "hi", "hey", "早安", "晚安", "再见",
+    "谢谢", "谢谢你", "感谢", "好的", "好", "嗯", "嗯嗯", "收到", "知道了",
+})
+
+
+def is_trivial_query(text: str) -> bool:
+    """判断是否为无需查记忆的低信息输入。
+
+    这是检索门控而非事件门控：调用方仍应保存用户消息。只接受完整的
+    常见短语，像“谢谢你还记得海边”这样的句子不会被误判为 trivial。
+    """
+    normalized = "".join(ch for ch in text.strip().lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+    return normalized in _TRIVIAL_QUERIES
+
 
 def _is_prospective(text: str) -> bool:
     """这句话是在「继续做某事」吗？"""
@@ -136,6 +151,7 @@ class QueryPlanner:
             max_items=query.max_items or self._settings.max_context_items,
             token_budget=query.token_budget or self._settings.context_token_budget,
             as_of=query.as_of,
+            skip_retrieval=(query.time_range is None and query.as_of is None and is_trivial_query(query.text)),
             generated_at=now,
         )
 

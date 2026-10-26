@@ -34,15 +34,29 @@
 
 已验收：匹配断言与已知片段在重提取、重建、重启和核心恢复后不复活；同消息其他已定位片段保留。后续验收还包括正文擦除、恢复备份前同步删除账本，以及 forget_event 仅撤销一个独立来源时保留仍有其他来源支持的事实。
 
-## 3. 部分完成（v0.9）：宿主恢复与核心候选/审批；P1：产品接入验收
+## 3. 部分完成（v0.10）：宿主恢复与核心候选/审批；P1：产品接入验收
 
 已实现 HostAdapter / SessionBinding、逐轮 prepare_turn、实际投递 after_delivery、受控引用和两个只读工具，并提供 MCP stdio 服务。DeepSeek Harness 另有原生 Cordis 插件：它监听用户消息、模型请求和回合结束事件，通过本地 JSONL 桥接调用同一 HostAdapter，且不注册 MCP 工具。共享/活动范围和本轮事件排除在候选 LIMIT 前生效；核心、记忆、摘要、原话及助手投递来源逐跳复核。入口、示例与边界见 [接入指南](host-adapter.md)。
+
+本轮新增 schema v10 的持久 handoff：宿主可在上下文压缩前调用 `session.pre_compress(state, expected_version)`，先以活动检查点版本号保存目标、开放循环和当前场景，再写入幂等的短 briefing。新窗口 bootstrap 只恢复最新 briefing，不复制完整历史；重复调用同一幂等键不会再次推进检查点。JSONL bridge 已提供 `pre_compress` 操作，原生插件兼容 `agent/context-compressing` 与 `session/context-compressing` 生命周期事件。若宿主版本没有这些事件，仍可在自己的压缩回调中直接调用 bridge。
 
 v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段白名单、实际用户事件绑定、来源/版本快照、到期失效、幂等审批和原子回执。模型不能自行批准；MCP 保持只读。自动从长期互动归纳人格、检查点建议与通用修改/删除工具仍未完成。
 
 接下来需要在真实 Harness 主程序重启后验收插件：新会话、每次模型请求、上下文压缩后、工具回合、取消和异常退出都要验证。当前插件桥接已覆盖首轮恢复和实际投递保存，但不能可靠判断模型实际使用了哪条不透明引用，所以投递回执暂不增加 `used_references` 热度。宿主还需判断实际用户意图，不能将模型填写的“用户要求”当作授权证据。
 
 参考：[Celiums SessionStart hook](https://github.com/terrizoaguimor/celiums-memory/blob/4fcd62ced341536c3585deb8a31969e5c2145a82/packages/plugin-claude-code/src/hooks/session-start.mjs#L28)。宿主必须绑定可信 scope，不能把模型传入的用户 ID 直接当作授权。correct、checkpoint、expand_summary 等按 ID 操作的本地 API 目前仍依赖可信调用者。
+
+从 cogmem-agent、Celiums-memory 和 cognitive-memory 纳入的后续待办（其中低信息检索门控已先实现）：
+
+- `trivial query` retrieval gate：已实现对“你好/好的”等完整短语跳过检索，但不能跳过核心恢复或事件保存；后续用中文对话集校准误判边界。
+- 会话内检索缓存和后台 prefetch：缓存只保存候选 ID/已验证版本，遗忘或代次变化后必须失效；不能缓存可绕过权限的正文。
+- recall reinforcement：把“被实际使用过”与事实真实性分开记录，只调整检索强度，不提高证据等级。
+- memory health / summary health / confidence / gaps：`MemoryRuntime.memory_health()` 已输出按类型/状态计数、陈旧摘要、失败任务、无来源推断和开放循环；置信度校准、历史趋势与 UI 仍待加入，健康分数不能被模型当作事实概率。
+- durable journal 与 hash chain：为事件、检查点、整理任务和 handoff 提供可校验的操作链；哈希链不能代替作用域权限和删除账本。
+- derived artifact 的 `source_digest`、`algorithm_version` 与 `stale/withdrawn/rolled_back` 生命周期；来源改变时先隐藏派生物，再由队列重建。
+- portability export/import：manifest、源摘要、dry-run 迁移和残留报告；恢复旧备份前先应用遗忘账本并校验 generation。
+- entity index、图关系遍历和更完整双时间 claim 查询；没有修订日志时，`knowledge_at` 请求必须返回不支持。
+- 可选 arousal/importance 维度：只影响保留和召回排序，不能覆盖用户原话、来源和认识论状态。
 
 v0.6 已迁移核心键：身份按用户/角色/领域、关系再按 relationship_id 独立版本化，并保存字段级来源。旧版未存核心领域，迁移只能按历史默认 real 归属，多世界旧库需要重新归属。`propose_core_update` 保留可信本地直写兼容，明确名称为 `apply_core_update`；模型工具只创建 core_proposals。身份来源属于其他关系或未授权活动时仍会隐藏字段，未实现跨关系来源授权。记忆围栏只帮助区分资料；工具和核心写权限仍由宿主控制。
 

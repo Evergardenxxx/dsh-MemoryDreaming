@@ -294,6 +294,29 @@ export function apply(ctx, config = {}) {
     }, signal).catch((error) => logger.warn?.(`[memorydreaming] after_delivery skipped: ${error.message}`))
   })
 
+  // 不同 Harness 版本对压缩事件的名称略有差异。收到宿主提供的
+  // checkpoint 时先持久化短 handoff；没有 state 时也会保存当前活动快照。
+  const beforeCompression = async (payload) => {
+    const session = payload?.agent?.session ?? payload?.session
+    if (!session || isSubagent(session)) return
+    const state = stateFor(states, session)
+    if (!state) return
+    const data = payload?.state ?? payload?.checkpoint ?? null
+    try {
+      await bridge.request('pre_compress', {
+        conversation_id: sessionId(session),
+        state: data && typeof data === 'object' ? data : null,
+        expected_version: Number.isInteger(payload?.expected_version) ? payload.expected_version : undefined,
+        idempotency_key: typeof payload?.idempotency_key === 'string' ? payload.idempotency_key : undefined,
+        max_tokens: Number.isInteger(config.maxTokens) ? config.maxTokens : 1200,
+      }, payload?.signal)
+    } catch (error) {
+      logger.warn?.(`[memorydreaming] pre_compress skipped: ${error.message}`)
+    }
+  }
+  ctx.on('agent/context-compressing', beforeCompression)
+  ctx.on('session/context-compressing', beforeCompression)
+
   // Cordis versions expose dispose as an event; process exit is the fallback
   // for older hosts. The bridge is local and has no network listener.
   if (typeof ctx.on === 'function') ctx.on('dispose', () => bridge.close())

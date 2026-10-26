@@ -42,7 +42,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 7：宿主实际投递记录，纯新增表。
 # 版本 8：核心候选与宿主审批回执，纯新增表。
 # 版本 9：事件级遗忘账本，保留事件行但撤销读取、抽取和来源贡献。
-SCHEMA_VERSION = "9"
+# 版本 10：上下文压缩/窗口结束的持久 handoff 交接记录。
+SCHEMA_VERSION = "10"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 

@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.9，增加原生 Harness 生命周期插件**。Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具。当前 265 个回归测试通过。跨机器打包、真实 Harness 热加载和完整擦除仍待完成。
+当前状态：**v0.10，增加压缩前 handoff、低信息检索门控和健康摘要**。Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 284 个回归测试通过。跨机器打包、真实 Harness 热加载、完整擦除和健康趋势告警仍待完成。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -102,7 +102,9 @@ memorydreaming/
 tests/
 ├── helpers.py            测试脚手架：临时库 + 固定时钟
 ├── test_storage.py       幂等、去重键、中文检索、软删除
-├── test_core_activity.py 核心版本、活动检查点、bootstrap
+    ├── test_core_activity.py 核心版本、活动检查点、bootstrap
+    ├── test_handoffs.py 压缩前 handoff、跨窗口恢复与幂等
+    ├── test_retrieval_gate.py 低信息检索门控
 ├── test_core_proposals.py 候选隔离、审批幂等、来源/版本失效与迁移
 ├── test_retrieval.py     时间解析、路由、48 小时分级、预算
 ├── test_consolidation.py 抽取后续任务、去重合并

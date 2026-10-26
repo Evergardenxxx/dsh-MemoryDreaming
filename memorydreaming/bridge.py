@@ -71,6 +71,16 @@ class BridgeServer:
             if op == "bootstrap":
                 session = self._session(request["conversation_id"])
                 return self._ok(request_id, session.opened)
+            if op == "pre_compress":
+                session = self._session(request["conversation_id"])
+                result = session.pre_compress(
+                    state=request.get("state"),
+                    expected_version=request.get("expected_version"),
+                    request_id=request_id,
+                    idempotency_key=request.get("idempotency_key"),
+                    max_tokens=request.get("max_tokens") or self.max_tokens,
+                )
+                return self._ok(request_id, result)
             if op == "close_session":
                 conversation_id = text(request["conversation_id"], "conversation_id", 200)
                 session = self.sessions.pop(conversation_id, None)

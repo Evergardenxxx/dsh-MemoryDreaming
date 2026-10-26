@@ -1,6 +1,6 @@
 # 宿主适配与 MCP 只读接入（v0.7）
 
-这一阶段把 [接口协议 v1](llm-interface-v1.md) 的只读部分做成可执行代码：Python 宿主生命周期、受控引用、`memory_search` / `memory_read`，以及 MCP stdio 服务。仍只依赖 Python 标准库和 SQLite。当前包版本 0.9.0，数据库 schema v8；新增的可选 Python 核心建议与审批见 [核心候选指南](core-proposals.md)，MCP 仍只读。原生聊天桥接可选启动独立后台整理器，自动消费事件队列。
+这一阶段把 [接口协议 v1](llm-interface-v1.md) 的只读部分做成可执行代码：Python 宿主生命周期、受控引用、`memory_search` / `memory_read`，以及 MCP stdio 服务。仍只依赖 Python 标准库和 SQLite。当前包版本 0.10.0，数据库 schema v10；新增的可选 Python 核心建议与审批、压缩前 handoff 见 [核心候选指南](core-proposals.md)，MCP 仍只读。原生聊天桥接可选启动独立后台整理器，自动消费事件队列。
 
 ## 先运行跨窗口示例
 
@@ -53,6 +53,25 @@ receipt = session.after_delivery(
 `open_session` 立即读取核心和允许活动目录；`prepare_turn` 每次重新恢复，适用于新窗口、压缩后和核心已更新的情况。它先幂等保存用户事件，再检索；当前用户事件及引用它的候选/来源不会被当作历史依据。后台整理仍由宿主调用 `run_consolidation()` 或已有 worker 调度，没有隐含常驻进程。
 
 `prepare_turn` 返回的前两条消息为固定使用说明和 JSON 资料块，最后一条为真实当前输入。核心文本保留在资料块，不提升成系统指令；JSON 中的角括号转义，不能靠正文闭合资料围栏。宿主必须把这些片段实际放入模型请求；仅创建 adapter 不会修改其他应用的聊天窗口。
+
+### 上下文压缩前交接
+
+宿主即将压缩当前上下文时调用：
+
+```python
+handoff = session.pre_compress(
+    {
+        "goal": "讲第三章",
+        "open_loops": ["补上灯塔结尾"],
+        "checkpoint": {"scene": "礁石旁"},
+        "handoff_note": "下一窗口从第三章继续",
+    },
+    expected_version=activity_version,
+    idempotency_key="compression-<host-request-id>",
+)
+```
+
+活动字段会先按 `expected_version` 条件更新；版本冲突返回 `VERSION_CONFLICT`，宿主应重新 bootstrap 后合并。随后写入 schema v10 的短 handoff，下一窗口的 bootstrap 会带上同一活动的最新 briefing。重复发送同一幂等键只返回原交接，不会再次增加检查点版本。`checkpoint` 仍是工作资料，不能作为用户事实或核心字段的来源。
 
 消息已落库后，即使恢复、检索、预算或截止时间失败，用户事件仍保留，可以使用相同 message_id 重试。消息幂等键由 conversation、speaker、message_id 构成；不是由 LLM 提供。助手事件、投递状态、来源快照和使用计数一起提交；重试不重复计数。不可用的使用引用不阻止保存实际回复，但会给出 warning、放弃热度增加，并阻止这条来源不明的回复被再次作为来源展开。
 

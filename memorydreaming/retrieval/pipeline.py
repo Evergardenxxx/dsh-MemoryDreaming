@@ -74,6 +74,18 @@ class RetrievalPipeline:
         now = self._clock.now()
         plan = self._planner.plan(query)
 
+        if plan.skip_retrieval:
+            return RetrievalResult(
+                query_text=query.text,
+                plan=plan,
+                trace=RetrievalTrace(
+                    selected=0,
+                    elapsed_ms=round((time_module.perf_counter() - started) * 1000, 2),
+                    notes=["检索门控：低信息输入，保留事件保存但跳过记忆候选"],
+                ),
+                gaps=[],
+            )
+
         # 0) 摘要优先：主题宽泛或久远的问题，先给索引卡，再回源展开。
         summary_hits, summary_channels = self._summary_stage(plan, query)
 

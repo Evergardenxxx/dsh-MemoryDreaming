@@ -417,6 +417,28 @@ class Activity:
 
 
 @dataclass
+class SessionHandoff:
+    """上下文压缩或窗口结束时留下的短交接记录。
+
+    handoff 是活动检查点的一个宿主侧投影：它保存下一窗口需要的最小
+    工作集合，不复制完整对话，也不构成新的事实来源。历史交接保留在库中
+    便于审计，读取时只返回同一作用域下最新的 active 记录。
+    """
+
+    handoff_id: str
+    scope: Scope
+    conversation_id: str
+    activity_id: str | None
+    payload: dict[str, Any]
+    idempotency_key: str
+    source_event_id: str | None = None
+    activity_version: int | None = None
+    status: str = "active"  # active=最新交接；superseded=被后续交接取代
+    created_at: datetime = field(default_factory=utcnow)
+    updated_at: datetime = field(default_factory=utcnow)
+
+
+@dataclass
 class CoreSnapshot:
     """身份核心或关系档案的一个版本快照。
 
@@ -567,6 +589,8 @@ class QueryPlan:
     max_items: int = 12
     token_budget: int = 1800
     as_of: datetime | None = None
+    # 低信息输入（问候、确认、告别）只保存事件，不触发记忆检索。
+    skip_retrieval: bool = False
     generated_at: datetime = field(default_factory=utcnow)
 
     def top_types(self, limit: int = 2) -> list[MemoryType]:

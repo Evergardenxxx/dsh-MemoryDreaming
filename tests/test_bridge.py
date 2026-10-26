@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from memorydreaming.bridge import BridgeServer
-from memorydreaming.models import MemoryType
+from memorydreaming.models import MemoryType, Scope
 from tests.helpers import RuntimeTestCase
 
 
@@ -54,6 +54,30 @@ class BridgeTest(RuntimeTestCase):
 
         row = self.runtime.db.connection.execute("SELECT COUNT(*) AS n FROM host_deliveries").fetchone()
         self.assertEqual(row["n"], 1)
+
+    def test_pre_compress_roundtrip_persists_handoff_for_next_window(self):
+        activity = self.runtime.register_activity(Scope("u1", "c1", "r1"), "故事", goal="第二章")
+        server = BridgeServer(self.runtime, user_id="u1", character_id="c1", relationship_id="r1")
+        session = server._session("window-1")
+        # BridgeServer 默认没有选择活动；显式绑定一个活动来模拟宿主的压缩回调。
+        session.binding = session.binding.__class__(
+            "u1", "c1", "r1", "window-1",
+            allowed_activity_ids=(activity.activity_id,), selected_activity_id=activity.activity_id,
+        )
+        response = server.handle({
+            "id": "compress-1", "op": "pre_compress", "conversation_id": "window-1",
+            "state": {"goal": "第三章", "open_loops": ["灯塔结尾"]},
+            "expected_version": 1, "idempotency_key": "compress-1",
+        })
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["data"]["data"]["briefing"]["goal"], "第三章")
+        next_window = server._session("window-2")
+        next_window.binding = next_window.binding.__class__(
+            "u1", "c1", "r1", "window-2",
+            allowed_activity_ids=(activity.activity_id,), selected_activity_id=activity.activity_id,
+        )
+        next_window.opened = next_window.bootstrap()
+        self.assertEqual(next_window.opened["data"]["handoff"]["briefing"]["open_loops"], ["灯塔结尾"])
 
     def test_bridge_rejects_unknown_operation_and_duplicate_json(self):
         server = BridgeServer(self.runtime, user_id="u1", character_id="c1", relationship_id="r1")

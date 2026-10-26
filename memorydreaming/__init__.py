@@ -38,6 +38,7 @@ from .models import (
     MemoryType,
     Modality,
     ObserveResult,
+    SessionHandoff,
     Query,
     QueryPlan,
     RetrievalResult,
@@ -60,7 +61,7 @@ from .formation import MemoryFormationPolicy
 from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 from .proposals import CoreProposalPolicy
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 __all__ = [
     "MemoryRuntime",
@@ -96,6 +97,7 @@ __all__ = [
     "SummaryHit",
     "BootstrapResult",
     "ObserveResult",
+    "SessionHandoff",
     "Correction",
     "CorrectionResult",
     "ForgetSelector",

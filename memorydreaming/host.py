@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
 from .clock import ensure_utc
-from .errors import StorageError
+from .errors import StorageError, VersionConflict
 from .llm import (AdapterError, EstimatedTokenCounter, TokenCounter, dumps, envelope, integer,
                   measure, text, timestamp, tool_catalog, validate_tool)
 from .models import CoreKind, ReadFilter, Scope, Turn
@@ -93,7 +94,8 @@ class HostAdapter:
                 "tools": [tool["name"] for tool in self.tools], "temporal_axes": ["occurred"],
                 "detail_modes": ["auto", "overview", "evidence"], "automatic_bootstrap": True,
                 "exact_token_counting": self.counter.mode == "exact", "full_forgetting": False,
-                "core_proposals": self.core_policy.enabled, "checkpoint_proposals": False}
+                "core_proposals": self.core_policy.enabled, "checkpoint_proposals": False,
+                "pre_compress_handoff": True}
 
     def open_session(self, binding: SessionBinding, *, request_id=None, max_tokens=4096) -> "MemorySession":
         if not isinstance(binding, SessionBinding):
@@ -160,12 +162,25 @@ class MemorySession:
                  "source_refs": [self.registry.issue(source) for source in core.fields[name][:20]]}
                 for name, value in payload.items()
             ]
+        handoff = self.runtime.latest_handoff(self.binding.scope,
+                                              activity_id=self.binding.selected_activity_id)
+        handoff_data = None
+        if handoff is not None:
+            handoff_data = {
+                "handoff_id": handoff.handoff_id,
+                "conversation_id": handoff.conversation_id,
+                "activity_id": handoff.activity_id,
+                "activity_version": handoff.activity_version,
+                "updated_at": handoff.updated_at.isoformat(),
+                "briefing": handoff.payload,
+            }
         return {"kind": "bootstrap", "binding_ref": self.binding_ref,
                 "identity_ref": self.registry.issue(cores["identity"]) if cores["identity"] else None,
                 "relationship_ref": self.registry.issue(cores["relationship"]) if cores["relationship"] else None,
                 "core_versions": {kind: core.data["record_version"] if core else None for kind, core in cores.items()},
                 "identity_fields": fields["identity"], "relationship_fields": fields["relationship"],
                 "activities": directory, "selected_activity_ref": selected_ref,
+                "handoff": handoff_data,
                 "recovery_status": "complete" if complete else "incomplete"}
 
     def _fit(self, response, limit, *, prefer_summaries=False):
@@ -180,12 +195,29 @@ class MemorySession:
                 elif data["kind"] == "read":
                     removable = data["records"]
                 elif data["kind"] == "bootstrap":
-                    removable = data["activities"] if len(data["activities"]) > 1 else None
+                    handoff = data.get("handoff")
+                    briefing = handoff.get("briefing") if isinstance(handoff, dict) else None
+                    if isinstance(briefing, dict):
+                        removable = [briefing]
+                    else:
+                        removable = data["activities"] if len(data["activities"]) > 1 else None
             if not removable:
                 raise AdapterError("CONTEXT_BUDGET_TOO_SMALL", "预算不足以容纳完整结果或最小核心")
             if data["kind"] == "bootstrap":
-                index = next(i for i, item in enumerate(removable) if item["ref"] != data["selected_activity_ref"])
-                removable.pop(index)
+                handoff = data.get("handoff")
+                briefing = handoff.get("briefing") if isinstance(handoff, dict) else None
+                if isinstance(briefing, dict) and removable == [briefing]:
+                    removed = False
+                    for key in ("checkpoint", "active_entities", "next_action", "handoff_note"):
+                        if key in briefing:
+                            briefing.pop(key)
+                            removed = True
+                            break
+                    if not removed:
+                        data["handoff"] = None
+                else:
+                    index = next(i for i, item in enumerate(removable) if item["ref"] != data["selected_activity_ref"])
+                    removable.pop(index)
             else:
                 removable.pop()
             response["status"] = "partial"
@@ -353,6 +385,154 @@ class MemorySession:
             self._check(deadline)
             return PreparedTurn(stored.event.event_id, memory_messages + [{"role": "user", "content": content}],
                                 bootstrap["recovery_status"], count, self.adapter.counter.mode, payload["truncated"])
+
+    def pre_compress(self, state: dict | None = None, *, expected_version: int | None = None,
+                     request_id: str | None = None, idempotency_key: str | None = None,
+                     max_tokens: int = 1200) -> dict:
+        """在宿主压缩上下文前保存工作状态，并返回短 handoff briefing。
+
+        ``state`` 是可信宿主整理出的当前工作集，不是模型工具输入。活动状态
+        更新必须带 ``expected_version``，这样两个窗口同时压缩时不会互相覆盖。
+        交接写入有独立幂等键，网络重试不会生成多条“最后进度”。
+        """
+        self._check()
+        if state is not None and not isinstance(state, dict):
+            raise AdapterError("INVALID_ARGUMENT", "state 必须为对象或 null")
+        limit = integer(max_tokens, "max_tokens", 128, 4096)
+        if expected_version is not None:
+            integer(expected_version, "expected_version", 1, 2**31 - 1)
+        if idempotency_key is not None:
+            text(idempotency_key, "idempotency_key", 300)
+        if request_id is not None:
+            text(request_id, "request_id", 128)
+
+        allowed = {"goal", "open_loops", "active_entities", "checkpoint", "status",
+                   "handoff_note", "next_action"}
+        if state is not None:
+            unknown = set(state) - allowed
+            if unknown:
+                raise AdapterError("INVALID_ARGUMENT", f"state 含未知字段: {sorted(unknown)}")
+            for name in ("goal", "handoff_note", "next_action"):
+                if name in state and (not isinstance(state[name], str) or len(state[name]) > 2000):
+                    raise AdapterError("INVALID_ARGUMENT", f"{name} 必须为不超过 2000 字符的字符串")
+            for name in ("open_loops", "active_entities"):
+                if name in state and (not isinstance(state[name], list) or len(state[name]) > 64
+                                      or any(not isinstance(v, str) or len(v) > 500 for v in state[name])):
+                    raise AdapterError("INVALID_ARGUMENT", f"{name} 必须为最多 64 项的短字符串列表")
+            if "checkpoint" in state and (not isinstance(state["checkpoint"], dict)
+                                           or len(dumps(state["checkpoint"])) > 12000):
+                raise AdapterError("INVALID_ARGUMENT", "checkpoint 必须为不超过 12000 字符的对象")
+            if "status" in state and state["status"] not in ("active", "paused", "closed"):
+                raise AdapterError("INVALID_ARGUMENT", "status 必须为 active / paused / closed")
+
+        activity = None
+        activity_id = self.binding.selected_activity_id
+        if activity_id is not None:
+            activity = self.runtime.db.repositories.activities.get(activity_id)
+            if activity is None or not self.runtime._scope_matches(activity.scope, self.binding.scope):
+                raise AdapterError("NOT_FOUND_OR_FORBIDDEN", "当前活动不可用")
+
+        checkpoint_state = None
+        handoff_only = {}
+        if state is not None:
+            checkpoint_state = {key: value for key, value in state.items()
+                                if key in {"goal", "open_loops", "active_entities", "checkpoint", "status"}}
+            handoff_only = {key: state[key] for key in ("handoff_note", "next_action") if key in state}
+            if checkpoint_state and activity_id is not None:
+                if expected_version is None:
+                    raise AdapterError("INVALID_ARGUMENT", "更新活动状态必须提供 expected_version")
+                source_event_id = self.current_event_id
+                state_hash = hashlib.sha256(dumps(state).encode("utf-8")).hexdigest()[:24]
+                key = idempotency_key or f"compress:{self.binding.conversation_id}:{activity_id}:"
+                key += f"{source_event_id or '-'}:{state_hash}"
+                try:
+                    handoff, duplicate = self.runtime.checkpoint_and_save_handoff(
+                        self.binding.scope, activity_id, checkpoint_state, expected_version,
+                        self.binding.conversation_id, handoff_extra=handoff_only,
+                        source_event_id=source_event_id, idempotency_key=key,
+                    )
+                except VersionConflict as exc:
+                    raise AdapterError("VERSION_CONFLICT", "活动版本已变化，请重新读取后再提交",
+                                        retryable=True, next_action="rebootstrap") from exc
+                response = envelope(self._request_id(request_id), {
+                    "kind": "handoff", "handoff_id": handoff.handoff_id,
+                    "conversation_id": handoff.conversation_id, "activity_id": handoff.activity_id,
+                    "activity_version": handoff.activity_version, "duplicate": duplicate,
+                    "briefing": handoff.payload,
+                }, status="ok")
+                return self._fit_handoff(response, limit)
+            elif checkpoint_state and activity_id is None:
+                raise AdapterError("INVALID_ARGUMENT", "没有选定活动，不能写入活动检查点")
+
+        if activity is not None:
+            briefing = {
+                "title": activity.title,
+                "goal": activity.goal,
+                "open_loops": activity.open_loops,
+                "active_entities": activity.active_entities,
+                "checkpoint": activity.checkpoint,
+                "status": activity.status.value,
+                **handoff_only,
+            }
+            activity_version = activity.checkpoint_version
+        else:
+            briefing = {**handoff_only}
+            activity_version = None
+
+        source_event_id = self.current_event_id
+        key = idempotency_key or request_id
+        if key is None:
+            key = f"{self.binding.conversation_id}:{activity_id or '-'}:{activity_version or 0}:{source_event_id or '-'}"
+        existing = self.runtime.get_handoff(
+            Scope(self.binding.user_id, self.binding.character_id, self.binding.relationship_id,
+                  activity_id, self.binding.domain), key,
+        )
+        if existing is not None:
+            response = envelope(self._request_id(request_id), {
+                "kind": "handoff", "handoff_id": existing.handoff_id,
+                "conversation_id": existing.conversation_id, "activity_id": existing.activity_id,
+                "activity_version": existing.activity_version, "duplicate": True,
+                "briefing": existing.payload,
+            }, status="ok")
+            return self._fit_handoff(response, limit)
+        with self.runtime.db.transaction():
+            handoff, duplicate = self.runtime.save_handoff(
+                self.binding.scope, self.binding.conversation_id, briefing,
+                activity_id=activity_id, source_event_id=source_event_id,
+                activity_version=activity_version, idempotency_key=key,
+            )
+        data = {
+            "kind": "handoff",
+            "handoff_id": handoff.handoff_id,
+            "conversation_id": handoff.conversation_id,
+            "activity_id": handoff.activity_id,
+            "activity_version": handoff.activity_version,
+            "duplicate": duplicate,
+            "briefing": handoff.payload,
+        }
+        response = envelope(self._request_id(request_id), data, status="ok")
+        return self._fit_handoff(response, limit)
+
+    def _fit_handoff(self, response: dict, limit: int) -> dict:
+        """交接结果预算：优先保留目标、开放循环和下一步。"""
+        data = response["data"]
+        while measure(response, self.adapter.counter, limit) > limit:
+            briefing = data["briefing"]
+            removed = False
+            for key in ("checkpoint", "active_entities", "next_action", "handoff_note"):
+                if key in briefing:
+                    briefing.pop(key)
+                    removed = True
+                    break
+            if not removed and briefing.get("open_loops"):
+                briefing["open_loops"].pop()
+                removed = True
+            if not removed:
+                raise AdapterError("CONTEXT_BUDGET_TOO_SMALL", "交接摘要超过最小预算")
+            response["status"] = "partial"
+            response["gaps"] = [{"code": "BUDGET_TRUNCATED", "message": "交接摘要已裁剪"}]
+            response["budget"]["truncated"] = True
+        return response
 
     def _moment(self, moment):
         if moment is None:

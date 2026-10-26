@@ -8,6 +8,8 @@ v0.7 进展：HostAdapter、受控引用、逐轮记忆预算和 MCP 两个只�
 
 v0.8 进展：schema v8 新增持久核心候选。Python 宿主显式启用字段白名单后，LLM 可提出候选；宿主审批重新校验来源/版本并原子追加核心和回执，见 [核心候选](core-proposals.md)。自动人格归纳、检查点建议及通用修改工具仍待完成。
 
+v0.10 进展：schema v10 新增 `session_handoffs`。宿主在上下文压缩前可用乐观版本写入活动检查点，并保存跨窗口可恢复的短 briefing；交接有持久幂等键，不复制完整对话，也不成为事实来源。JSONL bridge 和原生 Harness 插件提供 `pre_compress` 生命周期入口。
+
 ## 1. 目标与不变量
 
 让同一角色在窗口关闭、上下文压缩、进程重启和更换模型后，恢复身份、关系、共同经历及未完事项。连续性来自持久状态及宿主恢复过程，模型每次只接收当前需要的一小部分记忆。
@@ -59,8 +61,9 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | Consolidation Queue | extract → dedupe → summarize | 已实现租约、原子提交；文件运行时可选独立后台 worker 自动消费 |
 | Extractor / Formation Policy | EventRecord → MemoryDraft[] → validated candidates | 规则版覆盖四类记忆的显式格式；统一候选校验与 DeepSeek `LLMExtractor` 已实现，供应商调用由宿主配置 |
 | Mutation Service | 撤回、替代、来源变化、删除 | 已实现部分纠正与事实抑制；正文擦除待实现 |
-| Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 已实现 Python 生命周期、可选核心建议与宿主审批、MCP 只读服务；产品 hook 与通用修改待接入 |
+| Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 已实现 Python 生命周期、pre-compress handoff、可选核心建议与宿主审批、MCP 只读服务；产品 hook 与通用修改待接入 |
 | Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | 抑制与 scope epoch 已实现；类型化 AND/OR 组待实现 |
+| Health / Observability | 记忆、摘要、队列和工作循环的健康摘要 | `MemoryRuntime.memory_health()` 已实现无正文指标；趋势、告警和 UI 待实现 |
 | TokenCounter / Embedding Provider | 目标分词器与真实语义向量 | 可注入 TokenCounter；默认估计与哈希向量，真实模型待接入 |
 
 ## 3. 核心与四类记忆
@@ -179,7 +182,7 @@ v0.7 已对工具业务 JSON 和宿主记忆消息整体计量并允许注入 To
 
 发布验收覆盖：新进程第一条回复前恢复身份；跨用户/关系/领域隔离；旧事原话可回源；愿望/引用/助手自述不变成用户事实；纠错保留时间线；遗忘后重提取/重启/重建不复活；过期任务不能提交；超预算与超时有明确降级；不支持工具调用的模型可依靠宿主注入获得基础记忆。
 
-v0.9 的 265 项测试验证当前工程行为，12 条固定检索题中 10 条计分、2 条同义改写观察项未通过；这不证明长期人格稳定性。新增功能需分别测证据召回、错误记忆、恢复成功率、删除生效、p95 延迟与上下文成本。
+v0.10 的 284 项测试验证当前工程行为，新增 handoff、检索门控和健康指标用例；这不证明长期人格稳定性。新增功能需分别测证据召回、错误记忆、恢复成功率、删除生效、p95 延迟与上下文成本。
 
 ## 9. 参考关系
 

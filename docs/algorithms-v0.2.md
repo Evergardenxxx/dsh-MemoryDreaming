@@ -296,7 +296,37 @@ owned = status==running AND claim_token matches AND lease_until > now
 
 文件数据库运行时可选启动后台整理器：它以独立连接周期等待或被 `observe()` 唤醒，每批领取有限任务，复用同一套租约、心跳和原子提交；手工调用与后台调用可以并发，重复领取由 claim token 互斥。关闭时先停止 worker 再关闭宿主连接。`:memory:` 数据库不启动后台线程，测试和一次性导入继续使用显式 `run_consolidation()`。
 
-## J. 算法验收与对照
+## J. 上下文压缩前交接（v0.10，已实现）
+
+上下文窗口即将压缩时，宿主不能依赖模型自己总结，也不能把完整历史重新注入下一窗口。调用 `pre_compress(state, expected_version)`：
+
+```text
+if idempotency_key already exists:
+    return the original handoff; do not update the activity again
+if selected activity and state contains checkpoint fields:
+    require expected_version
+    UPDATE activity ... WHERE checkpoint_version = expected_version
+    on zero rows: VERSION_CONFLICT and rebootstrap
+briefing = {title, goal, open_loops, active_entities, checkpoint,
+            handoff_note?, next_action?, status}
+INSERT session_handoffs with scope + conversation + source_event + activity_version
+supersede the previous active handoff for this activity
+return only the short briefing under a separate result budget
+```
+
+`session_handoffs` 是工作状态的派生投影，不是第五类记忆，也不能为语义事实或核心字段提供来源。`source_event_id` 只帮助宿主追踪这次交接对应的当前轮次；读取 handoff 时仍要按绑定 scope 过滤。活动版本号和幂等键共同防止两个窗口互相覆盖以及网络重试重复推进。新窗口 bootstrap 读取最新 handoff，仍需再次按当前活动和作用域恢复核心；handoff 缺失不应生成替代人格。
+
+## K. 从成熟项目吸收的后续算法（待实现）
+
+这些机制已纳入待办，但不改变当前证据边界：
+
+1. **检索门控与缓存**：规则判断低信息输入；命中门控时跳过搜索，仍保存事件。会话缓存只缓存 `(query, scope, mutation_epoch, source_revision)` 对应的候选 ID，遗忘或版本变化立即失效；后台 prefetch 不向模型自动塞入正文。
+2. **召回强化与健康度**：被宿主确认实际使用的记忆可增加 retrieval strength/access count；它不能改变 epistemic status、来源数或事实置信度。健康报告分别统计 stale 摘要、缺来源候选、低置信推断和未覆盖 open loop。
+3. **持久 journal 与派生物代次**：事件、检查点、整理任务、handoff 追加 hash 链；摘要、向量和图索引保存 source digest 与 algorithm version，源变化后依次经历 active → stale → withdrawn/rolled_back。
+4. **可移植备份**：导出 manifest、作用域和源摘要；导入先 dry-run，应用遗忘账本和 generation 校验后才切换，输出残留报告。
+5. **情绪/重要度与实体图**：arousal 只调保留与排序，实体索引只缩小候选集合；二者都不能绕过来源、时间和权限校验。
+
+## L. 算法验收与对照
 
 | 算法 | 正例 | 必须失败或降级的反例 |
 |---|---|---|

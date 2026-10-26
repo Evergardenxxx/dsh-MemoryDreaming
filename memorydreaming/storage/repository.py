@@ -41,6 +41,7 @@ from ..models import (
     Scope,
     ReadFilter,
     Summary,
+    SessionHandoff,
     body_to_text,
     new_id,
 )
@@ -879,6 +880,110 @@ class ActivityRepository:
             "UPDATE activities SET last_event_at = ?, updated_at = ? WHERE activity_id = ?",
             (to_utc_iso(when), to_utc_iso(when), activity_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# 窗口交接 / 上下文压缩检查点
+# ---------------------------------------------------------------------------
+
+
+def _handoff_from_row(row: sqlite3.Row) -> SessionHandoff:
+    return SessionHandoff(
+        handoff_id=row["handoff_id"],
+        scope=Scope(
+            user_id=row["user_id"],
+            character_id=row["character_id"],
+            relationship_id=row["relationship_id"],
+            activity_id=row["activity_id"],
+            domain=row["domain"],
+        ),
+        conversation_id=row["conversation_id"],
+        activity_id=row["activity_id"],
+        payload=_load_dict(row["payload_json"]),
+        idempotency_key=row["idempotency_key"],
+        source_event_id=row["source_event_id"],
+        activity_version=row["activity_version"],
+        status=row["status"],
+        created_at=from_utc_iso(row["created_at"]) or ensure_utc(datetime.min),
+        updated_at=from_utc_iso(row["updated_at"]) or ensure_utc(datetime.min),
+    )
+
+
+class HandoffRepository:
+    """持久化压缩前交接，并保证重试不会产生重复记录。"""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def upsert(self, handoff: SessionHandoff) -> tuple[SessionHandoff, bool]:
+        """写入交接；返回 (记录, duplicate)。
+
+        同一个 scope + idempotency_key 只能成功一次。新交接只会使同一
+        活动的旧记录失效，其他活动的交接不会被覆盖。
+        """
+        scope_key = _scope_key(handoff.scope)
+        row = self._conn.execute(
+            "SELECT * FROM session_handoffs WHERE scope_key = ? AND idempotency_key = ?",
+            (scope_key, handoff.idempotency_key),
+        ).fetchone()
+        if row is not None:
+            existing = _handoff_from_row(row)
+            if existing.payload != handoff.payload or existing.activity_version != handoff.activity_version:
+                raise ValueError("同一交接幂等键对应了不同的工作状态")
+            return existing, True
+
+        now = handoff.updated_at
+        if handoff.activity_id is None:
+            self._conn.execute(
+                "UPDATE session_handoffs SET status='superseded', updated_at=? "
+                "WHERE scope_key=? AND activity_id IS NULL AND status='active'",
+                (to_utc_iso(now), scope_key),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE session_handoffs SET status='superseded', updated_at=? "
+                "WHERE scope_key=? AND activity_id=? AND status='active'",
+                (to_utc_iso(now), scope_key, handoff.activity_id),
+            )
+        self._conn.execute(
+            """
+            INSERT INTO session_handoffs (
+                handoff_id, scope_key, user_id, character_id, relationship_id, domain,
+                conversation_id, activity_id, source_event_id, activity_version,
+                payload_json, idempotency_key, status, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                handoff.handoff_id, scope_key, handoff.scope.user_id, handoff.scope.character_id,
+                handoff.scope.relationship_id, handoff.scope.domain, handoff.conversation_id,
+                handoff.activity_id, handoff.source_event_id, handoff.activity_version,
+                json.dumps(handoff.payload, ensure_ascii=False, separators=(",", ":")),
+                handoff.idempotency_key, handoff.status, to_utc_iso(handoff.created_at),
+                to_utc_iso(handoff.updated_at),
+            ),
+        )
+        return handoff, False
+
+    def get_by_key(self, scope: Scope, idempotency_key: str) -> SessionHandoff | None:
+        scope_key = _scope_key(scope)
+        row = self._conn.execute(
+            "SELECT * FROM session_handoffs WHERE scope_key=? AND idempotency_key=?",
+            (scope_key, idempotency_key),
+        ).fetchone()
+        return _handoff_from_row(row) if row else None
+
+    def latest(self, scope: Scope, *, activity_id: str | None = None) -> SessionHandoff | None:
+        visible, params = scope_sql(scope)
+        clauses = [visible, "status = 'active'"]
+        if activity_id is not None:
+            clauses.append("activity_id = ?")
+            params.append(activity_id)
+        row = self._conn.execute(
+            "SELECT * FROM session_handoffs WHERE " + " AND ".join(clauses)
+            + " ORDER BY updated_at DESC LIMIT 1",
+            params,
+        ).fetchone()
+        return _handoff_from_row(row) if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -1737,6 +1842,7 @@ class Repositories:
     events: EventRepository
     memories: MemoryRepository
     activities: ActivityRepository
+    handoffs: HandoffRepository
     cores: CoreRepository
     links: LinkRepository
     jobs: JobRepository
@@ -1750,6 +1856,7 @@ def build_repositories(conn: sqlite3.Connection) -> Repositories:
         events=EventRepository(conn),
         memories=MemoryRepository(conn),
         activities=ActivityRepository(conn),
+        handoffs=HandoffRepository(conn),
         cores=CoreRepository(conn),
         links=LinkRepository(conn),
         jobs=JobRepository(conn),

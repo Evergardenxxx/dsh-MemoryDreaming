@@ -54,7 +54,7 @@ binding、request_id、deadline、idempotency_key、当前用户事件 ID、scop
 }
 ```
 
-这是默认能力结构样例；HostAdapter 的 provider_mode 为 neutral，core_proposals 与 tools 随字段白名单配置变化。automatic_bootstrap 指宿主调用 open_session / prepare_turn 的路径，不能推导成任意 MCP 客户端已安装自动 hook。recorded/valid、完整遗忘、检查点及通用修改仍关闭。
+这是默认能力结构样例；HostAdapter 的 provider_mode 为 neutral，core_proposals 与 tools 随字段白名单配置变化。automatic_bootstrap 指宿主调用 open_session / prepare_turn 的路径，不能推导成任意 MCP 客户端已安装自动 hook。pre-compress handoff 通过宿主生命周期 API 提供，不注册为模型工具。recorded/valid、完整遗忘、检查点建议及通用修改仍关闭。
 
 ## 3. 对话 LLM 的工具
 
