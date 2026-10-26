@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.10，增加压缩前 handoff、低信息检索门控和健康摘要**。Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 284 个回归测试通过。跨机器打包、真实 Harness 热加载、完整擦除和健康趋势告警仍待完成。
+当前状态：**v0.11，增加压缩前 handoff、低信息检索门控、派生摘要来源校验和 durable journal**。Python 宿主可显式启用 `memory_core_propose`：模型只提出候选，可信宿主核验实际用户意图后独立批准，来源、版本和回执一起提交。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 298 个回归测试通过。跨机器打包、真实 Harness 热加载、完整擦除和健康趋势告警仍待完成。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -86,7 +86,7 @@ memorydreaming/
 ├── storage/
 │   ├── schema.sql    表结构（带注释，建议先读这个）
 │   ├── database.py   连接、事务、初始化
-│   ├── repository.py 各表的读写 SQL（含向量表、摘要表）
+│   ├── repository.py 各表的读写 SQL（含向量表、摘要表、审计链）
 │   └── __init__.py
 └── retrieval/
     ├── timeexpr.py   中文时间表达 → 明确时间范围
@@ -150,7 +150,8 @@ tests/
        └─ 返回后，整理链异步执行
             ├─ extract：候选 → 校验 → 写入 memories（dedupe_key 防重）
             ├─ dedupe：同类型内 Jaccard ≥ 0.85 合并，副本标 superseded + part_of
-            └─ summarize：按主题词把 ≥3 条记忆聚成索引卡（只存概述 + 来源 ID）
+            ├─ summarize：按主题词把 ≥3 条记忆聚成索引卡（只存概述 + 来源 ID）
+            └─ journal：事件、任务、检查点和 handoff 追加到可校验哈希链（只存元数据指纹）
 
 用户提问
   └─ retrieve(question, scope, as_of?)

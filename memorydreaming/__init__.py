@@ -61,7 +61,7 @@ from .formation import MemoryFormationPolicy
 from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 from .proposals import CoreProposalPolicy
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     "MemoryRuntime",

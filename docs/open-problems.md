@@ -46,14 +46,14 @@ v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段�
 
 参考：[Celiums SessionStart hook](https://github.com/terrizoaguimor/celiums-memory/blob/4fcd62ced341536c3585deb8a31969e5c2145a82/packages/plugin-claude-code/src/hooks/session-start.mjs#L28)。宿主必须绑定可信 scope，不能把模型传入的用户 ID 直接当作授权。correct、checkpoint、expand_summary 等按 ID 操作的本地 API 目前仍依赖可信调用者。
 
-从 cogmem-agent、Celiums-memory 和 cognitive-memory 纳入的后续待办（其中低信息检索门控已先实现）：
+从 cogmem-agent、Celiums-memory 和 cognitive-memory 纳入的后续待办（其中低信息检索门控、会话缓存、健康摘要和 durable journal 已实现）：
 
 - `trivial query` retrieval gate：已实现对“你好/好的”等完整短语跳过检索，但不能跳过核心恢复或事件保存；后续用中文对话集校准误判边界。
 - 会话内检索缓存和后台 prefetch：已实现受 TTL、scope mutation epoch、当前事件和引用 revision 约束的会话缓存；`session.prefetch()` / JSONL `prefetch` 只预热候选引用，不返回正文。真正的后台调度、跨进程缓存和指标仍待加入。
 - recall reinforcement：把“被实际使用过”与事实真实性分开记录，只调整检索强度，不提高证据等级。
 - memory health / summary health / confidence / gaps：`MemoryRuntime.memory_health()` 已输出按类型/状态计数、陈旧摘要、失败任务、无来源推断和开放循环；置信度校准、历史趋势与 UI 仍待加入，健康分数不能被模型当作事实概率。
-- durable journal 与 hash chain：为事件、检查点、整理任务和 handoff 提供可校验的操作链；哈希链不能代替作用域权限和删除账本。
-- derived artifact 的 `source_digest`、`algorithm_version` 与 `stale/withdrawn/rolled_back` 生命周期；来源改变时先隐藏派生物，再由队列重建。
+- durable journal 与 hash chain：**已实现**。`journal_entries` 使用全局 sequence、prev_hash、entry_hash 追加；`MemoryRuntime.verify_journal()` 可检测篡改或断链，记录不复制正文。哈希链不能代替作用域权限和删除账本。
+- derived artifact 的 `source_digest`、`algorithm_version` 与 `stale/withdrawn/rolled_back` 生命周期：**source_digest / algorithm_version / stale 已实现**；来源改变时摘要先隐藏，再由队列重建，`withdrawn/rolled_back` 仍待用于更复杂的派生物。
 - portability export/import：manifest、源摘要、dry-run 迁移和残留报告；恢复旧备份前先应用遗忘账本并校验 generation。
 - entity index、图关系遍历和更完整双时间 claim 查询；没有修订日志时，`knowledge_at` 请求必须返回不支持。
 - 可选 arousal/importance 维度：只影响保留和召回排序，不能覆盖用户原话、来源和认识论状态。
