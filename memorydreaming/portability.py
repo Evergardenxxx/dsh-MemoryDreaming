@@ -41,6 +41,8 @@ TABLES = (
     "scope_mutations",
     "scope_purges",
     "health_snapshots",
+    "entities",
+    "entity_mentions",
     "core_field_tombstones",
     "host_deliveries",
     "core_proposals",
@@ -65,6 +67,8 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "scope_mutations": ("scope_key",),
     "scope_purges": ("scope_key",),
     "health_snapshots": ("snapshot_id",),
+    "entities": ("entity_id",),
+    "entity_mentions": ("entity_id", "memory_id", "role"),
     "core_field_tombstones": ("scope_key", "kind", "field_key"),
     "host_deliveries": ("event_id",),
     "core_proposals": ("proposal_id",),
@@ -130,7 +134,7 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
     selected_event_ids: set[str] = set()
     for table in TABLES:
         rows = [_row_dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
-        if scope is not None and table not in {"memory_links", "tombstone_sources"}:
+        if scope is not None and table not in {"memory_links", "tombstone_sources", "entity_mentions"}:
             rows = [row for row in rows if _row_scope_matches(row, scope)]
         if table == "memories":
             selected_memory_ids = {str(row["memory_id"]) for row in rows}
@@ -147,6 +151,12 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
         tables["tombstone_sources"] = [
             row for row in tables["tombstone_sources"]
             if row.get("event_id") in selected_event_ids
+        ]
+        selected_entity_ids = {str(row["entity_id"]) for row in tables["entities"]}
+        tables["entity_mentions"] = [
+            row for row in tables["entity_mentions"]
+            if row.get("entity_id") in selected_entity_ids
+            and row.get("memory_id") in selected_memory_ids
         ]
 
     forgetting_key = db.meta_get("forgetting_hmac_key") or ""
@@ -334,7 +344,7 @@ _IMPORT_ORDER = (
     "events", "activities", "core_versions", "session_handoffs", "memories",
     "memory_revisions", "memory_links", "summaries", "consolidation_jobs",
     "forgotten_events", "scope_mutations", "scope_purges", "memory_tombstones",
-    "tombstone_sources", "core_field_tombstones", "health_snapshots", "host_deliveries",
+    "tombstone_sources", "core_field_tombstones", "health_snapshots", "entities", "entity_mentions", "host_deliveries",
     "core_proposals", "change_proposals", "journal_entries",
 )
 

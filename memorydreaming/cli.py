@@ -47,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("eval", help="跑一遍检索评估（Recall@5 / MRR / 无依据拒绝）")
     sub.add_parser("jobs", help="查看任务就绪、退避、租约与失败统计")
 
-    reindex = sub.add_parser("reindex", help="重建某个角色的向量索引")
+    reindex = sub.add_parser("reindex", help="重建某个角色的向量和实体索引")
     reindex.add_argument("--user", required=True)
     reindex.add_argument("--character", required=True)
 
@@ -183,8 +183,9 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
 
     if args.command == "reindex":
         scope = Scope(user_id=args.user, character_id=args.character)
-        count = runtime.rebuild_vectors(scope)
-        print(f"已重建 {count} 条向量（模型：{runtime.vectors.model_name}）")
+        vector_count = runtime.rebuild_vectors(scope)
+        entity_count = runtime.rebuild_entities(scope)
+        print(f"已重建 {vector_count} 条向量（模型：{runtime.vectors.model_name}），{entity_count} 条实体提及")
         return 0
 
     if args.command == "consolidate":

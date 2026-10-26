@@ -98,6 +98,7 @@ class RetrievalPipeline:
         else:
             hits.extend(self._recent_channel(plan, query, now))
             hits.extend(self._keyword_channel(plan, query))
+            hits.extend(self._entity_channel(plan, query))
             hits.extend(self._vector_channel(plan, query))
             hits.extend(self._time_channel(plan, query))
 
@@ -273,6 +274,16 @@ class RetrievalPipeline:
             rank += 1
             weight = 0.55 + 0.45 * plan.type_scores.get(result.memory_type, 0.5)
             hits.append(ChannelHit(result.memory_id, "vector", rank, weight))
+        return hits
+
+    def _entity_channel(self, plan: QueryPlan, query: Query) -> list[ChannelHit]:
+        """实体名称通道：把结构化 subject/object 命中映射回记忆。"""
+        if not plan.query_text.strip():
+            return []
+        hits: list[ChannelHit] = []
+        for entity in self._repos.entities.search(query.scope, plan.query_text, limit=8):
+            for rank, memory_id in enumerate(entity["memory_ids"], start=1):
+                hits.append(ChannelHit(memory_id, "entity", rank, 0.7))
         return hits
 
     def _time_channel(self, plan: QueryPlan, query: Query) -> list[ChannelHit]:

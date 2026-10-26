@@ -699,6 +699,19 @@ class MemoryRuntime:
         return [{"snapshot_id": row["snapshot_id"], "captured_at": row["captured_at"],
                  "health": json.loads(row["payload_json"])} for row in rows]
 
+    def rebuild_entities(self, scope: Scope) -> int:
+        """从当前有效记忆重建作用域实体索引，返回实体提及数。"""
+        with self._db.transaction():
+            return self._repos.entities.rebuild(scope, self._clock.now())
+
+    def search_entities(self, query: str, scope: Scope, *, limit: int = 20) -> list[dict[str, Any]]:
+        """按名称反查实体及其记忆 ID；结果仍需经正常引用读取校验。"""
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query 必须为非空字符串")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit 必须为 1..100")
+        return self._repos.entities.search(scope, query, limit=limit)
+
     def journal_entries(self, scope: Scope | None = None, limit: int = 100) -> list[dict[str, Any]]:
         """读取审计链元数据；默认只返回最近记录，不包含对话正文。"""
         return self._repos.journal.list(scope=scope, limit=limit)
@@ -795,6 +808,7 @@ class MemoryRuntime:
             if correction.kind == "fix":
                 self._repos.memories.update_status(memory_id, MemoryStatus.RETRACTED, now)
                 self._vectors.delete(memory_id)
+                self._repos.entities.remove_memory(memory_id)
                 invalidated = self._invalidate_derived(
                     memory_id, now, being_removed={memory_id}
                 )
@@ -814,6 +828,7 @@ class MemoryRuntime:
                 )
                 # 新事实要能被语义通道立刻检索到，所以同步建索引
                 self._vectors.index_memory(new_item, now)
+                self._repos.entities.index_memory(new_item, now)
 
             return CorrectionResult(
                 old_memory=old,
@@ -865,6 +880,7 @@ class MemoryRuntime:
         explicit_tables = (
             "activities", "session_handoffs", "events", "memories", "memory_revisions",
             "summaries", "consolidation_jobs", "health_snapshots",
+            "entities",
         )
         for table in explicit_tables:
             rows = conn.execute(f"SELECT user_id, character_id, relationship_id, activity_id, domain FROM {table}").fetchall()
@@ -924,11 +940,18 @@ class MemoryRuntime:
                 placeholders = ",".join("?" for _ in memory_ids)
                 conn.execute(f"DELETE FROM memory_links WHERE from_memory_id IN ({placeholders}) OR to_memory_id IN ({placeholders})", [*memory_ids, *memory_ids])
                 conn.execute(f"DELETE FROM memory_vectors WHERE memory_id IN ({placeholders})", memory_ids)
+                conn.execute(f"DELETE FROM entity_mentions WHERE memory_id IN ({placeholders})", memory_ids)
+            entity_ids = [row[0] for row in conn.execute(
+                "SELECT entity_id FROM entities WHERE " + scope_sql(scope)[0], scope_sql(scope)[1]
+            ).fetchall()]
+            if entity_ids:
+                placeholders = ",".join("?" for _ in entity_ids)
+                conn.execute(f"DELETE FROM entity_mentions WHERE entity_id IN ({placeholders})", entity_ids)
             if tombstone_ids:
                 conn.execute("DELETE FROM tombstone_sources WHERE tombstone_id IN (" + ",".join("?" for _ in tombstone_ids) + ")", tombstone_ids)
 
             for table in ("memory_revisions", "memories", "summaries", "consolidation_jobs",
-                          "health_snapshots", "session_handoffs", "events", "activities"):
+                          "health_snapshots", "entities", "session_handoffs", "events", "activities"):
                 delete_scoped(table)
             if scope_keys:
                 placeholders = ",".join("?" for _ in scope_keys)
@@ -1029,6 +1052,7 @@ class MemoryRuntime:
                 elif self._repos.memories.delete(item.memory_id, now):
                     deleted.append(item.memory_id)
                     self._vectors.delete(item.memory_id)
+                    self._repos.entities.remove_memory(item.memory_id)
 
             if deleted:
                 invalidated = self._invalidate_derived(
@@ -1085,6 +1109,7 @@ class MemoryRuntime:
                     # 向量是派生数据，主记录删除后必须一起清掉，
                     # 否则它还会出现在语义通道的候选里。
                     self._vectors.delete(memory_id)
+                    self._repos.entities.remove_memory(memory_id)
             if deleted:
                 # 整批显式删除完成后统一判断来源，避免遍历顺序改变结果。
                 invalidated = self._invalidate_derived(
@@ -1264,6 +1289,7 @@ class MemoryRuntime:
             ):
                 self._repos.memories.update_status(dependent, MemoryStatus.RETRACTED, now)
                 self._vectors.delete(dependent)
+                self._repos.entities.remove_memory(dependent)
                 invalidated.append(dependent)
         return invalidated
 

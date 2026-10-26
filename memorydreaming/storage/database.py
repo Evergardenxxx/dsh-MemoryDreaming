@@ -48,7 +48,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 13：记忆系统时间修订日志与作用域物理清除账本。
 # 版本 14：不含正文的健康趋势快照。
 # 版本 15：一般事实/遗忘/检查点提议。
-SCHEMA_VERSION = "15"
+# 版本 16：可重建实体索引。
+SCHEMA_VERSION = "16"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 

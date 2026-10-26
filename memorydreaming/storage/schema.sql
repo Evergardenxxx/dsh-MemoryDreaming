@@ -387,6 +387,36 @@ CREATE TABLE IF NOT EXISTS health_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_health_snapshots_scope
     ON health_snapshots (user_id, character_id, domain, captured_at DESC);
+
+-- 实体索引是可重建投影，不承担事实真值。canonical_name 用于检索，
+-- display_name 保留最近一次出现的表面形式；正文仍只在 memories 中保存。
+CREATE TABLE IF NOT EXISTS entities (
+    entity_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    relationship_id TEXT,
+    activity_id TEXT,
+    domain TEXT NOT NULL DEFAULT 'real',
+    canonical_name TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    entity_type TEXT NOT NULL DEFAULT 'mention',
+    mention_count INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT,
+    last_seen TEXT,
+    UNIQUE(scope_key, canonical_name)
+);
+CREATE INDEX IF NOT EXISTS idx_entities_scope_name
+    ON entities (user_id, character_id, domain, canonical_name);
+CREATE TABLE IF NOT EXISTS entity_mentions (
+    entity_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(entity_id, memory_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_memory ON entity_mentions(memory_id);
 CREATE TABLE IF NOT EXISTS core_field_tombstones (
     scope_key TEXT NOT NULL,
     kind TEXT NOT NULL,

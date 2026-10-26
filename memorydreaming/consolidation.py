@@ -344,6 +344,7 @@ def _run_extract(
             # 当前实现将索引和主记录一起提交；索引失败时本任务回滚并重试。
             if vector_index is not None:
                 vector_index.index_memory(memory, now)
+            repos.entities.index_memory(memory, now)
 
     return created, duplicates, suppressed
 

@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.13，增加双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照和可选变更提议审批**。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 315 个回归测试通过。跨机器打包、真实 Harness 热加载、完整外部备份清理和健康趋势告警仍待完成。
+当前状态：**v0.14，增加双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照、实体索引和可选变更提议审批**。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 320 个回归测试通过。跨机器打包、真实 Harness 热加载、完整外部备份清理和健康趋势告警仍待完成。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -25,6 +25,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 | [系统架构 v0.2](docs/architecture-v0.2.md) | 核心与四类记忆、作用域、生命周期、模块边界及演进顺序 |
 | [算法规格 v0.2](docs/algorithms-v0.2.md) | 形成、路由、时间、融合排序、预算、纠错、遗忘和核心成长 |
 | [LLM 接口协议 v1](docs/llm-interface-v1.md) | 宿主钩子、查询/建议工具、JSON Schema、结果/错误、模型适配与样例 |
+| [实体索引](docs/entity-index.md) | 结构化实体投影、作用域隔离、增量更新与重建边界 |
 
 早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。Python 实现查询与核心建议子集；MCP 保持只读，通用修改工具与 HTTP 服务仍未开放。
 
@@ -35,7 +36,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部测试（当前 310 项）
+python -m unittest                # 跑全部测试（当前 320 项）
 python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 python -X utf8 examples/core_proposal.py
 ```
@@ -53,7 +54,7 @@ python -m memorydreaming --db my.db consolidate                      # 摘要（
 python -m memorydreaming --db my.db jobs                             # 就绪、退避、运行、失败统计
 python -m memorydreaming --db my.db retrieve --user u1 --character c1 "我喜欢什么"
 python -m memorydreaming --db my.db bootstrap --user u1 --character c1
-python -m memorydreaming --db my.db reindex --user u1 --character c1  # 重建向量索引
+python -m memorydreaming --db my.db reindex --user u1 --character c1  # 重建向量与实体索引
 python -m memorydreaming --db my.db forget mem_xxx                  # 抑制事实，返回精确回执
 ```
 
@@ -74,7 +75,7 @@ memorydreaming/
 ├── llm-tools.json    两个读工具和显式启用的核心建议工具定义
 ├── proposals.py      持久核心候选、来源/版本检查、宿主审批与回执
 ├── mcp.py            MCP stdio：工具与 bootstrap 资源
-├── consolidation.py  异步整理：任务分发 + 抽取 + 去重合并
+├── consolidation.py  异步整理：任务分发 + 抽取 + 去重合并 + 派生索引更新
 ├── worker.py         文件库任务心跳与可唤醒后台整理器
 ├── summarization.py  主题摘要：主题词分组、索引卡生成、卡片匹配
 ├── similarity.py     相似度：字符 n-gram Jaccard + 聚簇（去重共用）
@@ -87,7 +88,7 @@ memorydreaming/
 ├── storage/
 │   ├── schema.sql    表结构（带注释，建议先读这个）
 │   ├── database.py   连接、事务、初始化
-│   ├── repository.py 各表的读写 SQL（含向量表、摘要表、审计链）
+│   ├── repository.py 各表的读写 SQL（含向量表、摘要表、实体索引和审计链）
 │   └── __init__.py
 └── retrieval/
     ├── timeexpr.py   中文时间表达 → 明确时间范围
@@ -115,6 +116,7 @@ tests/
 ├── test_mcp.py           MCP 往返、真实子进程、仓库外启动
 ├── test_summaries.py     主题卡生成、回源展开、失效
 ├── test_vector.py        嵌入性质、索引维护、通道接线
+├── test_entities.py      实体提取、归一化、作用域隔离、快照与实体通道
 ├── test_decay_time.py    衰减、时间旅行、上下文围栏
 ├── test_correction.py    纠正与删除的传播
 └── test_extraction.py    从事件到记忆的整理流程
@@ -158,10 +160,11 @@ tests/
   └─ retrieve(question, scope, as_of?)
        ├─ planner：四类相关度、时间范围、每类候选预算、是否延续当前交流
        ├─ 摘要阶段（仅在「宽泛/久远」问题）：先给索引卡，再回源展开
-       ├─ 四个通道取候选：
+       ├─ 五个通道取候选：
        │    最近 48 小时（仅当问题指向当前对话）
        │    关键词（FTS5 trigram + LIKE）
        │    向量（余弦相似度）
+       │    实体（结构化 subject / object / participants 等字段）
        │    明确时间范围（仅当用户给了硬约束）
        ├─ RRF 融合 → 回表校验（撤回、越权、硬时间约束、被合并的副本、as_of 快照）
        ├─ 排序：融合分 → 可用性衰减 → 重要度
@@ -187,13 +190,14 @@ tests/
 3. **效力**：`epistemic_status / modality / occurred_* / valid_* / status`
 4. **权重**：`importance / retrieval_strength / access_count`
 
-另有三类派生索引，以及持久整理队列。队列需要单独保证恢复，不能仅靠重建索引替代：
+另有四类派生索引，以及持久整理队列。队列需要单独保证恢复，不能仅靠重建索引替代：
 
 | 表 | 作用 | 同步方式 |
 |---|---|---|
 | `memories_fts` | 中文全文索引 | 触发器自动 |
 | `memory_vectors` | 向量索引（float32 BLOB） | 写入时显式建立，可 `reindex` |
 | `summaries` | 主题索引卡（概述 + 来源 ID） | 整理任务重建 |
+| `entities` / `entity_mentions` | 结构化实体到记忆的反查索引 | 接受记忆时增量更新，也可按作用域重建 |
 | `consolidation_jobs` | 异步任务队列 | — |
 
 ## 关键取舍（以及为什么）

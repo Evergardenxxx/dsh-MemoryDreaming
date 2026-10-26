@@ -18,6 +18,7 @@ import json
 import hashlib
 import hmac
 import sqlite3
+import unicodedata
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Sequence
@@ -1572,6 +1573,159 @@ class LinkRepository:
 
 
 # ---------------------------------------------------------------------------
+# 实体索引（可重建派生投影）
+# ---------------------------------------------------------------------------
+
+
+def _entity_values(body: Any) -> list[tuple[str, str]]:
+    """从四类结构化正文提取保守实体候选，不扫描整段自由文本。"""
+    if not isinstance(body, dict):
+        return []
+    candidates: list[tuple[str, str]] = []
+    for key in ("subject", "obj", "participants", "active_entities", "entities", "person", "location", "project", "name"):
+        value = body.get(key)
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if isinstance(item, str) and item.strip():
+                surface = " ".join(item.strip().split())
+                if 1 <= len(surface) <= 200:
+                    candidates.append((key, surface))
+    return list(dict.fromkeys(candidates))
+
+
+class EntityRepository:
+    """实体名称到记忆的可重建索引；不改变事实正文和证据等级。"""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._forgetting = ForgetRepository(conn)
+
+    @staticmethod
+    def canonical(value: str) -> str:
+        return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+    def _index_values(self, memory: MemoryItem, now: datetime) -> int:
+        """增量写入一条记忆的实体提及；调用方必须已在事务中。"""
+        values = _entity_values(memory.body)
+        if (
+            not values
+            or memory.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED)
+            or self._forgetting.is_suppressed(memory)
+        ):
+            return 0
+        scope_key = _scope_key(memory.scope)
+        indexed = 0
+        touched: set[str] = set()
+        seen: set[tuple[str, str]] = set()
+        for role, surface in values:
+            canonical = self.canonical(surface)
+            if not canonical or (canonical, role) in seen:
+                continue
+            seen.add((canonical, role))
+            entity_id = new_id("ent")
+            self._conn.execute(
+                """INSERT INTO entities (
+                    entity_id,scope_key,user_id,character_id,relationship_id,activity_id,domain,
+                    canonical_name,display_name,entity_type,mention_count,first_seen,last_seen
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?)
+                ON CONFLICT(scope_key,canonical_name) DO UPDATE SET
+                    display_name=CASE WHEN excluded.last_seen >= entities.last_seen
+                                      THEN excluded.display_name ELSE entities.display_name END,
+                    first_seen=MIN(entities.first_seen, excluded.first_seen),
+                    last_seen=MAX(entities.last_seen, excluded.last_seen)""",
+                (entity_id, scope_key, memory.scope.user_id, memory.scope.character_id,
+                 memory.scope.relationship_id, memory.scope.activity_id, memory.scope.domain,
+                 canonical, surface, role, to_utc_iso(memory.recorded_at), to_utc_iso(memory.recorded_at)),
+            )
+            entity = self._conn.execute(
+                "SELECT entity_id FROM entities WHERE scope_key=? AND canonical_name=?",
+                (scope_key, canonical),
+            ).fetchone()
+            if entity is None:
+                continue
+            entity_id = entity[0]
+            touched.add(entity_id)
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO entity_mentions(entity_id,memory_id,role,surface,created_at) VALUES (?,?,?,?,?)",
+                (entity_id, memory.memory_id, role, surface, to_utc_iso(now)),
+            )
+            indexed += max(cursor.rowcount, 0)
+        for entity_id in touched:
+            self._conn.execute(
+                "UPDATE entities SET mention_count=(SELECT COUNT(*) FROM entity_mentions WHERE entity_mentions.entity_id=entities.entity_id) WHERE entity_id=?",
+                (entity_id,),
+            )
+        return indexed
+
+    def index_memory(self, memory: MemoryItem, now: datetime) -> int:
+        """把新接受的记忆增量加入索引；这是可重建投影，不改变正文。"""
+        return self._index_values(memory, now)
+
+    def remove_memory(self, memory_id: str) -> None:
+        """移除一条记忆的实体提及，并清理没有剩余提及的实体。"""
+        rows = self._conn.execute(
+            "SELECT DISTINCT entity_id FROM entity_mentions WHERE memory_id=?", (memory_id,)
+        ).fetchall()
+        self._conn.execute("DELETE FROM entity_mentions WHERE memory_id=?", (memory_id,))
+        for row in rows:
+            self._conn.execute(
+                "UPDATE entities SET mention_count=(SELECT COUNT(*) FROM entity_mentions "
+                "WHERE entity_mentions.entity_id=entities.entity_id) WHERE entity_id=?",
+                (row[0],),
+            )
+            self._conn.execute(
+                "DELETE FROM entities WHERE entity_id=? AND NOT EXISTS "
+                "(SELECT 1 FROM entity_mentions WHERE entity_id=?)", (row[0], row[0]),
+            )
+
+    def rebuild(self, scope: Scope, now: datetime) -> int:
+        visible, params = scope_sql(scope, "e")
+        entity_rows = self._conn.execute("SELECT entity_id FROM entities e WHERE " + visible, params).fetchall()
+        entity_ids = [row[0] for row in entity_rows]
+        if entity_ids:
+            placeholders = _placeholders(len(entity_ids))
+            self._conn.execute(f"DELETE FROM entity_mentions WHERE entity_id IN ({placeholders})", entity_ids)
+            self._conn.execute(f"DELETE FROM entities WHERE entity_id IN ({placeholders})", entity_ids)
+
+        memory_visible, memory_params = retrieval_sql(scope, "m")
+        rows = self._conn.execute(
+            "SELECT m.* FROM memories m WHERE " + memory_visible + " AND m.status IN ('active','superseded')",
+            memory_params,
+        ).fetchall()
+        count = 0
+        for row in rows:
+            memory = _memory_from_row(row)
+            count += self._index_values(memory, now)
+        self._conn.execute(
+            "UPDATE entities SET mention_count=(SELECT COUNT(*) FROM entity_mentions WHERE entity_mentions.entity_id=entities.entity_id)"
+        )
+        return count
+
+    def search(self, scope: Scope, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        canonical = self.canonical(query)
+        if not canonical:
+            return []
+        visible, params = scope_sql(scope, "e")
+        rows = self._conn.execute(
+            "SELECT e.* FROM entities e WHERE " + visible +
+            " AND (e.canonical_name LIKE ? OR e.display_name LIKE ?) "
+            "ORDER BY e.mention_count DESC,e.last_seen DESC LIMIT ?",
+            [*params, f"%{canonical}%", f"%{query.strip()}%", limit],
+        ).fetchall()
+        result = []
+        for row in rows:
+            mentions = self._conn.execute(
+                "SELECT DISTINCT memory_id FROM entity_mentions WHERE entity_id=? LIMIT 100",
+                (row["entity_id"],),
+            ).fetchall()
+            result.append({"entity_id": row["entity_id"], "canonical_name": row["canonical_name"],
+                           "display_name": row["display_name"], "entity_type": row["entity_type"],
+                           "mention_count": row["mention_count"],
+                           "memory_ids": [item[0] for item in mentions]})
+        return result
+
+
+# ---------------------------------------------------------------------------
 # 整理任务队列
 # ---------------------------------------------------------------------------
 
@@ -2312,6 +2466,7 @@ class Repositories:
     jobs: JobRepository
     vectors: VectorRepository
     summaries: SummaryRepository
+    entities: EntityRepository
     forgetting: ForgetRepository
     journal: JournalRepository
 
@@ -2327,6 +2482,7 @@ def build_repositories(conn: sqlite3.Connection) -> Repositories:
         jobs=JobRepository(conn),
         vectors=VectorRepository(conn),
         summaries=SummaryRepository(conn),
+        entities=EntityRepository(conn),
         forgetting=ForgetRepository(conn),
         journal=JournalRepository(conn),
     )

@@ -55,7 +55,7 @@ v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段�
 - durable journal 与 hash chain：**已实现**。`journal_entries` 使用全局 sequence、prev_hash、entry_hash 追加；`MemoryRuntime.verify_journal()` 可检测篡改或断链，记录不复制正文。哈希链不能代替作用域权限和删除账本。
 - derived artifact 的 `source_digest`、`algorithm_version` 与 `stale/withdrawn/rolled_back` 生命周期：**source_digest / algorithm_version / stale 已实现**；来源改变时摘要先隐藏，再由队列重建，`withdrawn/rolled_back` 仍待用于更复杂的派生物。
 - portability export/import：**manifest、源摘要、作用域快照、dry-run 迁移和遗忘/generation 预检已实现**（见 [便携快照](portability.md)）；人工确认后的原子导入、残留报告和跨密钥迁移仍待完成。
-- entity index、图关系遍历和更完整双时间 claim 查询；没有修订日志时，`knowledge_at` 请求必须返回不支持。
+- entity index、图关系遍历和更完整双时间 claim 查询：实体索引与图关系遍历已实现；实体索引是可重建投影，接受记忆时增量更新，作用域快照会保留 `entity_mentions` 映射。没有修订日志时，`knowledge_at` 请求必须返回不支持。
 - 可选 arousal/importance 维度：只影响保留和召回排序，不能覆盖用户原话、来源和认识论状态。
 
 v0.6 已迁移核心键：身份按用户/角色/领域、关系再按 relationship_id 独立版本化，并保存字段级来源。旧版未存核心领域，迁移只能按历史默认 real 归属，多世界旧库需要重新归属。`propose_core_update` 保留可信本地直写兼容，明确名称为 `apply_core_update`；模型工具只创建 core_proposals。身份来源属于其他关系或未授权活动时仍会隐藏字段，未实现跨关系来源授权。记忆围栏只帮助区分资料；工具和核心写权限仍由宿主控制。
@@ -90,7 +90,7 @@ v0.6 已迁移核心键：身份按用户/角色/领域、关系再按 relations
 
 LLM `memory_search` 已能显式传入 `knowledge_at` / `fact_at`，宿主能力声明同步更新；`recorded` / `valid` 的 `time_range` 仍明确返回 unsupported，避免静默误查。
 
-待完成：实体索引和更丰富的提议类型（核心以外的批量修改）、派生物 `withdrawn/rolled_back`、跨进程缓存与后台 prefetch 指标、真实中文 embedding/DeepSeek 抽取评估、精确 tokenizer 预算，以及真实 Harness 主程序重启/取消/异常退出验收。
+实体索引、图关系遍历和快照实体映射已完成。待完成：更丰富的提议类型（核心以外的批量修改）、派生物 `withdrawn/rolled_back`、跨进程缓存与后台 prefetch 指标、真实中文 embedding/DeepSeek 抽取评估、精确 tokenizer 预算，以及真实 Harness 主程序重启/取消/异常退出验收。
 
 ## 7. P2：评估、人格成长和预算计量
 
