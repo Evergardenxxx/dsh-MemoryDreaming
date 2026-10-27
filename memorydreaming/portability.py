@@ -27,6 +27,7 @@ FORMAT_VERSION = 1
 # scope_mutations 必须保留，因为它是缓存/在途整理结果的代次防线。
 TABLES = (
     "core_versions",
+    "core_field_revisions",
     "activities",
     "session_handoffs",
     "events",
@@ -38,6 +39,8 @@ TABLES = (
     "evidence_groups",
     "evidence_members",
     "summaries",
+    "summary_revisions",
+    "summary_restore_receipts",
     "consolidation_jobs",
     "memory_tombstones",
     "tombstone_sources",
@@ -52,6 +55,7 @@ TABLES = (
     "host_deliveries",
     "core_proposals",
     "change_proposals",
+    "proposal_batches",
     "change_purge_receipts",
     "journal_entries",
 )
@@ -60,6 +64,7 @@ OPERATIONAL_TABLES = ("provider_limits", "provider_requests")
 
 PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "core_versions": ("scope_key", "kind", "core_version"),
+    "core_field_revisions": ("scope_key", "kind", "core_version", "field_name"),
     "activities": ("activity_id",),
     "session_handoffs": ("handoff_id",),
     "events": ("event_id",),
@@ -71,6 +76,8 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "evidence_groups": ("group_id",),
     "evidence_members": ("group_id", "position"),
     "summaries": ("summary_id",),
+    "summary_revisions": ("summary_id", "revision"),
+    "summary_restore_receipts": ("scope_key", "idempotency_key"),
     "consolidation_jobs": ("job_id",),
     "memory_tombstones": ("tombstone_id",),
     "tombstone_sources": ("tombstone_id", "event_id", "span_start", "span_end"),
@@ -85,6 +92,7 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "host_deliveries": ("event_id",),
     "core_proposals": ("proposal_id",),
     "change_proposals": ("proposal_id",),
+    "proposal_batches": ("batch_id",),
     "change_purge_receipts": ("proposal_id",),
     "journal_entries": ("journal_id",),
 }
@@ -147,7 +155,7 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
     selected_event_ids: set[str] = set()
     for table in TABLES:
         rows = [_row_dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
-        if scope is not None and table not in {"memory_links", "tombstone_sources", "entity_mentions", "evidence_groups", "evidence_members"}:
+        if scope is not None and table not in {"memory_links", "tombstone_sources", "entity_mentions", "evidence_groups", "evidence_members", "core_field_revisions"}:
             rows = [row for row in rows if _row_scope_matches(row, scope)]
         if table == "memories":
             selected_memory_ids = {str(row["memory_id"]) for row in rows}
@@ -156,6 +164,9 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
         tables[table] = rows
 
     if scope is not None:
+        core_keys = {(row["scope_key"], row["kind"], row["core_version"]) for row in tables["core_versions"]}
+        tables["core_field_revisions"] = [row for row in tables["core_field_revisions"]
+                                           if (row["scope_key"], row["kind"], row["core_version"]) in core_keys]
         supported_ids = {row["memory_id"] for row in tables["evidence_sets"]}
         tables["evidence_groups"] = [row for row in tables["evidence_groups"] if row["memory_id"] in supported_ids]
         group_ids = {row["group_id"] for row in tables["evidence_groups"]}
@@ -253,6 +264,9 @@ def validate_snapshot(db: Database, snapshot: dict[str, Any]) -> dict[str, Any]:
             continue
         if (table in {"evidence_sets", "evidence_groups", "evidence_members"} and source_schema < 23
                 and table not in tables and table not in manifest.get("tables", {})):
+            continue
+        if (table in {"core_field_revisions", "summary_revisions", "summary_restore_receipts", "proposal_batches"}
+                and source_schema < 24 and table not in tables and table not in manifest.get("tables", {})):
             continue
         if not isinstance(rows, list):
             errors.append({"code": "TABLE_INVALID", "message": f"表 {table} 不是数组"})
@@ -392,12 +406,12 @@ def _decode_jsonable(value: Any) -> Any:
 # 外键依赖决定的写入顺序。派生表不会出现在此列表中，导入完成后由
 # 当前数据库的触发器/重建流程产生。
 _IMPORT_ORDER = (
-    "events", "activities", "core_versions", "session_handoffs", "memories",
+    "events", "activities", "core_versions", "core_field_revisions", "session_handoffs", "memories",
     "memory_revisions", "memory_links", "evidence_sets", "evidence_groups", "evidence_members", "summaries", "consolidation_jobs",
     "forgotten_events", "scope_mutations", "scope_purges", "memory_tombstones",
     "tombstone_sources", "core_field_tombstones", "health_snapshots", "entities", "entity_mentions", "host_deliveries",
     "fact_forgetting_barriers", "relearning_grants",
-    "core_proposals", "change_proposals", "journal_entries",
+    "core_proposals", "change_proposals", "proposal_batches", "summary_revisions", "summary_restore_receipts", "journal_entries",
 )
 
 
@@ -444,6 +458,9 @@ def import_snapshot(db: Database, snapshot: dict[str, Any], *, allow_partial: bo
             "INSERT OR IGNORE INTO fact_forgetting_barriers(tombstone_id,scope_key,generation,forgotten_at) "
             "SELECT tombstone_id,scope_key,1,? FROM memory_tombstones", (cutoff,),
         )
+        if int(manifest.get("schema_version", 0)) < 24:
+            from .temporal import seed_history
+            seed_history(db)
 
         # 导入后重建 FTS 触发器无法覆盖历史版本的手工差异，显式重建最稳妥。
         db.connection.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")

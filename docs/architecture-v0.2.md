@@ -190,3 +190,6 @@ v0.10 的 284 项测试验证当前工程行为，新增 handoff、检索门控�
 ## 9. 参考关系
 
 CoALA 提供工作/情景/语义/程序的功能划分；cogmem-agent 提供身份与检索经验；Celiums 提供宿主恢复钩子；Engram 提供多意图与混合检索经验；Graphiti 提供时效与来源传播参考；Celery/Procrastinate 提供任务恢复机制参考。版本与源码链接沿用 [v0.1](memory-engine-architecture-v0.1.md)、[问题清单](open-problems.md) 和 [队列说明](reliable-consolidation.md) 的已核查记录，本次没有宣称重新复现上游性能。
+
+
+v0.25 / schema 24 已实现字段级核心双时间、摘要内容版本日志与来源复核后的正文恢复，并提供已有单项提议的原子批量审批。接口、迁移基线和产品接入边界见 [历史与批量审批](core-summary-history.md)。

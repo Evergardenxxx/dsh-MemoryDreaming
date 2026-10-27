@@ -784,6 +784,7 @@ class MemoryRuntime:
         self, scope: Scope, kind: CoreKind | str, patch: dict[str, Any], change_reason: str,
         expected_version: int | None = None, evidence_ids: list[str] | None = None,
         field_evidence_ids: dict[str, list[str]] | None = None,
+        *, effective_from: datetime | None = None,
     ) -> CoreSnapshot:
         """可信本地宿主直接应用一次核心变更；模型建议应走 CoreProposals 审批。
 
@@ -795,6 +796,9 @@ class MemoryRuntime:
         """
         core_kind = kind if isinstance(kind, CoreKind) else CoreKind(kind)
         now = self._clock.now()
+        from .clock import ensure_utc
+        if effective_from is not None and (not isinstance(effective_from, datetime) or ensure_utc(effective_from) > ensure_utc(now)):
+            raise ValueError("effective_from 必须为不晚于当前记录时间的 datetime")
         with self._db.transaction():
             current = self._repos.cores.latest(scope, core_kind)
             merged = dict(current.payload) if current else {}
@@ -808,14 +812,39 @@ class MemoryRuntime:
                 kind=core_kind,
                 payload=merged,
                 change_reason=change_reason,
-                effective_from=now,
+                effective_from=effective_from or now,
                 now=now,
                 evidence_ids=refs,
                 expected_version=expected_version,
                 field_evidence_ids=fields,
+                changed_fields=list(patch),
             )
+            # 追记过去的字段变更不能把更晚已经生效的字段覆盖成旧状态。
+            from .temporal import core_at
+            projected = core_at(self, scope, core_kind, now, now)
+            if projected is not None and (projected.payload != result.payload or projected.field_evidence_ids != result.field_evidence_ids):
+                self._db.connection.execute(
+                    "UPDATE core_versions SET payload_json=?,field_evidence_json=?,evidence_ids_json=? "
+                    "WHERE scope_key=? AND kind=? AND core_version=?",
+                    (json.dumps(projected.payload, ensure_ascii=False), json.dumps(projected.field_evidence_ids, ensure_ascii=False),
+                     json.dumps(projected.evidence_ids), self._core_key(scope, core_kind), core_kind.value, result.core_version),
+                )
+                result = replace(result, payload=projected.payload, field_evidence_ids=projected.field_evidence_ids,
+                                 evidence_ids=projected.evidence_ids)
             self.refresh_evidence()
             return result
+
+    @staticmethod
+    def _core_key(scope, kind):
+        from .assertions import core_scope_key
+        return core_scope_key(scope, kind)
+
+    def core_at(self, scope: Scope, kind: CoreKind | str, *, knowledge_at: datetime,
+                fact_at: datetime) -> CoreSnapshot | None:
+        """按系统获知时间和字段生效时间回放，当前遗忘屏蔽继续生效。"""
+        from .temporal import core_at
+        with self._db.transaction(write=False):
+            return core_at(self, scope, kind, knowledge_at, fact_at)
 
     def evidence_ref(self, kind: str, target: str, scope: Scope) -> EvidenceRef:
         """可信宿主获取内容版本锁定的依据；不属于模型写工具。"""
@@ -969,7 +998,7 @@ class MemoryRuntime:
         affected: set[Scope] = {scope}
         explicit_tables = (
             "activities", "session_handoffs", "events", "memories", "memory_revisions",
-            "summaries", "consolidation_jobs", "health_snapshots",
+            "summaries", "summary_revisions", "consolidation_jobs", "health_snapshots",
             "entities",
         )
         for table in explicit_tables:
@@ -988,7 +1017,8 @@ class MemoryRuntime:
                                    None, raw.get("domain", "real")))
         key_tables = ("forgotten_events", "memory_tombstones", "session_handoffs",
                       "scope_mutations", "core_field_tombstones", "core_proposals",
-                      "change_proposals", "scope_purges", "relearning_grants", "fact_forgetting_barriers")
+                      "change_proposals", "scope_purges", "relearning_grants", "fact_forgetting_barriers",
+                      "summary_restore_receipts", "proposal_batches")
         for table in key_tables:
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if "scope_key" not in columns:
@@ -1023,6 +1053,7 @@ class MemoryRuntime:
             ).fetchall()] if scope_keys else []
 
             if event_ids:
+                conn.execute("DELETE FROM proposal_batches WHERE request_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM relearning_grants WHERE confirmation_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM host_deliveries WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM core_proposals WHERE request_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
@@ -1047,18 +1078,19 @@ class MemoryRuntime:
                 conn.execute("DELETE FROM tombstone_sources WHERE tombstone_id IN (" + ",".join("?" for _ in tombstone_ids) + ")", tombstone_ids)
             self._repos.retrieval_cache.delete_scopes(list(scope_keys))
 
-            for table in ("memory_revisions", "memories", "summaries", "consolidation_jobs",
+            for table in ("memory_revisions", "memories", "summaries", "summary_revisions", "consolidation_jobs",
                           "health_snapshots", "entities", "session_handoffs", "events", "activities"):
                 delete_scoped(table)
             if scope_keys:
                 placeholders = ",".join("?" for _ in scope_keys)
                 for table in ("core_field_tombstones", "core_proposals", "change_proposals",
-                              "memory_tombstones", "scope_purges"):
+                              "memory_tombstones", "scope_purges", "summary_restore_receipts", "proposal_batches"):
                     conn.execute(f"DELETE FROM {table} WHERE scope_key IN ({placeholders})", list(scope_keys))
             # 核心键采用 user/character/domain/relationship 四元组，不能用普通
             # scope 的五元组删除；两个命名空间必须分别处理。
             if core_keys:
                 placeholders = ",".join("?" for _ in core_keys)
+                conn.execute(f"DELETE FROM core_field_revisions WHERE scope_key IN ({placeholders})", list(core_keys))
                 conn.execute(f"DELETE FROM core_field_tombstones WHERE scope_key IN ({placeholders})", list(core_keys))
                 conn.execute(f"DELETE FROM core_versions WHERE scope_key IN ({placeholders})", list(core_keys))
 
@@ -1316,6 +1348,18 @@ class MemoryRuntime:
     def rollback_summaries(self, summary_ids: list[str], scope: Scope) -> dict[str, Any]:
         """标记派生物已撤销，等待显式重新激活；不恢复历史摘要正文。"""
         return self._transition_summaries(summary_ids, scope, "rolled_back")
+
+    def summary_history(self, summary_id: str, scope: Scope, *, limit: int = 100) -> list[dict]:
+        from .temporal import summary_history
+        with self._db.transaction(write=False):
+            return summary_history(self, summary_id, scope, limit)
+
+    def restore_summary(self, summary_id: str, revision: int, scope: Scope, *, expected_version: int,
+                        reason: str, idempotency_key: str) -> dict:
+        """显式恢复经过来源复核的历史正文；旧 rollback_summaries 仅撤销卡片。"""
+        from .temporal import restore_summary
+        return restore_summary(self, summary_id, revision, scope, expected_version=expected_version,
+                               reason=reason, idempotency_key=idempotency_key)
 
     def _transition_summaries(self, summary_ids: list[str], scope: Scope, status: str) -> dict[str, Any]:
         if not isinstance(summary_ids, list) or not 1 <= len(summary_ids) <= 100:

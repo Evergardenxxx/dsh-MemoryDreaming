@@ -222,8 +222,16 @@ class ViewReader:
 
     def _core(self, target: str) -> RecordView:
         expected = None
+        temporal = None
         try:
-            if target.startswith("["):
+            if target.startswith("history:"):
+                from .clock import from_utc_iso
+                core_name, knowledge, fact = json.loads(target[len("history:"):])
+                kind = CoreKind(core_name)
+                temporal = {"knowledge_at": knowledge, "fact_at": fact, "historical": True}
+                historical = self.runtime.core_at(self.binding.scope, kind,
+                    knowledge_at=from_utc_iso(knowledge), fact_at=from_utc_iso(fact))
+            elif target.startswith("["):
                 scope_key, core_name, expected = json.loads(target)
                 kind = CoreKind(core_name)
                 from .assertions import core_scope_key
@@ -233,7 +241,7 @@ class ViewReader:
                 kind = CoreKind(target)
         except (ValueError, TypeError):
             raise forbidden() from None
-        core = self.repos.cores.latest(self.binding.scope, kind)
+        core = historical if temporal else self.repos.cores.latest(self.binding.scope, kind)
         if core is None or (expected is not None and core.core_version != expected):
             raise forbidden()
         payload, fields, sources = {}, {}, {}
@@ -246,6 +254,8 @@ class ViewReader:
             sources.update({(ref.kind, ref.target): ref for ref in refs})
         data = self._record_data("core_version", dumps(payload), core.effective_from, None, "exact")
         data["record_version"] = core.core_version
+        if temporal:
+            data["temporal"] = temporal
         return RecordView("core_version", target, data, self.repos.forgetting.epoch(core.scope),
                           list(sources.values()), fields)
 

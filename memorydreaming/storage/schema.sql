@@ -44,6 +44,19 @@ CREATE TABLE IF NOT EXISTS core_versions (
 CREATE INDEX IF NOT EXISTS idx_core_lookup
     ON core_versions (scope_key, kind, core_version DESC);
 
+CREATE TABLE IF NOT EXISTS core_field_revisions (
+    scope_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    core_version INTEGER NOT NULL,
+    field_name TEXT NOT NULL,
+    value_json TEXT,
+    evidence_json TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    effective_from TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY(scope_key,kind,core_version,field_name)
+);
+
 -- ----------------------------------------------------------------------------
 -- 活动：跨窗口继续的事情，同时是持久化的工作检查点
 -- ----------------------------------------------------------------------------
@@ -327,6 +340,45 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 CREATE INDEX IF NOT EXISTS idx_summaries_scope
     ON summaries (user_id, character_id, status, importance DESC);
+
+CREATE TABLE IF NOT EXISTS summary_revisions (
+    summary_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    relationship_id TEXT,
+    activity_id TEXT,
+    domain TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY(summary_id,revision)
+);
+CREATE TABLE IF NOT EXISTS summary_restore_receipts (
+    scope_key TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_key TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(scope_key,idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS proposal_batches (
+    batch_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_key TEXT NOT NULL,
+    request_event_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    items_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    reviewer TEXT,
+    decision_reason TEXT,
+    receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(scope_key,idempotency_key)
+);
 
 -- ----------------------------------------------------------------------------
 -- 异步整理任务：抽取、去重、归纳、核心更新候选

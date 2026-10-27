@@ -56,7 +56,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 21：跨任务 DeepSeek 请求配额与可恢复的在途请求租约，纯新增表。
 # 版本 22：重新学习授权与遗忘屏障；旧抑制账本继续保留。
 # 版本 23：类型化 AND/OR 证据组，纯新增表；旧链接保持 OR 兼容语义。
-SCHEMA_VERSION = "23"
+# 版本 24：字段级核心双时间、摘要版本日志/回滚回执、批量审批。
+SCHEMA_VERSION = "24"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -242,6 +243,9 @@ class Database:
                         "(tombstone_id,scope_key,generation,forgotten_at) "
                         "SELECT tombstone_id,scope_key,1,? FROM memory_tombstones", (cutoff,),
                     )
+                if version < 24:
+                    from ..temporal import seed_history
+                    seed_history(self)
                 self.meta_set("schema_version", SCHEMA_VERSION)
         except sqlite3.Error as exc:  # 通常是磁盘不可写或文件损坏
             raise StorageError(f"初始化数据库失败：{exc}") from exc
@@ -262,6 +266,7 @@ class Database:
             "scope_mutations", "scope_purges", "core_field_tombstones", "host_deliveries",
             "fact_forgetting_barriers", "relearning_grants",
             "evidence_sets", "evidence_groups", "evidence_members",
+            "core_field_revisions", "summary_revisions",
         )
         for table in tables:
             for operation in ("INSERT", "UPDATE", "DELETE"):

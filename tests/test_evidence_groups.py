@@ -10,6 +10,7 @@ from memorydreaming.errors import MemorySuppressed, ScopeNotFound, VersionConfli
 from memorydreaming.models import Correction, ForgetSelector, LinkRelation, MemoryStatus, MemoryType, Scope, new_id
 from memorydreaming.references import ViewReader
 from memorydreaming.runtime import MemoryRuntime
+from memorydreaming.storage.database import SCHEMA_VERSION
 from tests.helpers import RuntimeTestCase
 
 
@@ -227,6 +228,6 @@ class EvidenceGroupsTest(RuntimeTestCase):
             self.runtime.db.connection.execute(f"DROP TABLE {table}")
         self.runtime.db.meta_set("schema_version", "22")
         with MemoryRuntime(self.runtime.settings, clock=self.clock) as migrated:
-            self.assertEqual(migrated.db.meta_get("schema_version"), "23")
+            self.assertEqual(migrated.db.meta_get("schema_version"), SCHEMA_VERSION)
             migrated.forget_fact(ForgetSelector(memory_ids=[a.memory_id]))
             self.assertEqual(migrated.db.repositories.memories.get(child.memory_id).status, MemoryStatus.ACTIVE)

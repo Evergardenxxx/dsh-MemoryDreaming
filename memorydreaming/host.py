@@ -590,6 +590,26 @@ class MemorySession:
         with self.runtime.db.transaction():
             return ChangeProposals(self).inspect(proposal_id)
 
+    def create_proposal_batch(self, items: list[dict], *, reason: str, idempotency_key: str) -> dict:
+        self._check()
+        from .batches import ProposalBatches
+        return ProposalBatches(self).create(items, reason=reason, idempotency_key=idempotency_key)
+
+    def get_proposal_batch(self, batch_id: str) -> dict:
+        self._check()
+        from .batches import ProposalBatches
+        return ProposalBatches(self).inspect(batch_id)
+
+    def approve_proposal_batch(self, batch_id: str, *, user_event_id: str, reviewer: str, reason: str) -> dict:
+        self._check()
+        from .batches import ProposalBatches
+        return ProposalBatches(self).decide(batch_id, user_event_id=user_event_id, reviewer=reviewer, reason=reason, approve=True)
+
+    def reject_proposal_batch(self, batch_id: str, *, user_event_id: str, reviewer: str, reason: str) -> dict:
+        self._check()
+        from .batches import ProposalBatches
+        return ProposalBatches(self).decide(batch_id, user_event_id=user_event_id, reviewer=reviewer, reason=reason, approve=False)
+
     def approve_change_proposal(self, proposal_id: str, *, user_event_id: str,
                                 reviewer: str, reason: str) -> dict:
         self._check()
@@ -618,6 +638,20 @@ class MemorySession:
             memory_id, event.scope, confirmation_event_id=user_event_id, approved_by=reviewer,
             reason=reason, idempotency_key=idempotency_key, source_span=source_span,
         )
+
+    def historical_core(self, kind: str, *, knowledge_at: datetime, fact_at: datetime, max_tokens=2048):
+        """可信宿主的历史资料入口；返回可用现有 memory_read 展开的受控引用。"""
+        self._check()
+        if not isinstance(knowledge_at, datetime) or not isinstance(fact_at, datetime):
+            raise ValueError("knowledge_at/fact_at 必须为 datetime")
+        from .clock import to_utc_iso
+        target = "history:" + dumps([CoreKind(kind).value, to_utc_iso(knowledge_at), to_utc_iso(fact_at)])
+        limit = integer(max_tokens, "max_tokens", 128, 4096)
+        with self.runtime.db.transaction(write=False):
+            view = self._reader().load("core_version", target)
+            return self._fit(envelope(self._request_id(None), {
+                "kind": "read", "records": [render_record(view, self.registry)],
+            }, status="ok"), limit)
 
     def prepare_turn(self, message_id: str, content: str, *, occurred_at: datetime | None = None,
                      max_tokens=4096, deadline=None) -> PreparedTurn:

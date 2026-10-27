@@ -1470,6 +1470,7 @@ class CoreRepository:
         evidence_ids: Sequence[str] | None = None,
         expected_version: int | None = None,
         field_evidence_ids: dict[str, list[str]] | None = None,
+        changed_fields: Sequence[str] | None = None,
     ) -> CoreSnapshot:
         """追加一个新版本。
 
@@ -1535,7 +1536,7 @@ class CoreRepository:
             ),
         )
 
-        return CoreSnapshot(
+        result = CoreSnapshot(
             scope=scope,
             kind=kind,
             core_version=next_version,
@@ -1547,6 +1548,9 @@ class CoreRepository:
             status="active",
             field_evidence_ids=field_evidence_ids,
         )
+        from ..temporal import record_core_fields
+        record_core_fields(self._conn, result, current, changed_fields)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -2218,7 +2222,8 @@ class SummaryRepository:
                 and memory_source_digest(list(sources.values()), summary.algorithm_version)
                 == summary.source_digest)
 
-    def upsert(self, summary: Summary, now: datetime, *, reactivate: bool = False) -> Summary:
+    def upsert(self, summary: Summary, now: datetime, *, reactivate: bool = False,
+               operation: str = "upsert") -> Summary:
         """写入主题投影；撤回状态只能由可信宿主显式重新激活。"""
         existing = self.get_by_topic(summary.scope, summary.topic)
 
@@ -2253,7 +2258,7 @@ class SummaryRepository:
                     existing.summary_id,
                 ),
             )
-            return Summary(
+            result = Summary(
                 summary_id=existing.summary_id,
                 scope=summary.scope,
                 topic=summary.topic,
@@ -2269,6 +2274,8 @@ class SummaryRepository:
                 created_at=existing.created_at,
                 updated_at=now,
             )
+            self._record_revision(result.summary_id, now, operation)
+            return result
 
         self._conn.execute(
             """
@@ -2302,7 +2309,12 @@ class SummaryRepository:
                 to_utc_iso(now),
             ),
         )
+        self._record_revision(summary.summary_id, now, operation)
         return summary
+
+    def _record_revision(self, summary_id: str, now: datetime, operation: str) -> int:
+        from ..temporal import record_summary
+        return record_summary(self._conn, self.get(summary_id), now, operation)
 
     def invalidate_for_memories(self, memory_ids: Sequence[str], now: datetime) -> int:
         """来源变化立即隐藏摘要；重建前不能继续恢复旧摘要正文。"""
@@ -2329,7 +2341,10 @@ class SummaryRepository:
             f"WHERE summary_id IN ({_placeholders(len(summary_ids))}) AND status='active'",
             [to_utc_iso(now), *summary_ids],
         )
-        return cursor.rowcount
+        count = cursor.rowcount
+        for summary_id in summary_ids:
+            self._record_revision(summary_id, now, "stale")
+        return count
 
     def mark_withdrawn(self, summary_ids: Sequence[str], now: datetime) -> int:
         """撤回派生卡，直到可信宿主显式重新激活；保留来源记忆。"""
@@ -2350,7 +2365,10 @@ class SummaryRepository:
             f"WHERE summary_id IN ({_placeholders(len(ids))}) AND status<>?",
             [status, to_utc_iso(now), *ids, status],
         )
-        return cursor.rowcount
+        count = cursor.rowcount
+        for summary_id in ids:
+            self._record_revision(summary_id, now, status)
+        return count
 
 
 # ---------------------------------------------------------------------------
