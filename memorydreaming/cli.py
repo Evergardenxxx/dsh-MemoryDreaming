@@ -91,6 +91,18 @@ def _build_parser() -> argparse.ArgumentParser:
     forget.add_argument("memory_id")
     forget.add_argument("--reason", default="用户要求删除")
 
+    relearn = sub.add_parser("relearn", help="可信本地管理：批准用新用户重申重新学习一个事实")
+    relearn.add_argument("memory_id", help="原先被遗忘的记忆 ID")
+    relearn.add_argument("--user", required=True)
+    relearn.add_argument("--character", required=True)
+    relearn.add_argument("--relationship")
+    relearn.add_argument("--activity")
+    relearn.add_argument("--domain", default="real")
+    relearn.add_argument("--confirmation-event", required=True, help="最近一次遗忘后新保存的用户确认事件 ID")
+    relearn.add_argument("--approved-by", required=True, help="执行独立审批的可信宿主/操作人")
+    relearn.add_argument("--reason", required=True)
+    relearn.add_argument("--key", required=True, help="同一审批重试使用同一个幂等键")
+
     mcp = sub.add_parser("mcp", help="启动只读 MCP stdio 服务；身份由启动配置绑定")
     mcp.add_argument("--user", required=True)
     mcp.add_argument("--character", required=True)
@@ -255,6 +267,15 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
     if args.command == "forget":
         result = runtime.forget_fact(
             ForgetSelector(memory_ids=[args.memory_id], reason=args.reason)
+        )
+        print(json.dumps(result.__dict__, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "relearn":
+        result = runtime.relearn_fact(
+            args.memory_id, Scope(args.user, args.character, args.relationship, args.activity, args.domain),
+            confirmation_event_id=args.confirmation_event, approved_by=args.approved_by,
+            reason=args.reason, idempotency_key=args.key,
         )
         print(json.dumps(result.__dict__, ensure_ascii=False, indent=2))
         return 0

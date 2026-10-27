@@ -108,12 +108,16 @@ class VectorIndex:
 
     def prepare_memories(self, memories: list[MemoryItem]) -> PreparedVectors:
         """耗时编码必须在调用者写事务之外完成。"""
+        eligible = [m for m in memories if self._eligible(m) and m.render(400).strip()]
+        return self.prepare_texts({m.memory_id: m.render(400).strip() for m in eligible})
+
+    def prepare_texts(self, documents: Mapping[str, str]) -> PreparedVectors:
+        """只计算候选文档，不授予写入权限；发布时仍复核可见性与正文。"""
         if self._db.connection.in_transaction:
             raise ValueError("向量预计算必须在外部事务之外调用")
-        eligible = [m for m in memories if self._eligible(m) and m.render(400).strip()]
-        texts = [m.render(400).strip() for m in eligible]
+        texts = list(documents.values())
         vectors = self._encode_documents(texts) if texts else []
-        entries = {m.memory_id: (text, tuple(vector)) for m, text, vector in zip(eligible, texts, vectors)}
+        entries = {key: (text, tuple(vector)) for key, text, vector in zip(documents, texts, vectors)}
         return PreparedVectors(self.model_name, MappingProxyType(entries))
 
     def index_memory(self, memory: MemoryItem, now: datetime | None = None,

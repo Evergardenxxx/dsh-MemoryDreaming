@@ -770,6 +770,18 @@ class ForgetResult:
 
 
 @dataclass
+class RelearningResult:
+    """可信宿主明确批准重新学习后的持久回执，不包含被遗忘正文。"""
+
+    grant_id: str
+    tombstone_id: str
+    memory_id: str
+    confirmation_event_id: str
+    duplicate: bool = False
+    old_records_restored: bool = False
+
+
+@dataclass
 class MemoryDraft:
     """记忆候选：抽取器的输出，尚未入库。
 

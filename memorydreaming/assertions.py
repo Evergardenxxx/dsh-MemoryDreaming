@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 import unicodedata
 from typing import Any
 
-from .models import CoreKind, MemoryItem, MemoryType, Scope
+from .models import CoreKind, EventRecord, MemoryItem, MemoryType, Scope
 
 
 def normalize(value: Any) -> Any:
@@ -35,3 +36,18 @@ def core_scope_key(scope: Scope, kind: CoreKind) -> str:
          scope.relationship_id if kind is CoreKind.RELATIONSHIP else None],
         ensure_ascii=False, separators=(",", ":"),
     )
+
+
+def relearning_material(memory: MemoryItem) -> str:
+    """将授权绑定完整正文和新来源，不能靠沿用记录 ID 换回旧依据。"""
+    return json.dumps(
+        [memory.body, memory.memory_type.value, memory.modality.value,
+         memory.epistemic_status.value, memory.source_speaker,
+         memory.source_event_ids, memory.source_spans],
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+
+
+def confirmation_material(event: EventRecord) -> str:
+    return json.dumps(asdict(event), ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), default=str, allow_nan=False)

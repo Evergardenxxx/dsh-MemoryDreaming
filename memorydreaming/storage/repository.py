@@ -25,7 +25,7 @@ from typing import Any, Iterable, Sequence
 
 from ..clock import ensure_utc, from_utc_iso, to_utc_iso
 from ..errors import JobLeaseLost, MemorySuppressed, VersionConflict
-from ..assertions import assertion_material, core_scope_key, normalize
+from ..assertions import assertion_material, confirmation_material, core_scope_key, normalize, relearning_material
 from ..models import (
     Activity,
     ActivityStatus,
@@ -1262,8 +1262,65 @@ class ForgetRepository:
         ).fetchone()
         return row[0] if row else None
 
+    def renew_barrier(self, tombstone_id: str, now: datetime) -> None:
+        """仅显式遗忘调用；重新抽取被抑制候选不能更新授权代次。"""
+        row = self._conn.execute(
+            "SELECT scope_key FROM memory_tombstones WHERE tombstone_id=?", (tombstone_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("遗忘标记不存在")
+        scope = Scope(*json.loads(row[0]))
+        latest = self._conn.execute(
+            "SELECT MAX(recorded_at) FROM events WHERE user_id=? AND character_id=? "
+            "AND relationship_id IS ? AND activity_id IS ? AND domain=?",
+            (scope.user_id, scope.character_id, scope.relationship_id, scope.activity_id, scope.domain),
+        ).fetchone()[0]
+        # 时钟回拨也不能使遗忘之前已存在的用户消息变成新的授权。
+        cutoff = max(to_utc_iso(now), latest or "")
+        self._conn.execute(
+            "INSERT INTO fact_forgetting_barriers(tombstone_id,scope_key,generation,forgotten_at) "
+            "SELECT tombstone_id,scope_key,1,? FROM memory_tombstones WHERE tombstone_id=? "
+            "ON CONFLICT(tombstone_id) DO UPDATE SET generation=generation+1,"
+            "forgotten_at=MAX(forgotten_at,excluded.forgotten_at)",
+            (cutoff, tombstone_id),
+        )
+
+    def _relearning_tombstone(self, item: MemoryItem) -> str | None:
+        row = self._conn.execute(
+            "SELECT g.tombstone_id,g.confirmation_event_id,g.content_key,g.confirmation_key,t.assertion_key "
+            "FROM relearning_grants g JOIN fact_forgetting_barriers b USING(tombstone_id) "
+            "JOIN memory_tombstones t USING(tombstone_id) "
+            "WHERE g.memory_id=? AND g.scope_key=? AND g.forgetting_generation=b.generation",
+            (item.memory_id, _scope_key(item.scope)),
+        ).fetchone()
+        event = EventRepository(self._conn).get(row["confirmation_event_id"]) if row else None
+        if (row is None or event is None or event.scope != item.scope
+                or item.source_event_ids != [row["confirmation_event_id"]]
+                or self.is_event_forgotten(row["confirmation_event_id"])
+                or self.fingerprint(assertion_material(item)) != row["assertion_key"]
+                or self.fingerprint(confirmation_material(event)) != row["confirmation_key"]
+                or self.fingerprint(relearning_material(item)) != row["content_key"]):
+            return None
+        return row["tombstone_id"]
+
+    def relearning_spans(self, event_id: str, tombstone_id: str) -> list[list[int]]:
+        """只对新确认事件开放已批准片段，旧原话仍被遮蔽。"""
+        rows = self._conn.execute(
+            "SELECT memory_id FROM relearning_grants WHERE confirmation_event_id=? AND tombstone_id=?",
+            (event_id, tombstone_id),
+        ).fetchall()
+        spans = []
+        for row in rows:
+            memory = MemoryRepository(self._conn).get(row[0])
+            if (memory is not None and memory.status in (MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)
+                    and self._relearning_tombstone(memory) == tombstone_id and not self.is_suppressed(memory)):
+                spans.extend(memory.source_spans.get(event_id, []))
+        return spans
+
     def is_suppressed(self, item: MemoryItem) -> bool:
-        if self.assertion_tombstone(item) is not None:
+        tombstone = self.assertion_tombstone(item)
+        authorized = self._relearning_tombstone(item) if tombstone is not None else None
+        if tombstone is not None and tombstone != authorized:
             return True
         if not item.source_event_ids:
             return False
@@ -1271,8 +1328,9 @@ class ForgetRepository:
         for event_id in item.source_event_ids:
             rows = self._conn.execute(
                 "SELECT s.span_start,s.span_end FROM tombstone_sources s "
-                "JOIN memory_tombstones t USING(tombstone_id) WHERE t.scope_key=? AND s.event_id=?",
-                (_scope_key(item.scope), event_id),
+                "JOIN memory_tombstones t USING(tombstone_id) WHERE t.scope_key=? AND s.event_id=? "
+                "AND (? IS NULL OR s.tombstone_id != ?)",
+                (_scope_key(item.scope), event_id, authorized, authorized),
             ).fetchall()
             if not rows:
                 return False

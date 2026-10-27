@@ -141,18 +141,28 @@ class ViewReader:
                 or self.repos.forgetting.is_event_forgotten(target)):
             raise forbidden()
         rows = self.runtime.db.connection.execute(
-            "SELECT s.span_start,s.span_end,t.scope_key FROM tombstone_sources s "
+            "SELECT s.span_start,s.span_end,t.scope_key,t.tombstone_id FROM tombstone_sources s "
             "JOIN memory_tombstones t USING(tombstone_id) WHERE s.event_id=?",
             (target,),
         ).fetchall()
         content = item.content
         intervals = []
-        for start, end, scope_key in rows:
+        approved = {}
+        for start, end, scope_key, tombstone_id in rows:
             if not self.visible(Scope(*json.loads(scope_key))):
                 continue
+            if tombstone_id not in approved:
+                approved[tombstone_id] = self.repos.forgetting.relearning_spans(target, tombstone_id)
+            allowed = approved[tombstone_id]
             if start is None or end is None or not 0 <= start < end <= len(content):
-                raise forbidden()  # 旧记录不能定位时整条原话不可对外展开。
-            intervals.append((start, end))
+                if not allowed:
+                    raise forbidden()  # 旧记录不能定位时整条原话不可对外展开。
+                start, end = 0, len(content)
+            blocked = [(start, end)]
+            for left, right in allowed:
+                blocked = [(a, b) for begin, finish in blocked
+                           for a, b in ((begin, min(left, finish)), (max(right, begin), finish)) if a < b]
+            intervals.extend(blocked)
         merged: list[list[int]] = []
         for start, end in sorted(intervals):
             if merged and start <= merged[-1][1]:

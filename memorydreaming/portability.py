@@ -38,6 +38,8 @@ TABLES = (
     "consolidation_jobs",
     "memory_tombstones",
     "tombstone_sources",
+    "fact_forgetting_barriers",
+    "relearning_grants",
     "scope_mutations",
     "scope_purges",
     "health_snapshots",
@@ -66,6 +68,8 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "consolidation_jobs": ("job_id",),
     "memory_tombstones": ("tombstone_id",),
     "tombstone_sources": ("tombstone_id", "event_id", "span_start", "span_end"),
+    "fact_forgetting_barriers": ("tombstone_id",),
+    "relearning_grants": ("grant_id",),
     "scope_mutations": ("scope_key",),
     "scope_purges": ("scope_key",),
     "health_snapshots": ("snapshot_id",),
@@ -234,6 +238,9 @@ def validate_snapshot(db: Database, snapshot: dict[str, Any]) -> dict[str, Any]:
         if (table == "change_purge_receipts" and source_schema < 20
                 and table not in tables and table not in manifest.get("tables", {})):
             continue  # v19 及更早快照没有新增的最小回执表。
+        if (table in {"fact_forgetting_barriers", "relearning_grants"} and source_schema < 22
+                and table not in tables and table not in manifest.get("tables", {})):
+            continue
         if not isinstance(rows, list):
             errors.append({"code": "TABLE_INVALID", "message": f"表 {table} 不是数组"})
             continue
@@ -352,6 +359,7 @@ _IMPORT_ORDER = (
     "memory_revisions", "memory_links", "summaries", "consolidation_jobs",
     "forgotten_events", "scope_mutations", "scope_purges", "memory_tombstones",
     "tombstone_sources", "core_field_tombstones", "health_snapshots", "entities", "entity_mentions", "host_deliveries",
+    "fact_forgetting_barriers", "relearning_grants",
     "core_proposals", "change_proposals", "journal_entries",
 )
 
@@ -391,6 +399,14 @@ def import_snapshot(db: Database, snapshot: dict[str, Any], *, allow_partial: bo
                 cursor = db.connection.execute(sql, values)
                 inserted += max(cursor.rowcount, 0)
             counts[table] = inserted
+
+        # 旧快照没有最后一次遗忘屏障，导入后要求一次新的用户确认。
+        cutoff = max(to_utc_iso(utcnow()), db.connection.execute(
+            "SELECT MAX(recorded_at) FROM events").fetchone()[0] or "")
+        db.connection.execute(
+            "INSERT OR IGNORE INTO fact_forgetting_barriers(tombstone_id,scope_key,generation,forgotten_at) "
+            "SELECT tombstone_id,scope_key,1,? FROM memory_tombstones", (cutoff,),
+        )
 
         # 导入后重建 FTS 触发器无法覆盖历史版本的手工差异，显式重建最稳妥。
         db.connection.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")

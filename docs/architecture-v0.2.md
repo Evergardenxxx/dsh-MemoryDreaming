@@ -154,7 +154,7 @@ v0.7 适配器保存用户消息后即可准备回答；该消息作为当前输
 | 身份/关系 | core_versions + core_proposals；候选/生效分离、字段来源、审批与来源版本检查 | 长期归纳、完整修订日志及来源授权细化 |
 | 持续活动 | activities | 保持版本 CAS，检查点引用具体事件 |
 | 来源与关系 | source_event_ids + memory_links | typed evidence_refs + AND/OR 支持组 |
-| 遗忘标记 | memory_tombstones、tombstone_sources、scope_mutations、core_field_tombstones | 内容擦除、scope generation、受控重新学习 |
+| 遗忘标记 | memory_tombstones、tombstone_sources、scope_mutations、core_field_tombstones、fact_forgetting_barriers、relearning_grants | 更完整内容擦除与外部上下文撤销；受控重新学习已实现 |
 | 巩固 | consolidation_jobs；租约、抑制和 epoch 检查 | 来源修订与 scope generation 检查 |
 | 派生索引 | FTS、memory_vectors、summaries | 记录 source_revision / projection_epoch，失效后再重建 |
 

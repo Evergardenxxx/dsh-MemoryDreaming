@@ -352,6 +352,31 @@ CREATE TABLE IF NOT EXISTS tombstone_sources (
     UNIQUE(tombstone_id, event_id, span_start, span_end)
 );
 CREATE INDEX IF NOT EXISTS idx_tombstone_event ON tombstone_sources(event_id);
+-- 明确重新学习只授权一条带新用户来源的记录；不撤销旧来源的抑制。
+CREATE TABLE IF NOT EXISTS fact_forgetting_barriers (
+    tombstone_id TEXT PRIMARY KEY REFERENCES memory_tombstones(tombstone_id),
+    scope_key TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation > 0),
+    forgotten_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relearning_grants (
+    grant_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    tombstone_id TEXT NOT NULL REFERENCES memory_tombstones(tombstone_id),
+    forgetting_generation INTEGER NOT NULL,
+    original_memory_id TEXT NOT NULL REFERENCES memories(memory_id),
+    memory_id TEXT NOT NULL UNIQUE REFERENCES memories(memory_id) DEFERRABLE INITIALLY DEFERRED,
+    confirmation_event_id TEXT NOT NULL REFERENCES events(event_id),
+    content_key TEXT NOT NULL,
+    confirmation_key TEXT NOT NULL,
+    request_key TEXT NOT NULL,
+    approved_by TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(scope_key, idempotency_key),
+    UNIQUE(tombstone_id, forgetting_generation, confirmation_event_id)
+);
 CREATE TABLE IF NOT EXISTS scope_mutations (
     scope_key TEXT PRIMARY KEY,
     epoch INTEGER NOT NULL DEFAULT 0

@@ -47,6 +47,7 @@ from .models import (
     MemoryStatus,
     ObserveResult,
     Query,
+    RelearningResult,
     ReadFilter,
     RetrievalResult,
     RetrievedItem,
@@ -961,7 +962,7 @@ class MemoryRuntime:
                                    None, raw.get("domain", "real")))
         key_tables = ("forgotten_events", "memory_tombstones", "session_handoffs",
                       "scope_mutations", "core_field_tombstones", "core_proposals",
-                      "change_proposals", "scope_purges")
+                      "change_proposals", "scope_purges", "relearning_grants", "fact_forgetting_barriers")
         for table in key_tables:
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if "scope_key" not in columns:
@@ -996,6 +997,7 @@ class MemoryRuntime:
             ).fetchall()] if scope_keys else []
 
             if event_ids:
+                conn.execute("DELETE FROM relearning_grants WHERE confirmation_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM host_deliveries WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM core_proposals WHERE request_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
                 conn.execute("DELETE FROM change_proposals WHERE request_event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
@@ -1013,6 +1015,8 @@ class MemoryRuntime:
                 placeholders = ",".join("?" for _ in entity_ids)
                 conn.execute(f"DELETE FROM entity_mentions WHERE entity_id IN ({placeholders})", entity_ids)
             if tombstone_ids:
+                for table in ("relearning_grants", "fact_forgetting_barriers"):
+                    conn.execute(f"DELETE FROM {table} WHERE tombstone_id IN (" + ",".join("?" for _ in tombstone_ids) + ")", tombstone_ids)
                 conn.execute("DELETE FROM tombstone_sources WHERE tombstone_id IN (" + ",".join("?" for _ in tombstone_ids) + ")", tombstone_ids)
             self._repos.retrieval_cache.delete_scopes(list(scope_keys))
 
@@ -1163,6 +1167,8 @@ class MemoryRuntime:
                 tombstones.add(self._repos.forgetting.suppress(item, now))
                 conservative.update(event_id for event_id in item.source_event_ids
                                     if not item.source_spans.get(event_id))
+            for tombstone_id in tombstones:
+                self._repos.forgetting.renew_barrier(tombstone_id, now)
             targets: set[str] = set(seeds)
             candidates: list[MemoryItem] = []
             for scope in scopes:
@@ -1200,6 +1206,21 @@ class MemoryRuntime:
             core_fields_removed=core_fields,
             conservative_event_ids=sorted(conservative),
         )
+
+    def relearn_fact(
+        self, memory_id: str, scope: Scope, *, confirmation_event_id: str,
+        approved_by: str, reason: str, idempotency_key: str,
+        source_span: tuple[int, int] | None = None,
+    ) -> RelearningResult:
+        """可信宿主审批一条新的用户重申；不恢复旧来源或旧核心。
+
+        这是本地管理接口，不是 LLM 工具。宿主必须独立确认用户重申了所选
+        事实并允许重新记住，不能把模型建议当成审批。
+        """
+        from .relearning import relearn_fact
+        return relearn_fact(self, memory_id, scope, confirmation_event_id=confirmation_event_id,
+                            approved_by=approved_by, reason=reason, idempotency_key=idempotency_key,
+                            source_span=source_span)
 
     def mark_used(self, memory_ids: list[str]) -> None:
         """标记「这些记忆确实被用于回答」。

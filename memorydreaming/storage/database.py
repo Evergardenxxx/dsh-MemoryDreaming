@@ -54,7 +54,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 19：检索内容代次与数据库触发器，旧查询原文缓存清除。
 # 版本 20：作用域清除审批的无正文最小回执，纯新增表由初始化自动创建。
 # 版本 21：跨任务 DeepSeek 请求配额与可恢复的在途请求租约，纯新增表。
-SCHEMA_VERSION = "21"
+# 版本 22：重新学习授权与遗忘屏障；旧抑制账本继续保留。
+SCHEMA_VERSION = "22"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -231,6 +232,15 @@ class Database:
                         item = self.repositories.memories.get(row["memory_id"])
                         self.repositories.forgetting.suppress(item, item.recorded_at)
                     self.repositories.forgetting.redact_cores(utcnow())
+                if version < 22:
+                    # 旧库没有可靠的最后一次遗忘时间；升级时保守地要求新输入。
+                    cutoff = max(utcnow().isoformat(), self._conn.execute(
+                        "SELECT MAX(recorded_at) FROM events").fetchone()[0] or "")
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO fact_forgetting_barriers "
+                        "(tombstone_id,scope_key,generation,forgotten_at) "
+                        "SELECT tombstone_id,scope_key,1,? FROM memory_tombstones", (cutoff,),
+                    )
                 self.meta_set("schema_version", SCHEMA_VERSION)
         except sqlite3.Error as exc:  # 通常是磁盘不可写或文件损坏
             raise StorageError(f"初始化数据库失败：{exc}") from exc
@@ -249,6 +259,7 @@ class Database:
             "summaries", "memory_vectors", "entities", "entity_mentions",
             "memory_tombstones", "tombstone_sources", "forgotten_events",
             "scope_mutations", "scope_purges", "core_field_tombstones", "host_deliveries",
+            "fact_forgetting_barriers", "relearning_grants",
         )
         for table in tables:
             for operation in ("INSERT", "UPDATE", "DELETE"):

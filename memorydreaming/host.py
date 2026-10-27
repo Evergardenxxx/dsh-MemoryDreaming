@@ -604,6 +604,21 @@ class MemorySession:
                                             user_event_id=user_event_id,
                                             reviewer=reviewer, reason=reason)
 
+    def approve_relearning(self, memory_id: str, *, user_event_id: str, reviewer: str,
+                           reason: str, idempotency_key: str, source_span=None):
+        """可信宿主核验本轮重申后审批；此方法不注册为模型工具。"""
+        self._check()
+        if user_event_id != self.current_event_id or not user_event_id:
+            raise AdapterError("NOT_FOUND_OR_FORBIDDEN", "必须使用本会话当前用户确认事件")
+        event = self.runtime.db.repositories.events.get(user_event_id)
+        if (event is None or event.conversation_id != self.binding.conversation_id
+                or not self._reader().visible(event.scope)):
+            raise forbidden()
+        return self.runtime.relearn_fact(
+            memory_id, event.scope, confirmation_event_id=user_event_id, approved_by=reviewer,
+            reason=reason, idempotency_key=idempotency_key, source_span=source_span,
+        )
+
     def prepare_turn(self, message_id: str, content: str, *, occurred_at: datetime | None = None,
                      max_tokens=4096, deadline=None) -> PreparedTurn:
         self._check(deadline)
