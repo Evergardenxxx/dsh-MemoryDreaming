@@ -62,6 +62,12 @@ def _build_parser() -> argparse.ArgumentParser:
     diagnostics.add_argument("--character", required=True)
     diagnostics.add_argument("--relationship")
     diagnostics.add_argument("--domain", default="real")
+    sleep_status = sub.add_parser("sleep-status", help="可信本地检查睡眠任务的清点/审阅进度，不返回原话")
+    sleep_status.add_argument("sleep_id")
+    sleep_status.add_argument("--user", required=True)
+    sleep_status.add_argument("--character", required=True)
+    sleep_status.add_argument("--relationship")
+    sleep_status.add_argument("--domain", default="real")
 
     reindex = sub.add_parser("reindex", help="重建某个角色的向量和实体索引")
     reindex.add_argument("--user", required=True)
@@ -257,6 +263,10 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
         scope = Scope(args.user, args.character, args.relationship, domain=args.domain)
         print(json.dumps({"health": runtime.memory_health(scope), "metrics": runtime.operational_trend(scope),
                           "alerts": runtime.check_alerts(scope)}, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "sleep-status":
+        scope = Scope(args.user, args.character, args.relationship, domain=args.domain)
+        print(json.dumps(runtime.sleep.status(scope, args.sleep_id), ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "reindex":

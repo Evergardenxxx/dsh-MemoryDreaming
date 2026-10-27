@@ -56,6 +56,11 @@ TABLES = (
     "core_proposals",
     "change_proposals",
     "proposal_batches",
+    "sleep_runs",
+    "sleep_sources",
+    "sleep_batches",
+    "dreams",
+    "sleep_weight_changes",
     "change_purge_receipts",
     "journal_entries",
 )
@@ -93,6 +98,11 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "core_proposals": ("proposal_id",),
     "change_proposals": ("proposal_id",),
     "proposal_batches": ("batch_id",),
+    "sleep_runs": ("sleep_id",),
+    "sleep_sources": ("sleep_id", "kind", "source_id"),
+    "sleep_batches": ("sleep_id", "cursor"),
+    "dreams": ("dream_id",),
+    "sleep_weight_changes": ("sleep_id", "memory_id"),
     "change_purge_receipts": ("proposal_id",),
     "journal_entries": ("journal_id",),
 }
@@ -155,7 +165,7 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
     selected_event_ids: set[str] = set()
     for table in TABLES:
         rows = [_row_dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
-        if scope is not None and table not in {"memory_links", "tombstone_sources", "entity_mentions", "evidence_groups", "evidence_members", "core_field_revisions"}:
+        if scope is not None and table not in {"memory_links", "tombstone_sources", "entity_mentions", "evidence_groups", "evidence_members", "core_field_revisions", "sleep_sources", "sleep_batches", "sleep_weight_changes"}:
             rows = [row for row in rows if _row_scope_matches(row, scope)]
         if table == "memories":
             selected_memory_ids = {str(row["memory_id"]) for row in rows}
@@ -164,6 +174,9 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
         tables[table] = rows
 
     if scope is not None:
+        sleep_ids = {row["sleep_id"] for row in tables["sleep_runs"]}
+        for table in ("sleep_sources", "sleep_batches", "dreams", "sleep_weight_changes"):
+            tables[table] = [row for row in tables[table] if row["sleep_id"] in sleep_ids]
         core_keys = {(row["scope_key"], row["kind"], row["core_version"]) for row in tables["core_versions"]}
         tables["core_field_revisions"] = [row for row in tables["core_field_revisions"]
                                            if (row["scope_key"], row["kind"], row["core_version"]) in core_keys]
@@ -267,6 +280,9 @@ def validate_snapshot(db: Database, snapshot: dict[str, Any]) -> dict[str, Any]:
             continue
         if (table in {"core_field_revisions", "summary_revisions", "summary_restore_receipts", "proposal_batches"}
                 and source_schema < 24 and table not in tables and table not in manifest.get("tables", {})):
+            continue
+        if (table in {"sleep_runs", "sleep_sources", "sleep_batches", "dreams", "sleep_weight_changes"}
+                and source_schema < 26 and table not in tables and table not in manifest.get("tables", {})):
             continue
         if not isinstance(rows, list):
             errors.append({"code": "TABLE_INVALID", "message": f"表 {table} 不是数组"})
@@ -412,6 +428,7 @@ _IMPORT_ORDER = (
     "tombstone_sources", "core_field_tombstones", "health_snapshots", "entities", "entity_mentions", "host_deliveries",
     "fact_forgetting_barriers", "relearning_grants",
     "core_proposals", "change_proposals", "proposal_batches", "summary_revisions", "summary_restore_receipts", "journal_entries",
+    "sleep_runs", "sleep_sources", "sleep_batches", "dreams", "sleep_weight_changes",
 )
 
 

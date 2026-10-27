@@ -63,12 +63,15 @@ from .formation import MemoryFormationPolicy
 from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 from .proposals import CoreProposalPolicy
 from .scheduling import DeepSeekRequestScheduler
+from .sleep import SleepService, SleepError
 from .portability import export_snapshot, import_snapshot, load_snapshot, validate_snapshot, write_snapshot
 
-__version__ = "0.27.0"
+__version__ = "0.28.0"
 
 __all__ = [
     "MemoryRuntime",
+    "SleepService",
+    "SleepError",
     "DeepSeekSchedulingPolicy",
     "DeepSeekRequestScheduler",
     "HostAdapter",

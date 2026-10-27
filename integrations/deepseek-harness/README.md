@@ -2,6 +2,8 @@
 
 这是一个原生 DeepSeek Harness Cordis 插件。它直接监听 Harness 的用户消息、模型请求和回合结束事件，由本地 Python 记忆引擎负责恢复、检索与持久化。
 
+**v0.15 默认不会参与普通窗口。** 在需要记忆的窗口独立发送 `记忆开启`（或 `/memory on`），发送 `记忆关闭` 停用。发送 `记忆睡眠` 会让当前登录模型通过独立有界请求逐批整理本地对话、保存虚构梦并进入睡眠；新窗口发送 `记忆苏醒` 可恢复核心并讲述仍有效的梦。完整指令和重试/遗忘行为见 [窗口与睡眠](../../docs/window-sleep-wake.md)。
+
 ## Bundle 内容
 
 - `cordis.patch.yml`：把原生 `memorydreaming` 插件挂载到 Harness。
@@ -9,6 +11,10 @@
 - `lib/bridge-client.js`：桥接进程监管、请求截止时间、取消与重启。
 - `lib/request-budget.js`：完整请求计量与预算预览。
 - `lib/delivery-outbox.js`：磁盘投递补偿、重放与过期正文清理。
+- `lib/native-session.js`：宿主消息外壳、状态和记忆节点替换。
+- `lib/window-control.js`：只作用于指定窗口的完整指令与持久状态。
+- `lib/sleep-coordinator.js`：当前模型的分批整理与苏醒回执。
+- `lib/durable-files.js`：共享的 fsync/原子文件发布。
 - `locale/en.json`、`locale/zh.json`：插件管理器显示名称和描述。
 - `icon.svg`：插件图标。
 

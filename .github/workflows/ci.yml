@@ -39,6 +39,10 @@ jobs:
           node --check integrations/deepseek-harness/lib/bridge-client.js
           node --check integrations/deepseek-harness/lib/delivery-outbox.js
           node --check integrations/deepseek-harness/lib/local-tokenizer.js
+          node --check integrations/deepseek-harness/lib/native-session.js
+          node --check integrations/deepseek-harness/lib/window-control.js
+          node --check integrations/deepseek-harness/lib/sleep-coordinator.js
+          node --check integrations/deepseek-harness/lib/durable-files.js
       - name: Test
         run: python -m unittest discover -s tests -q
       - name: Build package

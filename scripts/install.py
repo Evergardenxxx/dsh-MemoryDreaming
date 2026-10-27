@@ -37,12 +37,12 @@ def install(destination, *, wheel=None, user="u1", character="c1", relationship=
     source = repo / "integrations" / "deepseek-harness"
     for name in ("lib", "locale"):
         shutil.copytree(source/name, plugin/name, dirs_exist_ok=True)
-    for name in ("package.json", "icon.svg", "README.md"):
+    for name in ("package.json", "icon.svg", "README.md", "LICENSE"):
         shutil.copy2(source/name, plugin/name)
     settings = {"enabled": True, "pythonCommand": str(python), "repoPath": str(target),
                 "dbPath": str(target/"data"/"memory.db"), "userId": user, "characterId": character,
                 "relationshipId": relationship, "domain": domain, "maxTokens": 1200,
-                "bridgeTimeoutMs": 15000, "autoPrefetch": True}
+                "bridgeTimeoutMs": 15000, "autoPrefetch": True, "activationMode": "command"}
     config.write_text(json.dumps([{"insert": [{"id": "memorydreaming-plugin", "name": "@local/memorydreaming",
                                                "config": settings}]}], ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
     subprocess.run([str(python), "-X", "utf8", "-m", "memorydreaming", "--db", str(target/"data"/"memory.db"), "init"], check=True)

@@ -1,6 +1,6 @@
 {
   "name": "@local/memorydreaming",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "private": true,
   "license": "MIT",
   "description": "Persistent identity and long-term memory tools for DeepSeek Harness",

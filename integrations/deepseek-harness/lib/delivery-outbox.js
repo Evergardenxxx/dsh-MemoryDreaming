@@ -1,32 +1,12 @@
-import { createHash, randomUUID } from 'node:crypto'
-import { dirname, join } from 'node:path'
-import { mkdirSync, openSync, writeFileSync, readFileSync, closeSync, fsyncSync, renameSync, unlinkSync, readdirSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { join } from 'node:path'
+import { mkdirSync, readFileSync, unlinkSync, readdirSync, statSync } from 'node:fs'
+import { atomicWrite, syncDirectory } from './durable-files.js'
 import { bridgeDatabasePath } from './bridge-client.js'
 
 const hash = text => createHash('sha256').update(text).digest('hex')
 const transient = new Set(['BRIDGE_EXITED', 'BRIDGE_RESTARTED', 'BRIDGE_IO_ERROR', 'BRIDGE_TIMEOUT', 'BRIDGE_START_FAILED', 'BRIDGE_BUSY', 'BRIDGE_STOP_FAILED', 'BRIDGE_CLOSED', 'UNAVAILABLE'])
 const entryPattern = /^[a-f0-9]{64}\.json$/u
-
-function syncDirectory(path) {
-  let fd
-  try { fd = openSync(path, 'r'); fsyncSync(fd) } catch {} finally { if (fd !== undefined) closeSync(fd) }
-}
-
-function atomicWrite(path, text) {
-  const temp = `${path}.${randomUUID()}.tmp`
-  let fd
-  try {
-    fd = openSync(temp, 'wx', 0o600)
-    writeFileSync(fd, text, 'utf8')
-    fsyncSync(fd)
-    closeSync(fd); fd = undefined
-    renameSync(temp, path)
-    syncDirectory(dirname(path))
-  } finally {
-    if (fd !== undefined) closeSync(fd)
-    try { unlinkSync(temp) } catch {}
-  }
-}
 
 export class DeliveryOutbox {
   constructor(config, bridge, logger = {}, report = () => {}) {

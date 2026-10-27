@@ -58,7 +58,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 23：类型化 AND/OR 证据组，纯新增表；旧链接保持 OR 兼容语义。
 # 版本 24：字段级核心双时间、摘要版本日志/回滚回执、批量审批。
 # 版本 25：无正文的运维趋势与告警，纯新增表。
-SCHEMA_VERSION = "25"
+# 版本 26：分批睡眠审阅、独立梦境与可逆巩固权重。
+SCHEMA_VERSION = "26"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -192,6 +193,8 @@ class Database:
             raise StorageError(f"找不到建表脚本：{_SCHEMA_FILE}")
 
         sql = _SCHEMA_FILE.read_text(encoding="utf-8")
+        # 睡眠领域保持独立 schema 文件；与主 schema 在同一迁移事务执行。
+        sql += "\n" + _SCHEMA_FILE.with_name("sleep-schema.sql").read_text(encoding="utf-8")
         has_meta = self._table_exists("schema_meta")
         raw_version = self.meta_get("schema_version") if has_meta else None
         try:

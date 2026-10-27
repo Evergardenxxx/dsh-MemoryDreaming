@@ -29,6 +29,7 @@ node_modules/
 dist/
 build/
 *.outbox/
+*.windows/
 *.prefetch/
 coverage/
 

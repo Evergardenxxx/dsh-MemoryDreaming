@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { writeFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SessionProjections from '@deepseek-ai/dsh-session-projection'
@@ -18,10 +19,12 @@ import BasicCompactionEngine from '@deepseek-ai/dsh-compaction-basic'
 
 const [repo, python, workspace, mode] = process.argv.slice(2)
 const memory = await import(pathToFileURL(join(repo, 'integrations/deepseek-harness/lib/index.js')))
-const config = { repoPath: repo, pythonCommand: python, dbPath: join(workspace, 'memory.db'), autoPrefetch: false, autoConsolidation: false }
+const config = { repoPath: repo, pythonCommand: python, dbPath: join(workspace, 'memory.db'), autoPrefetch: false,
+  autoConsolidation: false, activationMode: 'always' }
 const checked = [], calls = [], failures = []
 let ctx, memoryFiber, providerMode = 'normal', entered
 let toolOnce = false
+let expectedOwnedMemory = 1
 function text(message) { return message.content?.filter(x => x.type === 'text').map(x => x.text).join('') ?? '' }
 const provider = Object.assign(new LlmAdapter(), {
   providerInfo() { return { id: 'acceptance', name: 'Deterministic installed-runtime acceptance' } },
@@ -29,7 +32,16 @@ const provider = Object.assign(new LlmAdapter(), {
   async *stream(options) {
     calls.push(options)
     const own = options.messages.filter(m => m.source?.kind === memory.name && text(m))
-    if (options.purpose !== 'compaction') assert.equal(own.length, 1)
+    if (options.purpose === 'memorydreaming-sleep') {
+      assert.equal(own.length, 0)
+      const batch = JSON.parse(options.messages[1].content[0].text)
+      const review = { notes: ['区分真实用户陈述与助手创作，仅形成待复核笔记。'],
+        source_event_ids: [...new Set(batch.events.map(event => event.event_id))] }
+      yield { type: 'text-delta', index: 0, text: JSON.stringify(review) }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
+    if (options.purpose !== 'compaction') assert.equal(own.length, expectedOwnedMemory)
     if (providerMode === 'tool' && !toolOnce) {
       toolOnce = true
       yield { type: 'tool-call-delta', index: 0, id: 'acceptance-call', name: 'acceptance_echo', argumentsDelta: '{}' }
@@ -123,6 +135,40 @@ try {
   await say(handle.agent, '新运行时重启恢复', 'u8')
   assert.equal(ownCount(handle.agent), 1)
   checked.push('actual-jsonl-persistence-new-process-resume')
+  await memoryFiber.dispose()
+  const commandConfig = { ...config, dbPath: join(workspace, 'window-memory.db'), activationMode: 'command' }
+  memoryFiber = ctx.plugin(memory, commandConfig); await memoryFiber.await()
+  expectedOwnedMemory = 0
+  const selected = await ctx.agentLoop.create('selected-window', { provider: 'acceptance', model: 'synthetic', maxTokens: 8192 }, { cwd: workspace })
+  await say(selected, '尚未开启的窗口消息', 'inactive-1')
+  assert.equal(ownCount(selected), 0)
+  assert.equal(existsSync(commandConfig.dbPath), false)
+  await say(selected, '记忆开启', 'enable-memory')
+  expectedOwnedMemory = 1
+  await say(selected, '我喜欢海边故事。' + '独立睡眠分片资料。'.repeat(600), 'selected-user')
+  assert.equal(ownCount(selected), 1)
+  const other = await ctx.agentLoop.create('unselected-window', { provider: 'acceptance', model: 'synthetic', maxTokens: 8192 }, { cwd: workspace })
+  expectedOwnedMemory = 0
+  await say(other, '另一个窗口仍不启用', 'inactive-2')
+  assert.equal(ownCount(other), 0)
+  checked.push('actual-window-default-off-and-opt-in-isolation')
+  expectedOwnedMemory = 1
+  await say(selected, '记忆睡眠', 'sleep-memory')
+  assert.ok(calls.some(call => call.purpose === 'memorydreaming-sleep'))
+  checked.push('actual-host-model-batched-sleep-review')
+  expectedOwnedMemory = 0
+  await say(selected, '睡眠后普通消息不参与记忆', 'sleep-private')
+  assert.equal(ownCount(selected), 0)
+  const awake = await ctx.agentLoop.create('awake-window', { provider: 'acceptance', model: 'synthetic', maxTokens: 8192 }, { cwd: workspace })
+  expectedOwnedMemory = 1
+  await say(awake, '记忆苏醒', 'wake-memory')
+  assert.equal(ownCount(awake), 1)
+  assert.ok(awake.session.deriveMessages().some(message => message.source?.kind === memory.name && text(message).includes('generated_fiction')))
+  await say(awake, '记忆关闭', 'disable-memory')
+  expectedOwnedMemory = 0
+  await say(awake, '关闭之后不参与记忆', 'off-private')
+  assert.equal(ownCount(awake), 0)
+  checked.push('actual-cross-window-fictional-dream-wake-and-disable')
 } finally {
   await ctx?.fiber.dispose()
 }

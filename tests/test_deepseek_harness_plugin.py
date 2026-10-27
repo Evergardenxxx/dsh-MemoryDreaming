@@ -22,10 +22,11 @@ class DeepSeekHarnessPluginTest(unittest.TestCase):
             self.skipTest("node 不在 PATH 中")
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "native.db"
-            options = {"repoPath": str(ROOT), "dbPath": str(path), "autoConsolidation": False, **(config or {})}
+            options = {"repoPath": str(ROOT), "dbPath": str(path), "autoConsolidation": False,
+                       "activationMode": "always", **(config or {})}
             source = '''
 import assert from 'node:assert/strict';
-import { apply, name, inject } from '%ENTRY%';
+import { apply, name, inject, __testing } from '%ENTRY%';
 import { harness } from '%FIXTURE%';
 const h = harness();
 const config = %CONFIG%;
@@ -39,8 +40,9 @@ try { %SCRIPT% } finally { await h.handlers.get('dispose')(); }
                                     env={**os.environ, "MEMORYDREAMING_EMBEDDING_PROVIDER": "hash", "PYTHONUTF8": "1"})
             self.assertEqual(result.returncode, 0, result.stderr)
             with closing(sqlite3.connect(path)) as connection:
-                events = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-                deliveries = connection.execute("SELECT COUNT(*) FROM host_deliveries").fetchone()[0]
+                initialized = connection.execute("SELECT 1 FROM sqlite_master WHERE name='events'").fetchone() is not None
+                events = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] if initialized else 0
+                deliveries = connection.execute("SELECT COUNT(*) FROM host_deliveries").fetchone()[0] if initialized else 0
                 if inspect_database is not None:
                     inspect_database(connection)
             return events, deliveries

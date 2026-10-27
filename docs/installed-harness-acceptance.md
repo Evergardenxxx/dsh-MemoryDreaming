@@ -36,3 +36,5 @@ python scripts/accept_installed_harness.py --asar "C:\Users\YOUR_USER\AppData\Lo
 本机 DeepSeek Harness 已运行，沿用应用登录态做真实测试在产品上可行。本次 Codex 工具列表没有 computer-use 技能所需的 `node_repl` / `sky` 控制入口，因此没有操作用户桌面。只读探查本地 API 返回 401；不会提取内部会话 Cookie 或绕过认证。
 
 已提供 [质量评测包导出](quality-acceptance.md)，可由具有桌面控制能力的后续会话在临时 Harness 对话中逐题提交。真实抽取、当前 V4.1 tokenizer/线上 usage 对照、Electron GUI 与用户配置组合验收仍需取得对应执行入口；本次隔离运行时结果只能覆盖上面列出的路径。
+
+v0.28 / 原生 v0.15 增加三条实际安装版运行时路径：默认关闭与按窗启用隔离、使用宿主模型独立请求审阅完整睡眠分片、跨窗口读取虚构梦并关闭。总计 13 条路径通过，睡眠供应商仍是确定性测试适配器，不能冒充用户当前账号模型的实际新功能测试。

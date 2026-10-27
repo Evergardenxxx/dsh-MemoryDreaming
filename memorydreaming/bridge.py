@@ -1,8 +1,9 @@
 """面向原生聊天宿主插件的轻量 JSONL 桥接协议。
 
 这不是 MCP：桥接进程不暴露工具目录，也不实现 JSON-RPC。原生 Harness
-插件只把生命周期事件转成这里的三个操作，记忆正文仍由 HostAdapter 负责
-预算、绑定、来源和幂等校验。
+插件只把生命周期事件转成有界的内部操作。普通读写由 HostAdapter 负责
+预算与绑定；sleep 领域服务负责逐批审阅、梦境及来源撤销。模型没有这些
+内部操作的调用权限，桥接也不暴露网络监听或工具目录。
 """
 
 from __future__ import annotations
@@ -104,6 +105,29 @@ class BridgeServer:
                 scope = self._session(request["conversation_id"]).binding.scope
                 return self._ok(request_id, {"health": self.runtime.memory_health(scope),
                     "metrics": self.runtime.operational_trend(scope), "alerts": self.runtime.check_alerts(scope)})
+            # 睡眠是可信生命周期能力，不注册为模型工具；每次请求仍使用
+            # bridge 启动时的固定身份绑定，模型不能自行选择其他人的 scope。
+            if op in ("sleep_prepare", "sleep_batch", "sleep_review", "sleep_complete", "wake"):
+                session = self._session(request["conversation_id"])
+                scope = session.binding.scope
+                service = self.runtime.sleep
+                if op == "sleep_prepare":
+                    result = service.prepare(scope, session.binding.conversation_id, request["request_id"])
+                elif op == "sleep_batch":
+                    result = service.batch(scope, request["sleep_id"], request.get("cursor", 0),
+                                           request_id=f"{request['sleep_id']}:{request.get('cursor', 0)}")
+                elif op == "sleep_review":
+                    result = service.record_review(scope, request["sleep_id"], request["cursor"],
+                        notes=request["notes"], source_event_ids=request["source_event_ids"], claim_token=request["claim_token"])
+                elif op == "sleep_complete":
+                    result = service.complete(scope, request["sleep_id"])
+                else:
+                    result = service.wake(scope, session.binding.conversation_id, request["request_id"], max_tokens=self.max_tokens)
+                    recovered = session.bootstrap(max_tokens=self.max_tokens)
+                    data = recovered["data"]
+                    result["bootstrap"] = {key: data.get(key) for key in
+                        ("identity_fields", "relationship_fields", "recovery_status", "core_versions")}
+                return self._ok(request_id, result)
             if op == "close_session":
                 conversation_id = text(request["conversation_id"], "conversation_id", 200)
                 session = self.sessions.pop(conversation_id, None)

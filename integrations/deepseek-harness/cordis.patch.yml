@@ -3,6 +3,8 @@
       name: '@local/memorydreaming'
       config:
         enabled: true
+        # Each window starts off; send /memory on or 记忆开启 explicitly.
+        activationMode: command
         # For isolated installation, run scripts/install.py before importing the plugin.
         pythonCommand: python
         userId: u1
