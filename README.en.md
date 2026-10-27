@@ -4,6 +4,10 @@ A local long-term memory engine and native DeepSeek Harness plugin for companion
 
 [中文](README.md) · [Architecture](docs/architecture-overview.md) · [Quick start, Chinese](docs/quickstart.md) · [Roadmap](ROADMAP.md)
 
+[![CI](https://github.com/Evergardenxxx/dsh-MemoryDreaming/actions/workflows/ci.yml/badge.svg)](https://github.com/Evergardenxxx/dsh-MemoryDreaming/actions/workflows/ci.yml)
+
+[Source repository](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issue tracker](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)
+
 **Experimental, runnable release:** engine 0.29.0, native plugin 0.16.0, database schema 27. Engineering tests cover persistence and lifecycle behavior. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
 
 ![MemoryDreaming architecture](docs/assets/architecture.svg)

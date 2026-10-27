@@ -4,6 +4,10 @@
 
 [English](README.en.md) · [快速上手](docs/quickstart.md) · [架构](docs/architecture-overview.md) · [文档导航](docs/README.md) · [路线图](ROADMAP.md) · [更新记录](CHANGELOG.md)
 
+[![CI](https://github.com/Evergardenxxx/dsh-MemoryDreaming/actions/workflows/ci.yml/badge.svg)](https://github.com/Evergardenxxx/dsh-MemoryDreaming/actions/workflows/ci.yml)
+
+代码与问题反馈：[GitHub仓库](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issues](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)。
+
 **当前为可运行试用版：引擎 v0.29.0 / 原生插件 v0.16.0 / 数据库 schema 27。** 工程链路已实现，真实 DeepSeek 抽取质量、长期角色稳定性和当前登录模型的完整桌面流程仍待验收。详见[能力与证据](docs/open-problems.md)。
 
 ## 为什么做这个项目

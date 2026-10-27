@@ -1,6 +1,6 @@
 # 安装与开源发布
 
-本地发布工程已完成：MIT 许可证、私密数据忽略规则、隔离安装器、Windows/Linux CI、发布构建工作流及带 SHA-256 的安装包。仓库目前没有 Git remote；远程仓库地址、远程 CI 实跑与正式发布是发布前操作，未通过本轮自动执行。
+本地发布工程已完成：MIT许可证、私密数据忽略规则、隔离安装器、Windows/Linux CI、发布构建工作流及带SHA-256的安装包。origin已绑定[GitHub项目](https://github.com/Evergardenxxx/dsh-MemoryDreaming)；远程测试/构建结果以[Actions](https://github.com/Evergardenxxx/dsh-MemoryDreaming/actions)为准，上传源码不自动创建tag或GitHub Release。
 
 首次上传所需文件、推荐仓库描述、附件分工和GitHub侧步骤见[发布准备](github-publication.md)。当前README标记试用版，正式公开时建议先标记Pre-release。
 
@@ -35,6 +35,6 @@ python scripts/release.py --output dist/release
 
 ## 发布前验收
 
-本轮已在包含空格的临时目录创建真实 venv，从 wheel 安装；运行生成的原生插件副本，验证独立 bridge、预取指标、投递补偿和中断回复落库，卸载后正常关闭。完整源码仍需使用用户指定的远程仓库配置 remote，推送后检查 CI，再由维护者决定正式发布。
+本轮已在包含空格的临时目录创建真实venv，从wheel安装；运行生成的原生插件副本，验证独立bridge、预取指标、投递补偿和中断回复落库，卸载后正常关闭。源码推送后仍应检查远程CI，再由维护者决定tag和正式发布。
 
 真实 DeepSeek/语义权重质量、真实 tokenizer 和实际桌面 Harness 生命周期验收保持独立状态，详见 [剩余问题](open-problems.md)。MIT 授权与“已完成全部产品质量验收”是不同事实。

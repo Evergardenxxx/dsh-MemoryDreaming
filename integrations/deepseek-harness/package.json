@@ -4,6 +4,15 @@
   "private": true,
   "license": "MIT",
   "description": "Native Cordis plugin for persistent role memory and sleep/wake continuity in DeepSeek Harness",
+  "homepage": "https://github.com/Evergardenxxx/dsh-MemoryDreaming#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Evergardenxxx/dsh-MemoryDreaming.git",
+    "directory": "integrations/deepseek-harness"
+  },
+  "bugs": {
+    "url": "https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "exports": {

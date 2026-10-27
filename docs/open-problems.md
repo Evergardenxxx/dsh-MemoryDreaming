@@ -47,7 +47,7 @@ v0.26 同轮完成后台预取/持久运维指标/状态告警及合成规模基
 
 v0.27 由三个并行子代理完成性能、计量和质量入口，主代理完成安装版真实运行时验收与整合：一万条哈希向量 p50 从 2.9 秒降至 0.25 秒，真实 BGE 一万条 p50 为 0.44 秒；已实际运行公开固定权重与真实 tokenizer。安装版验收发现并修复 Cordis4 卸载必须注册 effect 的兼容问题。上表剩余的是无法由新增工程测试替代的线上/外部证据，未继续把已实现的功能列成待开发。见 [真实权重结果](quality-acceptance.md)、[计量适配](tokenizer-integration.md)、[安装版验收](installed-harness-acceptance.md)。
 
-发布前操作：指定 GitHub 仓库地址并配置 remote、推送后检查远程 CI、正式发布；当前未执行外部发布。精确扫描仍是 O(ND)，ANN 可作为更大规模优化，当前一万条性能瓶颈已实测改善。
+项目远程已绑定[Evergardenxxx/dsh-MemoryDreaming](https://github.com/Evergardenxxx/dsh-MemoryDreaming)，源码推送后检查[远程CI](https://github.com/Evergardenxxx/dsh-MemoryDreaming/actions)；tag及正式Release另行执行。精确扫描仍是O(ND)，ANN可作为更大规模优化，当前一万条性能瓶颈已实测改善。
 
 已关闭的功能项：
 

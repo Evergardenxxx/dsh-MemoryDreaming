@@ -55,7 +55,7 @@ python scripts/release.py --output dist/github-release
 5. 开启Issues；如账户/仓库支持，可开启私密漏洞报告。保护规则在CI首次生成实际check名称后配置。
 6. 需要发布可下载包时，确认本地版本与tag一致，使用预发布说明并上传构建附件。
 
-目前仓库没有配置remote，因此这里不填虚构的仓库链接、CI badge或维护者联系方式。获得真实地址后可用`git remote add origin`绑定，再推送；此文档本身不会创建仓库、推送、打tag或发布。
+项目仓库为[Evergardenxxx/dsh-MemoryDreaming](https://github.com/Evergardenxxx/dsh-MemoryDreaming)，本地origin已绑定相同HTTPS地址。首页CI badge连接实际工作流；具体运行结果以[Actions](https://github.com/Evergardenxxx/dsh-MemoryDreaming/actions)为准。源码推送、tag和Release是独立操作，版本记录不表示已发布下载附件。
 
 ## 首个Release说明建议
 
