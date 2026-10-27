@@ -130,7 +130,7 @@ class SummaryBuildTest(RuntimeTestCase):
         self.assertEqual(self.runtime.expand_summary(card.summary_id), [])
 
         # 显式重建可以复用同一张卡的 ID，并把最新来源投影重新激活。
-        self.runtime.build_summaries(self.scope)
+        self.runtime.build_summaries(self.scope, reactivate=True)
         rebuilt = self.repos.summaries.list_active(self.scope)[0]
         self.assertEqual(rebuilt.summary_id, card.summary_id)
 

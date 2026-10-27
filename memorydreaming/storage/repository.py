@@ -2114,11 +2114,13 @@ class SummaryRepository:
                 and memory_source_digest(list(sources.values()), summary.algorithm_version)
                 == summary.source_digest)
 
-    def upsert(self, summary: Summary, now: datetime) -> Summary:
-        """写入或更新一张索引卡，返回真正落库的那条（id 保持不变）。"""
+    def upsert(self, summary: Summary, now: datetime, *, reactivate: bool = False) -> Summary:
+        """写入主题投影；撤回状态只能由可信宿主显式重新激活。"""
         existing = self.get_by_topic(summary.scope, summary.topic)
 
         if existing is not None:
+            if existing.status in {"withdrawn", "rolled_back"} and not reactivate:
+                return existing
             self._conn.execute(
                 """
                 UPDATE summaries SET
@@ -2220,13 +2222,13 @@ class SummaryRepository:
             return 0
         cursor = self._conn.execute(
             f"UPDATE summaries SET status = 'stale', updated_at = ? "
-            f"WHERE summary_id IN ({_placeholders(len(summary_ids))})",
+            f"WHERE summary_id IN ({_placeholders(len(summary_ids))}) AND status='active'",
             [to_utc_iso(now), *summary_ids],
         )
         return cursor.rowcount
 
     def mark_withdrawn(self, summary_ids: Sequence[str], now: datetime) -> int:
-        """永久撤回派生卡的当前版本；来源记忆仍由主表保存。"""
+        """撤回派生卡，直到可信宿主显式重新激活；保留来源记忆。"""
         return self._mark_lifecycle(summary_ids, "withdrawn", now)
 
     def mark_rolled_back(self, summary_ids: Sequence[str], now: datetime) -> int:
@@ -2241,8 +2243,8 @@ class SummaryRepository:
             return 0
         cursor = self._conn.execute(
             f"UPDATE summaries SET status=?, updated_at=? "
-            f"WHERE summary_id IN ({_placeholders(len(ids))})",
-            [status, to_utc_iso(now), *ids],
+            f"WHERE summary_id IN ({_placeholders(len(ids))}) AND status<>?",
+            [status, to_utc_iso(now), *ids, status],
         )
         return cursor.rowcount
 

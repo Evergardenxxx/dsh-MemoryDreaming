@@ -60,12 +60,22 @@ def build_summaries(
     *,
     min_size: int = MIN_CLUSTER_SIZE,
     max_topics: int = MAX_TOPICS,
+    reactivate: bool = False,
 ) -> int:
     """重建某个角色的全部主题摘要，返回写入/更新的卡片数。
 
     重建而不是增量追加，是因为主题会合并、会消失。
-    但卡片 ID 保持不变（按 topic 做 upsert），外部引用不会失效。
+    卡片 ID 保持不变；正文变化后旧引用仍按 revision 规则失效。
+    后台调用默认保留 withdrawn/rolled_back；可信宿主可显式重新激活。
     """
+    if not isinstance(reactivate, bool):
+        raise ValueError("reactivate 必须为布尔值")
+    with db.transaction():
+        return _build_summaries_locked(db, scope, clock, tz, min_size, max_topics, reactivate)
+
+
+def _build_summaries_locked(db, scope, clock, tz, min_size, max_topics, reactivate) -> int:
+    # 读取来源、状态检查和投影更新使用同一写事务，避免并发撤回被覆盖。
     repos = db.repositories
     memories = repos.memories.list_by_scope(
         scope, limit=500, statuses=(MemoryStatus.ACTIVE,)
@@ -94,18 +104,17 @@ def build_summaries(
             updated_at=now,
         )
 
-        with db.transaction():
-            repos.summaries.upsert(summary, now)
+        stored = repos.summaries.upsert(summary, now, reactivate=reactivate)
 
-        kept_topics.append(topic)
-        built += 1
+        if stored.status == "active":
+            kept_topics.append(topic)
+            built += 1
 
     # 主题消失后，旧卡标 stale 而不是删除：外部可能还在引用它
     existing = repos.summaries.list_active(scope, limit=200)
     stale = [item.summary_id for item in existing if item.topic not in kept_topics]
     if stale:
-        with db.transaction():
-            repos.summaries.mark_stale(stale, now)
+        repos.summaries.mark_stale(stale, now)
 
     return built
 

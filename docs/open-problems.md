@@ -1,6 +1,6 @@
 # 待解决问题与参考实现
 
-更新于 2026-10-26。正确性修复见 [代码审查记录](review-2026-10-26.md)。以下记录进展与待完成工作；公开项目提供机制参考，最终需要在本项目验证。
+更新于 2026-10-27。正确性修复见 [代码审查记录](review-2026-10-26.md)、[候选缓存](retrieval-cache.md) 和 [摘要生命周期](summary-lifecycle.md)。以下记录进展与待完成工作；公开项目提供机制参考，最终需要在本项目验证。
 
 后续实现遵循 [架构 v0.2](architecture-v0.2.md)、[算法规格](algorithms-v0.2.md) 和 [LLM 接口协议](llm-interface-v1.md)。这三份规格及 JSON 样例已编写，目标服务/算法仍按各节状态逐步实现。
 
@@ -53,7 +53,7 @@ v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段�
 - recall reinforcement：把“被实际使用过”与事实真实性分开记录，只调整检索强度，不提高证据等级。
 - memory health / summary health / confidence / gaps：`MemoryRuntime.memory_health()` 已输出按类型/状态计数、陈旧摘要、失败任务、无来源推断、开放循环和精确绑定的检索缓存计数；健康快照可保存这些指标。置信度校准、跨窗口长期聚合与 UI 仍待加入，健康分数不能被模型当作事实概率。
 - durable journal 与 hash chain：**已实现**。`journal_entries` 使用全局 sequence、prev_hash、entry_hash 追加；`MemoryRuntime.verify_journal()` 可检测篡改或断链，记录不复制正文。哈希链不能代替作用域权限和删除账本。
-- derived artifact 的 `source_digest`、`algorithm_version` 与 `stale/withdrawn/rolled_back` 生命周期：**source_digest / algorithm_version / stale / withdrawn / rolled_back 已实现**；来源改变时摘要先隐藏，可信宿主可明确撤回或回滚派生卡，后续重建仍可复用原摘要 ID。
+- derived artifact 的 `source_digest`、`algorithm_version` 与 `stale/withdrawn/rolled_back` 生命周期：**来源指纹与状态管理已实现**；后台重建保留人工撤回状态，可信宿主可用 `reactivate=True` 显式重新激活。`rolled_back` 目前只标记撤销，不恢复历史摘要正文；真正的摘要版本日志和历史回滚仍待实现。
 - portability export/import：**manifest、源摘要、作用域快照、dry-run 迁移和遗忘/generation 预检已实现**（见 [便携快照](portability.md)）；人工确认后的原子导入、残留报告和跨密钥迁移仍待完成。
 - entity index、图关系遍历和更完整双时间 claim 查询：实体索引与图关系遍历已实现；实体索引是可重建投影，接受记忆时增量更新，作用域快照会保留 `entity_mentions` 映射。没有修订日志时，`knowledge_at` 请求必须返回不支持。
 - 可选 arousal/importance 维度：只影响保留和召回排序，不能覆盖用户原话、来源和认识论状态。
@@ -80,7 +80,7 @@ v0.6 已迁移核心键：身份按用户/角色/领域、关系再按 relations
 
 例如 20 日获知某偏好从 10 日起改变，查询“15 日时系统认为怎样”和“15 日的实际状态”应允许不同结果。修改同一行 valid_to 无法完整表达。
 
-派生摘要仍只支持 `stale`，`withdrawn/rolled_back` 以及核心版本的完整历史回放列入 P1；来源修订后先标 stale，再由可靠队列重算。
+派生摘要已有 `stale/withdrawn/rolled_back` 状态和阻止后台重新激活的规则；来源修订后先标 stale，再由可靠队列重算。摘要历史正文回滚及核心版本的完整双时间回放仍列入 P1。
 
 参考：[Graphiti 时间字段](https://github.com/getzep/graphiti/blob/main/graphiti_core/edges.py#L263)。有效期加 as_of 参数不能等同已经完成双时间数据库。养猫和对猫过敏可以同时成立，复杂事实的冲突也不能靠直觉直接判定。
 
