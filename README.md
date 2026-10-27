@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.18，schema 19，增加可选本地中文语义模型接口、配置隔离、原子索引重建、检索降级和中文向量评估**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引和可选变更提议审批。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 412 项工程回归通过；真实 DeepSeek/语义模型质量、完整请求 token 预算及真实 Harness 生命周期仍待验收。
+当前状态：**v0.19，schema 19，后台抽取/去重在事务外预计算向量，宿主使用只读检索快照并在返回前复核代次和来源**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引、可选本地语义模型和变更提议审批。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 428 项工程回归通过；真实 DeepSeek/语义模型质量、完整请求 token 预算及真实 Harness 生命周期仍待验收。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -27,6 +27,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 | [LLM 接口协议 v1](docs/llm-interface-v1.md) | 宿主钩子、查询/建议工具、JSON Schema、结果/错误、模型适配与样例 |
 | [实体索引](docs/entity-index.md) | 结构化实体投影、作用域隔离、增量更新与重建边界 |
 | [本地语义嵌入](docs/semantic-embedding.md) | 可选模型、配置指纹、升级重建、失败回退和中文评估 |
+| [事务外计算](docs/optimistic-computation.md) | 批量预计算、只读检索快照、租约和内容代次复核 |
 
 早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)、[候选缓存](docs/retrieval-cache.md) 和 [摘要生命周期](docs/summary-lifecycle.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。Python 和原生插件已实现查询与可选变更提议；仓库中独立可选的 MCP 兼容模块只读，Harness 接入不使用该模块。
 
@@ -319,7 +320,7 @@ MRR：1.000
 - **向量检索是暴力扫描**。本地几百上千条够用，十万条以上要换 ANN。
 - **后台尚不会自动归纳人格成长**。`propose_core` 任务仍没有执行器；已支持基于实际用户消息提出核心字段候选并由宿主独立审批，见 [核心建议](docs/core-proposals.md)。
 - **真实 Harness 往返仍待验收**。已有原生 Cordis 插件、生命周期桥接和进程内 HostAdapter；还需要在 Harness 主程序重启后验证多窗口、压缩、工具回合和异常退出等真实场景。
-- **常驻整理需要运行中的宿主**。文件库可启动后台整理器、租约续期和崩溃回收，内存库仍需显式执行任务。整库向量重建在事务外计算；增量编码和宿主检索的写锁占用仍待缩短。跨设备同步尚未实现。
+- **常驻整理需要运行中的宿主**。文件库可启动后台整理器、租约续期和崩溃回收，内存库仍需显式执行任务。重建与后台抽取/去重在事务外编码，宿主检索使用只读快照；同步纠错及其审批替换仍需缩短写事务。跨设备同步尚未实现。
 
 事实抑制的 API、迁移和边界见 [持久事实抑制](docs/fact-suppression.md)。完整问题清单见 **[docs/open-problems.md](docs/open-problems.md)**。schema v6 增加来源片段、抑制账本、内容代次及核心字段来源；v7 增加 host_deliveries；v8 纯新增 core_proposals，保存待审候选、来源版本与审批回执。迁移保留旧记忆与版本，不补造旧库没有的精确片段。
 

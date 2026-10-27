@@ -151,7 +151,7 @@ class MemorySession:
         self._closed = False
         self._search_cache: OrderedDict[str, _SearchCacheEntry] = OrderedDict()
         self._cache_metrics = {"local_hits": 0, "shared_hits": 0, "misses": 0,
-                               "stale": 0, "prefetches": 0}
+                               "stale": 0, "prefetches": 0, "revision_retries": 0}
 
     def close(self):
         self._closed = True
@@ -344,7 +344,7 @@ class MemorySession:
                                 gaps=[{"code": "RECOVERY_INCOMPLETE", "message": "身份或关系恢复不完整，请勿补造设定"}] if incomplete else [])
             return self._fit(response, limit)
 
-    def _search(self, args, reader):
+    def _search_context(self, args, reader):
         focus = self.binding.selected_activity_id
         if args["activity_ref"] is not None:
             focus = self.registry.resolve([args["activity_ref"]], reader, activity=True)[0].target
@@ -364,6 +364,9 @@ class MemorySession:
             "event_id": self.current_event_id,
         }).encode("utf-8")).hexdigest()
         cacheable = not args.get("knowledge_at") and not args.get("fact_at")
+        return activities, interval, cache_key, cacheable
+
+    def _cached_search(self, cache_key, cacheable, reader, activities):
         if cacheable:
             now = self.clock.now()
             epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
@@ -393,14 +396,45 @@ class MemorySession:
                 return data
             self._cache_metrics["misses"] += 1
 
-        result = self.runtime.retrieve(
-            args["query"], self.binding.scope,
-            time_range=(timestamp(interval["start"]), timestamp(interval["end"])) if interval else None,
-            knowledge_at=timestamp(args["knowledge_at"]) if args.get("knowledge_at") else None,
-            fact_at=timestamp(args["fact_at"]) if args.get("fact_at") else None,
-            max_items=args["max_items"] or 12, token_budget=4096, detail=args["detail"],
-            read_filter=ReadFilter(activities, tuple(reader.excluded)),
-        )
+        return None
+
+    def _search(self, args, *, finalize=None, deadline=None):
+        """短事务查缓存 → WAL 只读检索 → 代次复核后投递/写缓存。
+
+        finalize 在最终短事务内恢复核心或生成工具响应，避免复用旧快照的 ViewReader。
+        来源持续变化时只重试一次，绝不把过期结果标成完整或写入缓存。
+        """
+        db = self.runtime.db
+        if db.connection.in_transaction:
+            raise StorageError("宿主检索必须在外部事务之外开始")
+        for attempt in range(2):
+            self._check(deadline)
+            with db.transaction():
+                reader = self._reader()
+                activities, interval, cache_key, cacheable = self._search_context(args, reader)
+                cached = self._cached_search(cache_key, cacheable, reader, activities)
+                if cached is not None:
+                    return finalize(cached) if finalize else cached
+            with db.read_snapshot():
+                generation = db.repositories.retrieval_cache.generation()
+                result = self.runtime.retrieve(
+                    args["query"], self.binding.scope,
+                    time_range=(timestamp(interval["start"]), timestamp(interval["end"])) if interval else None,
+                    knowledge_at=timestamp(args["knowledge_at"]) if args.get("knowledge_at") else None,
+                    fact_at=timestamp(args["fact_at"]) if args.get("fact_at") else None,
+                    max_items=args["max_items"] or 12, token_budget=4096, detail=args["detail"],
+                    read_filter=ReadFilter(activities, tuple(reader.excluded)),
+                )
+            with db.transaction():
+                self._check(deadline)
+                if db.repositories.retrieval_cache.generation() != generation:
+                    self._cache_metrics["revision_retries"] += 1
+                    continue
+                data = self._render_search_result(result, self._reader(), activities, cache_key, cacheable)
+                return finalize(data) if finalize else data
+        raise AdapterError("UNAVAILABLE", "检索期间资料持续变化，请重试", retryable=True, next_action="retry")
+
+    def _render_search_result(self, result, reader, activities, cache_key, cacheable):
         evidence, summaries = [], []
         evidence_views = []
         summary_views = []
@@ -466,12 +500,23 @@ class MemorySession:
         max_tokens = integer(max_tokens, "max_tokens", 128, 4096)
         args = {"query": query, "activity_ref": None, "time_range": None,
                 "detail": detail, "max_items": max_items, "max_tokens": max_tokens}
-        with self.runtime.db.transaction():
-            data = self._search(args, self._reader())
+        data = self._search(args)
         self._cache_metrics["prefetches"] += 1
         return {"status": "partial" if data.get("degraded_reasons") else "ok",
                 "cached": not bool(data.get("degraded_reasons")), "query": query,
                 "ttl_seconds": self.adapter.retrieval_cache_ttl_seconds}
+
+    def _search_response(self, data, rid, limit, deadline, detail):
+        self._check(deadline)
+        empty = not data["evidence"] and not data["summaries"]
+        status = "partial" if not data["retrieval_complete"] else ("not_found" if empty else "ok")
+        gaps = ([{"code": "NO_EVIDENCE", "message": "没有找到可用依据，请勿虚构共同经历"}] if empty else [])
+        if not data["retrieval_complete"]:
+            gaps.append({"code": "INCOMPLETE_SEARCH", "message": "部分检索通道不可用、候选来源不可验证或预算受限"})
+        warnings = [{"code": code, "message": "向量通道降级，请检查本地模型和索引重建状态"}
+                    for code in data.get("degraded_reasons", [])]
+        return self._fit(envelope(rid, data, status=status, gaps=gaps, warnings=warnings), limit,
+                         prefer_summaries=detail == "overview")
 
     def call_tool(self, name: str, arguments: dict, *, request_id=None, deadline=None, max_tokens=None) -> dict:
         rid = self._request_id(request_id)
@@ -491,16 +536,13 @@ class MemorySession:
                                           or self.adapter.core_policy.checkpoint_proposals),
             )
             limit = min(limit, args.get("max_tokens") or 1200)
+            if name == "memory_search":
+                return self._search(args, deadline=deadline, finalize=lambda data: self._search_response(
+                    data, rid, limit, deadline, args["detail"],
+                ))
             with self.runtime.db.transaction():
                 reader = self._reader()
-                if name == "memory_search":
-                    data = self._search(args, reader)
-                    empty = not data["evidence"] and not data["summaries"]
-                    status = "partial" if not data["retrieval_complete"] else ("not_found" if empty else "ok")
-                    gaps = ([{"code": "NO_EVIDENCE", "message": "没有找到可用依据，请勿虚构共同经历"}] if empty else [])
-                    if not data["retrieval_complete"]:
-                        gaps.append({"code": "INCOMPLETE_SEARCH", "message": "部分检索通道不可用、候选来源不可验证或预算受限"})
-                elif name == "memory_read":
+                if name == "memory_read":
                     views = self.registry.resolve(list(dict.fromkeys(args["references"])), reader)
                     data = {"kind": "read", "records": [render_record(view, self.registry) for view in views]}
                     status, gaps = "ok", []
@@ -578,59 +620,62 @@ class MemorySession:
             )
         # 消息已保存；即便随后预算/恢复失败也可使用相同 message_id 安全重试。
         self.current_event_id, self._calls = stored.event.event_id, 0
-        with self.runtime.db.transaction():
-            reader = self._reader()
-            bootstrap = self._bootstrap_data(reader)
-            search = self._search({"query": content, "activity_ref": None, "time_range": None,
-                                   "detail": "auto", "max_items": 12, "max_tokens": 4096}, reader)
-            working = None
-            if self.binding.selected_activity_id:
-                activity = self.runtime.db.repositories.activities.get(self.binding.selected_activity_id)
-                working = {"goal": activity.goal, "open_loops": activity.open_loops,
-                           "active_entities": activity.active_entities, "checkpoint": activity.checkpoint}
-            payload = {"bootstrap": bootstrap, "search": search, "working": working, "truncated": False}
-            if self.adapter.core_policy.enabled:
-                payload["core_proposal_policy"] = {
-                    "identity_fields": list(self.adapter.core_policy.identity_fields),
-                    "relationship_fields": list(self.adapter.core_policy.relationship_fields),
-                    "applies_immediately": False,
-                }
-            while True:
-                encoded = dumps(payload).replace("<", "\\u003c").replace(">", "\\u003e")
-                context = "<memory-context usage=\"reference-only\">\n" + encoded + "\n</memory-context>"
-                memory_messages = [{"role": "system", "content": MEMORY_RULES}, {"role": "user", "content": context}]
-                count = self.adapter.counter.count(dumps(memory_messages))
-                if count <= limit:
-                    break
-                if search["summaries"]:
-                    search["summaries"].pop()
-                elif search["evidence"]:
-                    search["evidence"].pop()
-                elif payload["working"] is not None:
-                    payload["working"] = None
-                elif bootstrap.get("handoff") is not None:
-                    briefing = bootstrap["handoff"].get("briefing", {})
-                    removed = False
-                    for key in ("checkpoint", "active_entities", "next_action", "handoff_note"):
-                        if key in briefing:
-                            briefing.pop(key)
-                            removed = True
-                            break
-                    if not removed and isinstance(briefing.get("goal"), str) and len(briefing["goal"]) > 500:
-                        briefing["goal"] = briefing["goal"][:500] + "…"
+        args = {"query": content, "activity_ref": None, "time_range": None,
+                "detail": "auto", "max_items": 12, "max_tokens": 4096}
+        return self._search(args, deadline=deadline, finalize=lambda search: self._prepared_turn_from_search(
+            search, stored.event.event_id, content, limit, deadline,
+        ))
+
+    def _prepared_turn_from_search(self, search, event_id, content, limit, deadline):
+        bootstrap = self._bootstrap_data(self._reader())
+        working = None
+        if self.binding.selected_activity_id:
+            activity = self.runtime.db.repositories.activities.get(self.binding.selected_activity_id)
+            working = {"goal": activity.goal, "open_loops": activity.open_loops,
+                       "active_entities": activity.active_entities, "checkpoint": activity.checkpoint}
+        payload = {"bootstrap": bootstrap, "search": search, "working": working, "truncated": False}
+        if self.adapter.core_policy.enabled:
+            payload["core_proposal_policy"] = {
+                "identity_fields": list(self.adapter.core_policy.identity_fields),
+                "relationship_fields": list(self.adapter.core_policy.relationship_fields),
+                "applies_immediately": False,
+            }
+        while True:
+            encoded = dumps(payload).replace("<", "\\u003c").replace(">", "\\u003e")
+            context = "<memory-context usage=\"reference-only\">\n" + encoded + "\n</memory-context>"
+            memory_messages = [{"role": "system", "content": MEMORY_RULES}, {"role": "user", "content": context}]
+            count = self.adapter.counter.count(dumps(memory_messages))
+            if count <= limit:
+                break
+            if search["summaries"]:
+                search["summaries"].pop()
+            elif search["evidence"]:
+                search["evidence"].pop()
+            elif payload["working"] is not None:
+                payload["working"] = None
+            elif bootstrap.get("handoff") is not None:
+                briefing = bootstrap["handoff"].get("briefing", {})
+                removed = False
+                for key in ("checkpoint", "active_entities", "next_action", "handoff_note"):
+                    if key in briefing:
+                        briefing.pop(key)
                         removed = True
-                    if not removed:
-                        bootstrap["handoff"] = None
-                elif bootstrap["activities"]:
-                    bootstrap["activities"].pop()
-                    bootstrap["selected_activity_ref"] = None
-                else:
-                    raise AdapterError("CONTEXT_BUDGET_TOO_SMALL", "最小身份与关系核心无法放入记忆预算")
-                payload["truncated"] = True
-                search["retrieval_complete"] = False
-            self._check(deadline)
-            return PreparedTurn(stored.event.event_id, memory_messages + [{"role": "user", "content": content}],
-                                bootstrap["recovery_status"], count, self.adapter.counter.mode, payload["truncated"])
+                        break
+                if not removed and isinstance(briefing.get("goal"), str) and len(briefing["goal"]) > 500:
+                    briefing["goal"] = briefing["goal"][:500] + "…"
+                    removed = True
+                if not removed:
+                    bootstrap["handoff"] = None
+            elif bootstrap["activities"]:
+                bootstrap["activities"].pop()
+                bootstrap["selected_activity_ref"] = None
+            else:
+                raise AdapterError("CONTEXT_BUDGET_TOO_SMALL", "最小身份与关系核心无法放入记忆预算")
+            payload["truncated"] = True
+            search["retrieval_complete"] = False
+        self._check(deadline)
+        return PreparedTurn(event_id, memory_messages + [{"role": "user", "content": content}],
+                            bootstrap["recovery_status"], count, self.adapter.counter.mode, payload["truncated"])
 
     def pre_compress(self, state: dict | None = None, *, expected_version: int | None = None,
                      request_id: str | None = None, idempotency_key: str | None = None,

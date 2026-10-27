@@ -131,7 +131,7 @@ class Database:
     # -- 事务 -------------------------------------------------------------
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
+    def transaction(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
         """开一个事务。用法：
 
             with db.transaction():
@@ -143,14 +143,14 @@ class Database:
         """
         outermost = self._depth == 0
         if outermost:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         else:
             self._conn.execute(f"SAVEPOINT sp{self._depth}")
 
         self._depth += 1
         try:
             yield self._conn
-        except Exception:
+        except BaseException:
             self._depth -= 1
             if outermost:
                 self._conn.execute("ROLLBACK")
@@ -164,6 +164,19 @@ class Database:
                 self._conn.execute("COMMIT")
             else:
                 self._conn.execute(f"RELEASE sp{self._depth}")
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[sqlite3.Connection]:
+        """WAL 一致读快照，不预占写锁；禁止快照中的意外写入和事务升级。"""
+        if self._depth or self._conn.in_transaction:
+            raise StorageError("只读快照必须在外部事务之外开始")
+        previous = int(self._conn.execute("PRAGMA query_only").fetchone()[0])
+        self._conn.execute("PRAGMA query_only=ON")
+        try:
+            with self.transaction(write=False) as connection:
+                yield connection
+        finally:
+            self._conn.execute(f"PRAGMA query_only={previous}")
 
     # -- 初始化 -----------------------------------------------------------
 

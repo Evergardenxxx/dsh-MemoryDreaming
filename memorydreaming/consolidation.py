@@ -20,7 +20,7 @@ propose_core（核心成长候选）尚无执行器，保留在队列中等待�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import tzinfo, timezone
 from typing import Any, Protocol
 
@@ -42,7 +42,7 @@ from .models import (
 )
 from .similarity import cluster as cluster_by_similarity
 from .summarization import build_summaries
-from .retrieval.vector import VectorIndex
+from .retrieval.vector import PreparedVectors, VectorIndex
 from .storage.database import Database
 from .storage.repository import JobRecord
 from .worker import JobHeartbeat
@@ -116,7 +116,7 @@ def run_pending_jobs(
     """取出待处理任务并逐条执行。
 
     每个任务的结果、后续任务和完成确认在同一事务里提交。
-    抽取在写事务外执行，文件库有独立连接续租。失败按指数退避重试，
+    抽取、候选向量编码在写事务外执行，文件库有独立连接续租。失败按指数退避重试，
     租约失效则放弃全部写入；下一次调用会回收过期任务。
 
     参数:
@@ -198,17 +198,39 @@ def run_pending_jobs(
                         continue
                     drafts = extractor.extract(event)
 
+                generation = None
+                extract_plan = None
+                dedupe_plan = []
+                prepared_vectors = None
+                if job.job_type in ("extract", "dedupe"):
+                    with db.read_snapshot():
+                        generation = repos.retrieval_cache.generation()
+                        if repos.forgetting.epoch(job.scope) != epoch:
+                            raise SourceRevisionChanged("计算准备期间发生遗忘")
+                        if job.job_type == "extract":
+                            if repos.events.get(event.event_id) != event:
+                                raise SourceRevisionChanged("抽取来源事件已变化")
+                            extract_plan = _plan_extract(event, drafts, clock)
+                            planned_memories = extract_plan.memories
+                        else:
+                            dedupe_plan = _plan_dedupe(db, job.scope)
+                            planned_memories = [item.canonical for item in dedupe_plan]
+                    if vector_index is not None:
+                        prepared_vectors = vector_index.prepare_memories(planned_memories)
+
                 with db.transaction():
                     repos.jobs.assert_owned(job.job_id, job.claim_token, clock.now())
                     if repos.forgetting.epoch(job.scope) != epoch:
                         raise SourceRevisionChanged("抽取期间发生遗忘，旧候选已丢弃")
+                    if generation is not None and repos.retrieval_cache.generation() != generation:
+                        raise SourceRevisionChanged("向量计算期间来源或投影发生变化")
                     if job.job_type == "extract":
                         created, duplicates, suppressed = _run_extract(
-                            db, event, drafts, extractor.version, clock, vector_index,
+                            db, event, extract_plan, extractor.version, clock, vector_index, prepared_vectors,
                         )
                         _enqueue_follow_up(db, job, clock, max_attempts)
                     elif job.job_type == "dedupe":
-                        merged = _run_dedupe(db, job.scope, clock, vector_index)
+                        merged = _run_dedupe(db, dedupe_plan, clock, vector_index, prepared_vectors)
                         _enqueue_summarize(db, job, clock, max_attempts)
                     elif job.job_type == "summarize":
                         summarized = build_summaries(db, job.scope, clock, tz)
@@ -287,13 +309,26 @@ def run_pending_jobs(
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _ExtractionPlan:
+    drafts: list[MemoryDraft]
+    memories: list[MemoryItem]
+
+
+def _plan_extract(event: EventRecord, drafts: list[MemoryDraft], clock: Clock) -> _ExtractionPlan:
+    policy = MemoryFormationPolicy()
+    validated = [policy.validate(event, draft) for draft in drafts]
+    return _ExtractionPlan(validated, [_build_memory(draft, event, clock) for draft in validated])
+
+
 def _run_extract(
     db: Database,
     event: EventRecord,
-    drafts: list[MemoryDraft],
+    plan: _ExtractionPlan,
     extractor_version: str,
     clock: Clock,
     vector_index: VectorIndex | None,
+    prepared_vectors: PreparedVectors | None,
 ) -> tuple[int, int, int]:
     """写入合法候选，返回 (新建条数, 幂等跳过条数, 抑制条数)。"""
     repos = db.repositories
@@ -302,19 +337,14 @@ def _run_extract(
     suppressed = 0
     now = clock.now()
 
-    policy = MemoryFormationPolicy()
-    # 先统一校验整批候选，再进入事务。任何一条格式错误都会让任务按
-    # 原有退避策略重试，避免一批候选部分写入后留下不可解释状态。
-    validated = [policy.validate(event, draft) for draft in drafts]
-
     with db.transaction():
-        memories = [_build_memory(draft, event, clock) for draft in validated]
+        memories = plan.memories
         # 相同断言的新来源也须记录，防止以后从这条消息换格式抽取而复活。
         # 先处理整批来源，使区间不明时的保守隔离不受候选顺序影响。
         for memory in memories:
             if repos.forgetting.assertion_tombstone(memory) is not None:
                 repos.forgetting.suppress(memory, now)
-        for draft, memory in zip(validated, memories):
+        for draft, memory in zip(plan.drafts, memories):
             if repos.forgetting.is_suppressed(memory):
                 suppressed += 1
                 continue
@@ -348,7 +378,7 @@ def _run_extract(
                 repos.links.add(memory.memory_id, old.memory_id, LinkRelation.SUPERSEDES, now)
             # 当前实现将索引和主记录一起提交；索引失败时本任务回滚并重试。
             if vector_index is not None:
-                vector_index.index_memory(memory, now)
+                vector_index.index_memory(memory, now, prepared=prepared_vectors)
             repos.entities.index_memory(memory, now)
 
     return created, duplicates, suppressed
@@ -535,14 +565,18 @@ def _build_memory(draft: MemoryDraft, event: EventRecord, clock: Clock) -> Memor
 # ---------------------------------------------------------------------------
 
 
-def _run_dedupe(
+@dataclass
+class _DedupeGroup:
+    canonical: MemoryItem
+    duplicates: list[MemoryItem]
+
+
+def _plan_dedupe(
     db: Database,
     scope: Scope,
-    clock: Clock,
-    vector_index: VectorIndex | None,
     threshold: float = DEFAULT_DEDUPE_THRESHOLD,
-) -> int:
-    """合并同一角色下内容高度重复的记忆，返回被合并掉的条数。
+) -> list[_DedupeGroup]:
+    """在一致读快照中规划近重复合并，返回规范正文及副本列表。
 
     合并策略（保守优先）：
       - 只在同类型、同角色内比较，跨类型不合并（工作记忆和情景记忆本来就不是一回事）；
@@ -575,12 +609,7 @@ def _run_dedupe(
         group for partition in partitions.values()
         for group in cluster_by_similarity(partition, threshold, respect_type=True)
     ]
-    if not clusters:
-        return 0
-
-    now = clock.now()
-    merged = 0
-
+    plan = []
     for group in clusters:
         canonical, duplicates = _choose_canonical(group)
         body, importance, sources = _merge_group(canonical, duplicates)
@@ -591,15 +620,27 @@ def _run_dedupe(
                 for interval in intervals:
                     if interval not in target:
                         target.append(interval)
+        plan.append(_DedupeGroup(replace(canonical, body=body, body_text="", importance=importance,
+                                         source_event_ids=sources, source_spans=spans), duplicates))
+    return plan
+
+
+def _run_dedupe(db: Database, plan: list[_DedupeGroup], clock: Clock,
+                vector_index: VectorIndex | None, prepared_vectors: PreparedVectors | None) -> int:
+    repos = db.repositories
+    now = clock.now()
+    merged = 0
+    for group in plan:
+        canonical, duplicates = group.canonical, group.duplicates
 
         with db.transaction():
             repos.memories.update_content(
                 canonical.memory_id,
-                body,
+                canonical.body,
                 now,
-                importance=importance,
-                source_event_ids=sources,
-                source_spans=spans,
+                importance=canonical.importance,
+                source_event_ids=canonical.source_event_ids,
+                source_spans=canonical.source_spans,
             )
             for duplicate in duplicates:
                 repos.memories.update_status(duplicate.memory_id, MemoryStatus.SUPERSEDED, now)
@@ -617,7 +658,7 @@ def _run_dedupe(
         if vector_index is not None:
             refreshed = repos.memories.get(canonical.memory_id)
             if refreshed is not None:
-                vector_index.index_memory(refreshed, now)
+                vector_index.index_memory(refreshed, now, prepared=prepared_vectors)
 
     return merged
 

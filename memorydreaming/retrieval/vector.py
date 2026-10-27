@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import json
+from types import MappingProxyType
+from typing import Mapping, Sequence
 
 from ..clock import utcnow
 from ..errors import SourceRevisionChanged
@@ -27,6 +29,13 @@ class VectorHit:
 class VectorSearchResult:
     hits: list[VectorHit] = field(default_factory=list)
     degraded_reasons: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PreparedVectors:
+    """单次操作的内存计算结果；禁止跨正文或跨模型复用，不持久保存。"""
+    namespace: str
+    entries: Mapping[str, tuple[str, tuple[float, ...]]]
 
 
 class VectorIndex:
@@ -90,14 +99,25 @@ class VectorIndex:
             )
         )
 
-    def _store(self, memory_id: str, vector: list[float], now: datetime) -> bool:
+    def _store(self, memory_id: str, vector: Sequence[float], now: datetime) -> bool:
         if not any(vector):
             self.delete(memory_id)
             return False
         self._repos.vectors.upsert(memory_id, self.model_name, self._dim, array("f", vector).tobytes(), now)
         return True
 
-    def index_memory(self, memory: MemoryItem, now: datetime | None = None) -> bool:
+    def prepare_memories(self, memories: list[MemoryItem]) -> PreparedVectors:
+        """耗时编码必须在调用者写事务之外完成。"""
+        if self._db.connection.in_transaction:
+            raise ValueError("向量预计算必须在外部事务之外调用")
+        eligible = [m for m in memories if self._eligible(m) and m.render(400).strip()]
+        texts = [m.render(400).strip() for m in eligible]
+        vectors = self._encode_documents(texts) if texts else []
+        entries = {m.memory_id: (text, tuple(vector)) for m, text, vector in zip(eligible, texts, vectors)}
+        return PreparedVectors(self.model_name, MappingProxyType(entries))
+
+    def index_memory(self, memory: MemoryItem, now: datetime | None = None,
+                     *, prepared: PreparedVectors | None = None) -> bool:
         if not self._eligible(memory):
             self.delete(memory.memory_id)
             return False
@@ -105,7 +125,13 @@ class VectorIndex:
         if not text:
             self.delete(memory.memory_id)
             return False
-        vector = self._encode_documents([text])[0]
+        if prepared is None:
+            vector = self._encode_documents([text])[0]
+        else:
+            entry = prepared.entries.get(memory.memory_id)
+            if prepared.namespace != self.model_name or entry is None or entry[0] != text:
+                raise SourceRevisionChanged("预计算向量与待写正文或模型配置不一致")
+            vector = entry[1]
         return self._store(memory.memory_id, vector, now or utcnow())
 
     def index_memories(self, memories: list[MemoryItem], now: datetime | None = None) -> int:
@@ -169,7 +195,7 @@ class VectorIndex:
         if self._db.connection.in_transaction:
             raise ValueError("向量重建必须在外部事务之外调用")
         moment = now or utcnow()
-        with self._db.transaction():
+        with self._db.read_snapshot():
             generation = self._repos.retrieval_cache.generation()
             memories = [m for m in self._repos.memories.list_by_scope(
                 scope, limit=-1, statuses=(MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)
