@@ -1,0 +1,119 @@
+{
+  "type": "object",
+  "required": [
+    "schema_version",
+    "candidates"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": [
+          "memory_type",
+          "body",
+          "candidate_key",
+          "source_span"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_type": {
+            "enum": [
+              "working",
+              "episodic",
+              "semantic",
+              "procedural"
+            ]
+          },
+          "body": {
+            "type": "object"
+          },
+          "candidate_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "epistemic_status": {
+            "enum": [
+              "explicit_setting",
+              "user_report",
+              "observed_interaction",
+              "inferred"
+            ]
+          },
+          "modality": {
+            "enum": [
+              "occurred",
+              "intention",
+              "hypothetical",
+              "quoted",
+              "fictional"
+            ]
+          },
+          "importance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "source_span": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "source_quote": {
+            "type": "string",
+            "minLength": 1
+          },
+          "occurred_start": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "occurred_end": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "occurred_precision": {
+            "enum": [
+              "exact",
+              "day",
+              "week",
+              "month",
+              "year",
+              "coarse",
+              "unknown"
+            ]
+          },
+          "valid_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

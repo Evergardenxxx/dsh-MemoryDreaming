@@ -1939,20 +1939,30 @@ class JobRepository:
     def fail(
         self, job_id: str, claim_token: str, error: str, now: datetime,
         *, retry_base_seconds: float = 5, retry_max_seconds: float = 300,
+        retryable: bool = True, retry_after_seconds: float | None = None,
     ) -> None:
         """带凭证确认失败，重试使用有上限的指数退避。需在事务内调用。"""
         if not 0 < retry_base_seconds <= retry_max_seconds < float("inf"):
             raise ValueError("重试间隔必须为有限正数，且上限不小于基础间隔")
+        if not isinstance(retryable, bool):
+            raise ValueError("retryable 必须为布尔值")
+        if retry_after_seconds is not None and (
+            isinstance(retry_after_seconds, bool) or not isinstance(retry_after_seconds, (int, float))
+            or not 0 <= retry_after_seconds <= 86400
+        ):
+            raise ValueError("retry_after_seconds 必须在 0..86400 秒之间")
         self.assert_owned(job_id, claim_token, now)
         row = self._conn.execute(
             "SELECT attempts FROM consolidation_jobs WHERE job_id = ?", (job_id,),
         ).fetchone()
         delay = min(retry_max_seconds, retry_base_seconds * 2 ** min(row["attempts"] - 1, 30))
+        # 服务端的最早重试时间可长于本地退避上限，持久保存而非阻塞 worker。
+        delay = max(delay, retry_after_seconds or 0) if retryable else 0
         self._owned_update(
             job_id, claim_token, now,
-            "status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END, "
+            "status = CASE WHEN ? AND attempts < max_attempts THEN 'pending' ELSE 'failed' END, "
             "last_error = ?, available_at = ?, claim_token = NULL, lease_until = NULL",
-            [error[:2000], to_utc_iso(now + timedelta(seconds=delay))],
+            [int(retryable), error[:2000], to_utc_iso(now + timedelta(seconds=delay))],
         )
 
     def stats(self, now: datetime) -> dict[str, int]:

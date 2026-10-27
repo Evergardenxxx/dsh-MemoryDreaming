@@ -47,14 +47,19 @@ class MemoryFormationPolicy:
             if not isinstance(body["what_happened"], str) or not body["what_happened"].strip():
                 raise ValueError("episodic 正文的 what_happened 必须为非空字符串")
         elif memory_type is MemoryType.WORKING:
-            if not isinstance(body["open_loops"], list) or not isinstance(body["active_entities"], list):
-                raise ValueError("working 正文的 open_loops/active_entities 必须为数组")
-            if not str(body.get("goal", "")).strip() and not any(str(item).strip() for item in body["open_loops"]):
+            if any(not isinstance(body[name], str) for name in ("goal", "checkpoint_note")):
+                raise ValueError("working 正文的 goal/checkpoint_note 必须为字符串")
+            if any(not isinstance(body[name], list) or
+                   any(not isinstance(item, str) or not item.strip() for item in body[name])
+                   for name in ("open_loops", "active_entities")):
+                raise ValueError("working 正文的 open_loops/active_entities 必须为非空字符串数组")
+            if not body["goal"].strip() and not body["open_loops"]:
                 raise ValueError("working 正文至少需要 goal 或 open_loops")
         else:
             if not isinstance(body["trigger"], str) or not body["trigger"].strip():
                 raise ValueError("procedural 正文的 trigger 必须为非空字符串")
-            if not isinstance(body["steps"], list) or not body["steps"] or not all(str(step).strip() for step in body["steps"]):
+            if (not isinstance(body["steps"], list) or not body["steps"]
+                    or not all(isinstance(step, str) and step.strip() for step in body["steps"])):
                 raise ValueError("procedural 正文的 steps 必须为非空数组")
         return body
 

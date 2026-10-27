@@ -27,6 +27,7 @@ from typing import Any, Protocol
 from .clock import Clock, ensure_utc
 from .errors import JobLeaseLost, SourceRevisionChanged
 from .formation import MemoryFormationPolicy
+from .llm_extractor import LLMExtractionError
 from .models import (
     EpistemicStatus,
     EventRecord,
@@ -261,12 +262,16 @@ def run_pending_jobs(
                     repos.jobs.fail(
                         job.job_id, job.claim_token, str(exc), clock.now(),
                         retry_base_seconds=retry_base_seconds, retry_max_seconds=retry_max_seconds,
+                        retryable=exc.retryable if isinstance(exc, LLMExtractionError) else True,
+                        retry_after_seconds=exc.retry_after_seconds if isinstance(exc, LLMExtractionError) else None,
                     )
                     repos.journal.append(
                         "consolidation.failed",
                         scope=job.scope,
                         entity_id=job.job_id,
-                        payload={"job_type": job.job_type, "error_digest": repos.journal.payload_digest({"error": str(exc)})},
+                        payload={"job_type": job.job_type, "error_digest": repos.journal.payload_digest({"error": str(exc)}),
+                                 **({"error_code": exc.code, "retryable": exc.retryable}
+                                    if isinstance(exc, LLMExtractionError) else {})},
                         now=clock.now(),
                         idempotency_key=f"job:{job.job_id}:attempt:{job.attempts}:failed",
                     )
@@ -514,7 +519,8 @@ def _build_memory(draft: MemoryDraft, event: EventRecord, clock: Clock) -> Memor
         source_speaker=draft.source_speaker or event.speaker,
         epistemic_status=draft.epistemic_status,
         modality=draft.modality,
-        occurred_start=draft.occurred_start or event.occurred_at,
+        occurred_start=(draft.occurred_start if draft.occurred_precision == "unknown"
+                        else draft.occurred_start or event.occurred_at),
         occurred_end=draft.occurred_end,
         occurred_precision=draft.occurred_precision,
         valid_from=draft.valid_from,
