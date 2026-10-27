@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeepSeekHarnessPluginTest(unittest.TestCase):
-    def run_plugin(self, script, config=None):
+    def run_plugin(self, script, config=None, inspect_database=None):
         node = shutil.which("node")
         if node is None:
             self.skipTest("node 不在 PATH 中")
@@ -41,6 +41,8 @@ try { %SCRIPT% } finally { await h.handlers.get('dispose')(); }
             with closing(sqlite3.connect(path)) as connection:
                 events = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
                 deliveries = connection.execute("SELECT COUNT(*) FROM host_deliveries").fetchone()[0]
+                if inspect_database is not None:
+                    inspect_database(connection)
             return events, deliveries
 
     def test_native_embedding_config_reaches_bridge_and_reports_fallback(self):
@@ -212,6 +214,135 @@ await assert.rejects(() => h.dispatch(changed), { code: 'MEMORY_BUDGET_EXCEEDED'
 // Even if bookkeeping says skipped, actual retained memory must not bypass unknown limits.
 s.setContext(undefined);
 await assert.rejects(() => h.dispatch(request), { code: 'REQUEST_BUDGET_UNAVAILABLE' });
+''')
+
+    def test_cancelled_turn_saves_committed_visible_prefix_once(self):
+        def check(connection):
+            row = connection.execute("SELECT delivery_state FROM host_deliveries").fetchone()
+            self.assertEqual(row[0], "interrupted")
+            self.assertEqual(connection.execute("SELECT content FROM events WHERE speaker='character'").fetchone()[0], "已显示的半句话")
+
+        events, deliveries = self.run_plugin(r'''
+const s = h.session('cancelled');
+const controller = new AbortController();
+await h.step(s, '讲个故事', 'u1', { signal: controller.signal, turn: 1 });
+controller.abort();
+await h.handlers.get('session/event')(s, { type: 'assistant/message', data: { turn: 1, interrupted: true,
+  message: { id: 'partial-1', content: [{ type: 'reasoning', text: '不可保存的推理' }, { type: 'text', text: '已显示的半句话' }] } } });
+await h.handlers.get('session/event')(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted' } } });
+await h.handlers.get('agent/turn-stopping')({ agent: { session: s }, turn: 1, signal: controller.signal });
+await h.handlers.get('session/disposed')(s);
+''', inspect_database=check)
+        self.assertEqual((events, deliveries), (2, 1))
+
+    def test_old_assistant_turn_cannot_attach_to_new_user(self):
+        def check(connection):
+            row = connection.execute("SELECT e.content,u.content FROM host_deliveries d JOIN events e ON e.event_id=d.event_id JOIN events u ON u.event_id=d.user_event_id").fetchone()
+            self.assertEqual(row, ("新回合回复", "新问题"))
+
+        events, deliveries = self.run_plugin(r'''
+const s = h.session('turn-fence');
+await h.step(s, '旧问题', 'u1', { turn: 1 });
+await h.handlers.get('session/event')(s, { type: 'turn/start', data: { turn: 2 } });
+await h.step(s, '新问题', 'u2', { turn: 2 });
+await h.handlers.get('session/event')(s, { type: 'assistant/message', data: { turn: 1, id: 'old', content: '迟到的旧回复' } });
+await h.handlers.get('agent/turn-stopping')({ agent: { session: s }, turn: 1 });
+await h.handlers.get('session/event')(s, { type: 'assistant/message', data: { turn: 2, id: 'new', content: '新回合回复' } });
+await h.handlers.get('agent/turn-stopping')({ agent: { session: s }, turn: 2 });
+''', inspect_database=check)
+        self.assertEqual((events, deliveries), (3, 1))
+
+    def test_late_metadata_failure_does_not_clear_new_turn_memory(self):
+        self.run_plugin(r'''
+const s = h.session('late-metadata');
+await h.step(s, '旧问题', 'u1', { turn: 1 });
+const original = h.ctx.get;
+let rejectOld, entered;
+const started = new Promise(resolve => { entered = resolve });
+h.ctx.get = () => ({ resolveModelInfo() { entered(); return new Promise((_, reject) => { rejectOld = reject }) } });
+const old = h.step(s, null, null, { turn: 1 });
+await started;
+h.ctx.get = original;
+await h.handlers.get('session/event')(s, { type: 'turn/start', data: { turn: 2 } });
+await h.step(s, '新问题', 'u2', { turn: 2 });
+const current = s.deriveMessages().find(m => m.source.kind === name).content[0].text;
+const count = h.budgets.length;
+rejectOld(new Error('old lookup failure'));
+await old;
+assert.equal(s.deriveMessages().find(m => m.source.kind === name).content[0].text, current);
+assert.equal(h.budgets.length, count);
+''')
+
+    def test_cancel_or_dispose_during_lookup_cannot_install_late_memory(self):
+        self.run_plugin(r'''
+for (const disposeSession of [false, true]) {
+  const s = h.session(`lookup-${disposeSession}`);
+  const controller = new AbortController();
+  let entered;
+  const started = new Promise(resolve => { entered = resolve });
+  h.ctx.get = () => ({ resolveModelInfo() { entered(); return new Promise(() => {}) } });
+  const pending = h.step(s, '先保存输入', 'u1', { signal: controller.signal });
+  await started;
+  if (disposeSession) await h.handlers.get('session/disposed')(s);
+  else controller.abort();
+  await pending;
+  assert.equal(s.deriveMessages().filter(m => m.source.kind === name).length, 0);
+}
+''')
+
+    def test_metadata_lookup_deadline_preserves_user_and_returns_degraded(self):
+        events, _ = self.run_plugin(r'''
+const s = h.session('metadata-timeout');
+h.ctx.get = () => ({ resolveModelInfo() { return new Promise(() => {}) } });
+await h.step(s, '不能挂起的用户输入', 'u1');
+assert.equal(h.budgets.at(-1).memory_status, 'skipped_unavailable');
+assert.equal(s.deriveMessages().filter(m => m.source.kind === name).length, 0);
+''', {"bridgeTimeoutMs": 500})
+        self.assertEqual(events, 1)
+
+    def test_hot_reload_rebinds_retained_user_and_replaces_existing_memory(self):
+        events, deliveries = self.run_plugin(r'''
+const s = h.session('reload');
+await h.step(s, '还记得我吗', 'u1');
+await h.handlers.get('dispose')();
+apply(h.ctx, config);
+await h.handlers.get('session/created')(s);
+await h.step(s, null, null);
+const memory = s.deriveMessages().filter(m => m.source.kind === name);
+assert.equal(memory.length, 1);
+assert.ok(memory[0].content.length);
+await h.handlers.get('session/event')(s, { type: 'assistant/message', data: { id: 'a1', content: '重载后的回复' } });
+await h.handlers.get('agent/turn-stopping')({ agent: { session: s }, turn: 't1' });
+''')
+        self.assertEqual((events, deliveries), (2, 1))
+
+    def test_compaction_notification_does_not_convert_summary_to_user_fact(self):
+        events, _ = self.run_plugin(r'''
+const s = h.session('compacting');
+const request = await h.step(s, '实际用户消息', 'u1');
+await h.handlers.get('session/event')(s, { type: 'compaction/start', seq: 123, data: { compactionId: 'cp1' } });
+// The actual summarizer may reuse the turn signal; skip the conversation guard.
+assert.equal((await h.dispatch({ ...request, maxTokens: 9999999 })).called, true);
+await h.handlers.get('session/event')(s, { type: 'user/message', data: { id: 'summary', role: 'user',
+  source: { kind: 'compaction-checkpoint' }, content: [{ type: 'text', text: '模型生成的压缩摘要' }] } });
+await h.handlers.get('session/event')(s, { type: 'compaction/end', data: { compactionId: 'cp1' } });
+await assert.rejects(() => h.dispatch({ ...request, maxTokens: 9999999 }), { code: 'CONTEXT_WINDOW_EXCEEDED' });
+''')
+        self.assertEqual(events, 1)
+
+    def test_repeated_reload_releases_exit_hooks_and_disposal_is_idempotent(self):
+        self.run_plugin(r'''
+const baseline = process.listenerCount('exit') - 1;
+for (let index = 0; index < 12; index++) {
+  const s = h.session(`reload-${index}`);
+  await h.step(s, '你好', `u-${index}`);
+  const once = h.handlers.get('dispose')();
+  const twice = h.handlers.get('dispose')();
+  assert.equal(once, twice);
+  await once;
+  assert.equal(process.listenerCount('exit'), baseline);
+  if (index < 11) apply(h.ctx, config);
+}
 ''')
 
 

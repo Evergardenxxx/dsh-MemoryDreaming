@@ -38,6 +38,8 @@ T_core + T_working + T_evidence + T_structure <= B_memory
 
 当前：核心字段级来源、宿主记忆消息整体预算、工具 JSON 计量和本轮事件排除已实现。v0.22 原生插件增加完整请求预览、工具步骤重算和发送前总预算检查，详见 [请求预算](request-budget.md)。默认启发式 `CJK字符数 + 其他字符数/4 + 1` 不构成目标模型 token 上界；请求级计数必须应用供应商投影、chat template 和实际 tokenizer，不能用字符串 TokenCounter 替代。
 
+原生生命周期 v0.12 在发布恢复结果前增加 session/state/pending/revision/signal 复核；取消已发送的 bridge 请求会终止共享 worker，其他在途请求明确失败。投递后使用与生成取消独立的幂等请求保存，不从未提交的流式内容猜测事实。状态机及自动验收见 [生命周期工程](native-lifecycle.md)。
+
 ## B. 记忆形成与 LLM 抽取
 
 宿主先保存实际消息，不让模型通过工具伪造 speaker、时间或对话 ID。抽取器只返回结构化候选，来源由后端补全并核验。

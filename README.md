@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.22，schema 21，原生插件逐请求预算预览及发送前总量检查；只替换一个记忆节点，空间不足时仍保存用户事件**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引、可选本地语义模型和变更提议审批；同步纠错与结构化审批也在事务外计算向量。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 505 项工程回归通过；真实 DeepSeek/语义模型质量、目标 tokenizer/供应商投影一致性和真实 Harness 生命周期仍待验收。完整请求检查已接入，默认仍为 estimated，见 [请求预算](docs/request-budget.md)。
+当前状态：**v0.22，schema 21，原生插件逐请求预算预览及发送前总量检查；只替换一个记忆节点，空间不足时仍保存用户事件**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引、可选本地语义模型和变更提议审批；同步纠错与结构化审批也在事务外计算向量。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 525 项工程回归通过；真实 DeepSeek/语义模型质量、目标 tokenizer/供应商投影一致性和真实 Harness 生命周期仍待验收。完整请求检查已接入，默认仍为 estimated，见 [请求预算](docs/request-budget.md)。原生插件 v0.12 增加请求截止时间、取消/退出后进程恢复、迟到结果隔离和中断回复保存，见 [生命周期工程](docs/native-lifecycle.md)。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -31,6 +31,7 @@ MemoryDreaming 不注册工具；记忆默认上限 1200，插件配置范围为
 | [纠错与变更审批](docs/correction-approval.md) | 同步预计算、并发审批、原子回执与清除后幂等重试 |
 | [DeepSeek 请求调度](docs/deepseek-scheduling.md) | 同库共享并发与冷却、请求租约、等待重排及格式修复计数 |
 | [完整请求预算](docs/request-budget.md) | 请求预览、发送前检查、原生消息替换、零预算保存及精度边界 |
+| [原生生命周期](docs/native-lifecycle.md) | 桥接进程监管、取消/超时、中断投递、热重载与故障边界 |
 
 早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)、[候选缓存](docs/retrieval-cache.md) 和 [摘要生命周期](docs/summary-lifecycle.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。Python 和原生插件已实现查询与可选变更提议；仓库中独立可选的 MCP 兼容模块只读，Harness 接入不使用该模块。
 

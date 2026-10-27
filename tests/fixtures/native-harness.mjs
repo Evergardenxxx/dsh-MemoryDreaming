@@ -43,8 +43,8 @@ export function harness() {
       },
     }
   }
-  async function step(session, text, id, { tools = [], pending = [], maxTokens = 8192, sections = [], turn = 't1' } = {}) {
-    const signal = new AbortController().signal, agent = { session }
+  async function step(session, text, id, { tools = [], pending = [], maxTokens = 8192, sections = [], turn = 't1', signal = new AbortController().signal } = {}) {
+    const agent = { session }
     const assembly = { sections, contexts: [], variables: {}, tools }
     await handlers.get('system-prompt/assemble')(assembly, { agent, signal }, async () => assembly)
     const user = text === null ? [] : [{ id, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] }]

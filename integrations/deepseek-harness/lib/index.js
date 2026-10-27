@@ -1,26 +1,12 @@
-import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
 import { countMemory, measureRequest, previewRequest, RequestBudgetError } from './request-budget.js'
 
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const REPO_ROOT = resolve(PACKAGE_ROOT, '..', '..')
+import { BridgeClient, boundedMaxTokens } from './bridge-client.js'
 
 export const name = 'memorydreaming'
 // The plugin uses Cordis lifecycle events directly. It deliberately registers
 // no tools and therefore adds no MCP/tool schema to model requests.
 export const inject = []
-
-const DEFAULT_MAX_TOKENS = 1200
-const MIN_MAX_TOKENS = 128
-const HARD_MAX_TOKENS = 4096
-
-function boundedMaxTokens(value) {
-  return Number.isInteger(value) && value >= MIN_MAX_TOKENS && value <= HARD_MAX_TOKENS
-    ? value
-    : DEFAULT_MAX_TOKENS
-}
 
 function textOfContent(content) {
   if (typeof content === 'string') return content
@@ -51,149 +37,6 @@ function hasMemoryContext(messages) {
   return Array.isArray(messages) && messages.some((message) => textOfContent(message?.content).includes('<memory-context'))
 }
 
-class BridgeClient {
-  constructor(config, logger) {
-    this.config = config
-    this.logger = logger
-    this.child = null
-    this.buffer = ''
-    this.pending = new Map()
-    this.closed = false
-  }
-
-  start() {
-    if (this.child && !this.child.killed) return this.child
-    this.closed = false
-    const python = this.config.pythonCommand ?? process.env.MEMORYDREAMING_PYTHON ?? 'python'
-    const repoPath = this.config.repoPath ?? REPO_ROOT
-    const dbPath = this.config.dbPath ?? resolve(repoPath, '.memorydreaming', 'deepseek-harness.db')
-    const maxTokens = boundedMaxTokens(this.config.maxTokens)
-    const extractor = this.config.extractor === 'deepseek' ? 'deepseek' : 'rules'
-    const args = [
-      '-X', 'utf8', '-m', 'memorydreaming', '--db', dbPath, 'bridge',
-      '--user', String(this.config.userId ?? 'u1'),
-      '--character', String(this.config.characterId ?? 'c1'),
-      '--relationship', String(this.config.relationshipId ?? 'r1'),
-      '--domain', String(this.config.domain ?? 'real'),
-      '--max-tokens', String(maxTokens),
-      '--extractor', extractor,
-    ]
-    if (this.config.autoConsolidation !== false || extractor === 'deepseek') args.push('--auto-consolidation')
-    const env = { ...process.env, PYTHONUTF8: '1' }
-    const embeddingOptions = {
-      embeddingProvider: 'EMBEDDING_PROVIDER',
-      embeddingModelPath: 'EMBEDDING_MODEL_PATH',
-      embeddingRevision: 'EMBEDDING_REVISION',
-      embeddingDim: 'EMBEDDING_DIM',
-      embeddingQueryPrefix: 'EMBEDDING_QUERY_PREFIX',
-      embeddingDocumentPrefix: 'EMBEDDING_DOCUMENT_PREFIX',
-      embeddingMaxSeqLength: 'EMBEDDING_MAX_SEQ_LENGTH',
-      embeddingBatchSize: 'EMBEDDING_BATCH_SIZE',
-      vectorMinScore: 'VECTOR_MIN_SCORE',
-    }
-    for (const [key, suffix] of Object.entries(embeddingOptions)) {
-      if (this.config[key] !== undefined && this.config[key] !== null) {
-        env[`MEMORYDREAMING_${suffix}`] = String(this.config[key])
-      }
-    }
-    const child = spawn(python, args, {
-      cwd: repoPath,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
-    this.child = child
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-    child.stdout.on('data', (chunk) => this.onStdout(chunk))
-    child.stderr.on('data', (chunk) => {
-      const line = String(chunk).trim()
-      if (line) this.logger?.debug?.(`[memorydreaming] ${line}`)
-    })
-    child.on('error', (error) => this.failPending(error))
-    child.on('exit', (code, signal) => {
-      if (this.child !== child) return
-      this.child = null
-      if (!this.closed && (code !== 0 || signal !== null)) {
-        this.failPending(new Error(`memory bridge exited (${code ?? signal ?? 'unknown'})`))
-      }
-    })
-    return child
-  }
-
-  onStdout(chunk) {
-    this.buffer += chunk
-    while (true) {
-      const newline = this.buffer.indexOf('\n')
-      if (newline < 0) return
-      const line = this.buffer.slice(0, newline).trim()
-      this.buffer = this.buffer.slice(newline + 1)
-      if (!line) continue
-      let response
-      try {
-        response = JSON.parse(line)
-      } catch {
-        this.logger?.warn?.('[memorydreaming] bridge emitted invalid JSON')
-        continue
-      }
-      const entry = this.pending.get(String(response.id))
-      if (!entry) continue
-      this.pending.delete(String(response.id))
-      if (response.ok === true) entry.resolve(response.data)
-      else entry.reject(Object.assign(new Error(response.error?.message ?? 'memory bridge request failed'), {
-        code: response.error?.code,
-      }))
-    }
-  }
-
-  failPending(error) {
-    for (const entry of this.pending.values()) entry.reject(error)
-    this.pending.clear()
-  }
-
-  request(op, payload, signal) {
-    if (this.closed) return Promise.reject(new Error('memory bridge is closed'))
-    const child = this.start()
-    const id = randomUUID()
-    return new Promise((resolvePromise, rejectPromise) => {
-      const key = String(id)
-      const onAbort = () => {
-        this.pending.delete(key)
-        rejectPromise(new Error('memory bridge request aborted'))
-      }
-      this.pending.set(key, {
-        resolve: (value) => {
-          signal?.removeEventListener?.('abort', onAbort)
-          resolvePromise(value)
-        },
-        reject: (error) => {
-          signal?.removeEventListener?.('abort', onAbort)
-          rejectPromise(error)
-        },
-      })
-      signal?.addEventListener?.('abort', onAbort, { once: true })
-      try {
-        child.stdin.write(`${JSON.stringify({ id, op, ...payload })}\n`)
-      } catch (error) {
-        this.pending.delete(key)
-        rejectPromise(error)
-      }
-    })
-  }
-
-  async close() {
-    const child = this.child
-    if (!child) return
-    try {
-      await this.request('shutdown', {}, undefined)
-    } catch {
-      child.kill()
-    }
-    this.closed = true
-    this.child = null
-  }
-}
-
 function safeLogger(ctx) {
   return ctx?.logger ?? console
 }
@@ -211,12 +54,16 @@ function stateFor(states, session) {
       memoryMessages: [],
       latestAssistant: '',
       latestAssistantId: null,
-      deliveredTurn: null,
       turn: null,
       errorTurn: null,
       decision: null,
       assembly: null,
       pendingSurfaceUsers: new Set(),
+      lifetime: new AbortController(),
+      requestRevision: 0,
+      deliveryPending: new Map(),
+      delivered: new Set(),
+      latestInterrupted: false,
     }
     states.set(id, state)
   } else {
@@ -239,7 +86,7 @@ function resetUser(state, event) {
   state.memoryMessages = []
   state.latestAssistant = ''
   state.latestAssistantId = null
-  state.deliveredTurn = null
+  state.latestInterrupted = false
   state.errorTurn = null
 }
 
@@ -297,18 +144,109 @@ function reportBudget(ctx, state, stage, budget, memoryStatus) {
   ctx.emit?.('memorydreaming/budget', sessionId(state.session), report)
 }
 
+function scopedSignal(state, signal) {
+  return signal ? AbortSignal.any([signal, state.lifetime.signal]) : state.lifetime.signal
+}
+
+async function boundedLookup(operation, signal, milliseconds) {
+  const controller = new AbortController()
+  const combined = AbortSignal.any([controller.signal, signal])
+  let timer, onAbort
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => { combined.throwIfAborted(); return operation(combined) }),
+      new Promise((_, reject) => {
+        onAbort = () => reject(Object.assign(new Error('Memory metadata lookup stopped'), {
+          code: signal.aborted ? 'ABORTED' : 'METADATA_TIMEOUT',
+        }))
+        combined.addEventListener('abort', onAbort, { once: true })
+        timer = setTimeout(() => controller.abort(), milliseconds)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+    combined.removeEventListener('abort', onAbort)
+  }
+}
+
 export function apply(ctx, config = {}) {
   if (config.enabled === false) return
   const logger = safeLogger(ctx)
   const bridge = new BridgeClient(config, logger)
   const states = new Map()
+  const disposedSessions = new WeakSet()
+  const deliveryTasks = new Set()
+  let disposed = false
+  let disposalPromise
+  const usable = session => !disposed && session && !disposedSessions.has(session) && !isSubagent(session)
+  const live = (state, pending) => usable(state.session) && states.get(sessionId(state.session)) === state
+    && !state.lifetime.signal.aborted && (pending === undefined || state.pendingUser === pending)
+
+  const saveDelivery = (state, turn, deliveryState) => {
+    if (!state?.prepared || !state.userEventId || !state.latestAssistant.trim()) return Promise.resolve()
+    if (state.turn !== null && turn !== undefined && state.turn !== turn) return Promise.resolve()
+    const request = {
+      conversation_id: sessionId(state.session),
+      message_id: String(state.latestAssistantId ?? `assistant-${turn}-${state.pendingUser?.messageId}`),
+      user_event_id: state.userEventId, content: state.latestAssistant,
+      delivery_state: state.latestInterrupted ? 'interrupted' : deliveryState,
+      used_references: [],
+    }
+    const key = JSON.stringify([request.user_event_id, request.message_id])
+    if (state.delivered.has(key)) return Promise.resolve()
+    if (state.deliveryPending.has(key)) return state.deliveryPending.get(key)
+    // Delivery has already happened. Its persistence must not inherit the
+    // cancelled generation signal. Retry the SAME id/payload once after an
+    // uncertain transport outcome; storage provides the atomic idempotency.
+    const task = (async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await bridge.request('after_delivery', request)
+          state.delivered.add(key)
+          while (state.delivered.size > 128) state.delivered.delete(state.delivered.values().next().value)
+          return
+        } catch (error) {
+          if (attempt === 0 && !disposed && ['BRIDGE_EXITED', 'BRIDGE_RESTARTED', 'BRIDGE_IO_ERROR', 'BRIDGE_TIMEOUT'].includes(error.code)) continue
+          logger.warn?.(`[memorydreaming] after_delivery failed: ${error.code ?? 'UNAVAILABLE'}`)
+          return
+        }
+      }
+    })()
+    state.deliveryPending.set(key, task)
+    deliveryTasks.add(task)
+    void task.finally(() => { state.deliveryPending.delete(key); deliveryTasks.delete(task) })
+    return task
+  }
 
   const observeEvent = (session, event) => {
-    if (isSubagent(session)) return
+    if (!usable(session)) return
     const state = stateFor(states, session)
     if (!state) return
     if (event?.type === 'turn/start') {
       state.turn = event.data?.turn
+      state.latestAssistant = ''
+      state.latestAssistantId = null
+      state.latestInterrupted = false
+      state.requestRevision++
+      return
+    }
+    if (event?.type === 'turn/end') {
+      if (event.data?.turn !== undefined && state.turn !== null && event.data.turn !== state.turn) return
+      const kind = event.data?.reason?.kind
+      void saveDelivery(state, event.data?.turn, kind === 'completed' || kind === 'max-tokens' ? 'final' : 'interrupted')
+      state.requestRevision++
+      return
+    }
+    if (event?.type === 'compaction/start') {
+      state.compacting = true
+      // This installed Harness exposes a notification, not an awaited pre-hook.
+      // Best-effort persist the EXISTING activity checkpoint; never treat its
+      // generated compaction summary as new user facts or an approved core.
+      void beforeCompression({ session, idempotency_key: `compaction-${event.data?.compactionId ?? event.seq}` })
+      return
+    }
+    if (event?.type === 'compaction/end') {
+      state.compacting = false
       return
     }
     if (event?.type === 'user/message' && event.data?.source?.kind === 'user') {
@@ -319,20 +257,38 @@ export function apply(ctx, config = {}) {
       return
     }
     if (event?.type === 'assistant/message') {
+      if (event.data?.turn !== undefined && state.turn !== null && event.data.turn !== state.turn) return
       const content = eventContent(event)
       if (content.trim()) {
         state.latestAssistant = content
         state.latestAssistantId = event.data?.id ?? event.data?.message?.id ?? state.latestAssistantId
+        state.latestInterrupted = event.data?.interrupted === true
       }
     }
   }
 
-  ctx.on('session/created', (session) => stateFor(states, session))
+  ctx.on('session/created', (session) => {
+    if (!usable(session)) return
+    const previous = states.get(sessionId(session))
+    if (previous && previous.session !== session) {
+      disposedSessions.add(previous.session)
+      previous.lifetime.abort()
+      previous.requestRevision++
+      states.delete(sessionId(session))
+    }
+    stateFor(states, session)
+  })
   ctx.on('session/event', observeEvent)
-  ctx.on('session/disposed', (session) => {
+  ctx.on('session/disposed', async (session) => {
     const id = sessionId(session)
+    const state = states.get(id)
+    disposedSessions.add(session)
+    if (state?.session !== session) return
     states.delete(id)
-    if (bridge.child) void bridge.request('close_session', { conversation_id: id }).catch(() => {})
+    state.requestRevision++
+    state.lifetime.abort()
+    await saveDelivery(state, state.turn, 'interrupted')
+    if (bridge.child) await bridge.request('close_session', { conversation_id: id }).catch(() => {})
   })
 
   // Verified against the installed Harness: assembly contains sections,
@@ -340,7 +296,7 @@ export function apply(ctx, config = {}) {
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
     const session = context?.agent?.session
-    if (session && !isSubagent(session)) stateFor(states, session).assembly = assembly
+    if (usable(session)) stateFor(states, session).assembly = assembly
     return assembly
   })
 
@@ -349,12 +305,21 @@ export function apply(ctx, config = {}) {
     if (decision?.kind !== 'enter' || !Array.isArray(decision.messages)) return decision
     const agent = payload?.agent
     const session = agent?.session
-    if (!session || isSubagent(session) || payload?.signal?.aborted) return decision
+    if (!usable(session) || payload?.signal?.aborted) return decision
     const state = stateFor(states, session)
+    const revision = ++state.requestRevision
+    if (payload?.turn !== undefined) state.turn = payload.turn
     state.pendingSurfaceUsers.clear()
     // The real user/message surface event is committed AFTER pre-step. Read
     // trusted pending input here too, so the first request restores memory.
-    for (const user of decision.messages.filter((m) => m.source?.kind === 'user')) {
+    const actualUsers = decision.messages.filter((m) => m.source?.kind === 'user')
+    // Hot reload / resume can enter a tool step with no new pending input.
+    // Rebind the last retained real user via the same durable idempotency key.
+    if (actualUsers.length === 0 && !state.pendingUser && typeof session.deriveMessages === 'function') {
+      const previous = session.deriveMessages().filter((m) => m.source?.kind === 'user').at(-1)
+      if (previous) actualUsers.push(previous)
+    }
+    for (const user of actualUsers) {
       state.pendingSurfaceUsers.add(String(user.id))
       resetUser(state, { data: user })
       const pending = state.pendingUser
@@ -365,8 +330,8 @@ export function apply(ctx, config = {}) {
         const stored = await bridge.request('prepare_turn', {
           conversation_id: sessionId(session), message_id: pending.messageId,
           content: pending.content, max_tokens: 0,
-        }, payload?.signal)
-        if (state.pendingUser === pending) {
+        }, state.lifetime.signal)
+        if (live(state, pending) && state.requestRevision === revision) {
           state.prepared = true
           state.userEventId = stored.user_event_id
         }
@@ -374,6 +339,7 @@ export function apply(ctx, config = {}) {
         logger.warn?.(`[memorydreaming] user event persistence failed: ${error.code ?? 'UNAVAILABLE'}`)
       }
     }
+    if (!live(state) || state.requestRevision !== revision || payload?.signal?.aborted) return decision
     state.decision = { ...decision, messages: [...decision.messages] }
     return state.decision
   })
@@ -381,11 +347,14 @@ export function apply(ctx, config = {}) {
   ctx.on('agent/request', async (payload, next) => {
     const route = await next()
     const session = payload?.agent?.session
-    if (!session || isSubagent(session) || payload?.signal?.aborted) return route
+    if (!usable(session) || payload?.signal?.aborted) return route
     const state = stateFor(states, session)
     state.requestSignal = payload?.signal
     if (!state.pendingUser || !state.decision) return route
     const pending = state.pendingUser
+    const revision = ++state.requestRevision
+    const signal = scopedSignal(state, payload?.signal)
+    const current = () => live(state, pending) && state.requestRevision === revision && !signal.aborted
     let memoryMessages = [], status = 'skipped_budget', budget = { status: 'unavailable', count_mode: null }
     try {
       // Metadata lookup is advisory; the final guard uses the bound request's
@@ -393,9 +362,12 @@ export function apply(ctx, config = {}) {
       let metadata = {}
       const llm = ctx.get?.('llm')
       if (typeof llm?.resolveModelInfo === 'function') {
-        const info = await llm.resolveModelInfo(route.provider, route.model, payload?.signal)
+        const info = await boundedLookup(
+          lookupSignal => llm.resolveModelInfo(route.provider, route.model, lookupSignal), signal, bridge.timeoutMs,
+        )
         metadata = { contextWindow: info.context?.contextWindow, defaultMaxTokens: info.defaultMaxTokens }
       }
+      if (!current()) return route
       const preview = previewRequest(session, state.decision, state.assembly, route)
       budget = measureRequest(preview, config, metadata)
       let limit = budget.status === 'fits' ? Math.min(boundedMaxTokens(config.maxTokens), budget.remaining_tokens) : 0
@@ -408,14 +380,14 @@ export function apply(ctx, config = {}) {
           prepared = await bridge.request('prepare_turn', {
             conversation_id: sessionId(session), message_id: pending.messageId,
             content: pending.content, max_tokens: limit,
-          }, payload?.signal)
+          }, signal)
         } catch (error) {
           if (error.code !== 'CONTEXT_BUDGET_TOO_SMALL' || limit === 0) throw error
           limit = 0
           status = 'skipped_minimum_core'
           continue
         }
-        if (state.pendingUser !== pending || payload?.signal?.aborted || states.get(sessionId(session)) !== state) return route
+        if (!current()) return route
         state.prepared = true
         state.userEventId = prepared.user_event_id
         if (limit === 0) break
@@ -435,6 +407,7 @@ export function apply(ctx, config = {}) {
       installMemory(session, memoryMessages, state.decision)
       state.memoryMessages = memoryMessages
     } catch (error) {
+      if (!current()) return route
       // A broken metadata/surface/counter path must still persist real input.
       memoryMessages = []
       state.memoryMessages = []
@@ -442,8 +415,8 @@ export function apply(ctx, config = {}) {
       try {
         const stored = await bridge.request('prepare_turn', {
           conversation_id: sessionId(session), message_id: pending.messageId, content: pending.content, max_tokens: 0,
-        }, payload?.signal)
-        if (state.pendingUser === pending) {
+        }, state.lifetime.signal)
+        if (current()) {
           state.prepared = true
           state.userEventId = stored.user_event_id
         }
@@ -451,6 +424,7 @@ export function apply(ctx, config = {}) {
       budget = { status: 'unavailable', reason: error.code ?? 'REQUEST_PREVIEW_UNAVAILABLE', count_mode: null }
       status = 'skipped_unavailable'
     }
+    if (!current()) return route
     if (!status.startsWith('included') && state.errorTurn !== state.turn) {
       state.errorTurn = state.turn
       logger.warn?.(`[memorydreaming] memory ${status}: ${budget.reason ?? budget.status}`)
@@ -465,8 +439,11 @@ export function apply(ctx, config = {}) {
     const state = states.get(String(options.sessionId))
     // Auxiliary calls (e.g. title generation) may share the session id. Only
     // guard the agent request carrying the turn signal observed above.
-    if (!state || isSubagent(state.session) || !state.requestSignal || state.requestSignal !== options.signal) return next()
+    if (!state || state.compacting || isSubagent(state.session) || !state.requestSignal || state.requestSignal !== options.signal) return next()
     return (async function* () {
+      if (!live(state) || options.signal?.aborted) {
+        throw Object.assign(new Error('Memory request belongs to a closed or cancelled session'), { code: 'ABORTED' })
+      }
       const context = state.session.requestContext?.()
       const metadata = context?.provider === options.provider && context?.model === options.model
         ? { contextWindow: context.contextWindow } : {}
@@ -492,28 +469,15 @@ export function apply(ctx, config = {}) {
 
   ctx.on('agent/turn-stopping', ({ agent, turn, signal }) => {
     const session = agent?.session
-    if (!session || isSubagent(session)) return
-    const state = stateFor(states, session)
-    if (!state?.prepared || !state.userEventId || !state.latestAssistant.trim()) return
-    if (state.deliveredTurn === turn) return
-    state.deliveredTurn = turn
-    void bridge.request('after_delivery', {
-      conversation_id: sessionId(session),
-      message_id: String(state.latestAssistantId ?? `assistant-${turn}`),
-      user_event_id: state.userEventId,
-      content: state.latestAssistant,
-      delivery_state: signal?.aborted ? 'interrupted' : 'final',
-      // The host cannot reliably know which opaque reference the model used;
-      // leaving this empty avoids falsely attributing every injected record.
-      used_references: [],
-    }, signal).catch((error) => logger.warn?.(`[memorydreaming] after_delivery skipped: ${error.message}`))
+    if (!usable(session)) return
+    return saveDelivery(states.get(sessionId(session)), turn, signal?.aborted ? 'interrupted' : 'final')
   })
 
   // 不同 Harness 版本对压缩事件的名称略有差异。收到宿主提供的
   // checkpoint 时先持久化短 handoff；没有 state 时也会保存当前活动快照。
   const beforeCompression = async (payload) => {
     const session = payload?.agent?.session ?? payload?.session
-    if (!session || isSubagent(session)) return
+    if (!usable(session)) return
     const state = stateFor(states, session)
     if (!state) return
     const data = payload?.state ?? payload?.checkpoint ?? null
@@ -524,7 +488,7 @@ export function apply(ctx, config = {}) {
         expected_version: Number.isInteger(payload?.expected_version) ? payload.expected_version : undefined,
         idempotency_key: typeof payload?.idempotency_key === 'string' ? payload.idempotency_key : undefined,
         max_tokens: boundedMaxTokens(config.maxTokens),
-      }, payload?.signal)
+      }, scopedSignal(state, payload?.signal))
     } catch (error) {
       logger.warn?.(`[memorydreaming] pre_compress skipped: ${error.message}`)
     }
@@ -534,9 +498,22 @@ export function apply(ctx, config = {}) {
 
   // Cordis versions expose dispose as an event; process exit is the fallback
   // for older hosts. The bridge is local and has no network listener.
-  if (typeof ctx.on === 'function') ctx.on('dispose', () => bridge.close())
-  process.once('exit', () => {
-    if (bridge.child && !bridge.child.killed) bridge.child.kill()
+  ctx.on('dispose', () => {
+    if (disposalPromise) return disposalPromise
+    for (const state of states.values()) {
+      state.requestRevision++
+      state.lifetime.abort()
+      void saveDelivery(state, state.turn, 'interrupted')
+    }
+    disposed = true
+    states.clear()
+    disposalPromise = (async () => {
+      let timer
+      try {
+        await Promise.race([Promise.allSettled([...deliveryTasks]), new Promise(resolve => { timer = setTimeout(resolve, bridge.shutdownMs) })])
+      } finally { clearTimeout(timer); await bridge.close() }
+    })()
+    return disposalPromise
   })
 }
 

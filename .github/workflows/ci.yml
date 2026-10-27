@@ -32,6 +32,7 @@ jobs:
           python -m compileall -q memorydreaming tests
           node --check integrations/deepseek-harness/lib/index.js
           node --check integrations/deepseek-harness/lib/request-budget.js
+          node --check integrations/deepseek-harness/lib/bridge-client.js
       - name: Test
         run: python -m unittest discover -s tests -q
       - name: Build package

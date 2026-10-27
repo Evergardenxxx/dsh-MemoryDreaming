@@ -14,3 +14,6 @@
         # 请求总预算优先读取供应商元数据；以下是额外预留，不能扩大模型窗口。
         safetyMargin: 512
         requestOverhead: 64
+        bridgeTimeoutMs: 15000
+        bridgeShutdownMs: 2000
+        bridgeMaxPending: 64

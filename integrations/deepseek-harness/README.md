@@ -6,6 +6,8 @@
 
 - `cordis.patch.yml`：把原生 `memorydreaming` 插件挂载到 Harness。
 - `lib/index.js`：Cordis 插件入口；不注册 MCP 工具。
+- `lib/bridge-client.js`：桥接进程监管、请求截止时间、取消与重启。
+- `lib/request-budget.js`：完整请求计量与预算预览。
 - `locale/en.json`、`locale/zh.json`：插件管理器显示名称和描述。
 - `icon.svg`：插件图标。
 
@@ -24,6 +26,12 @@
 MemoryDreaming 不注册工具。v0.11 对每次模型请求做完整预算预览与发送前检查，计入原指令、历史、工具、当前输入和输出预留；记忆仍受 `maxTokens`（默认 1200，128..4096）限制。只替换一个自有 surface 节点，不反复追加快照。预算不足/未知时保存用户消息并跳过恢复，最终超限则在联网前阻止发送。
 
 窗口与默认输出 cap 优先读取供应商元数据，可选 `contextWindow` 收紧窗口、`outputReserve` 增加输出预留、`safetyMargin`（默认 512）与 `requestOverhead`（默认 64）增加余量。默认 **estimated**，真实 DeepSeek tokenizer 尚未接入；可信宿主可提供请求级计数器，见 [预算接口与边界](../../docs/request-budget.md)。基础请求很大时仍需宿主压缩历史或精简其他工具，插件不会替宿主删除它们。
+
+### 生命周期与故障恢复
+
+v0.12 先保存真实用户输入，再恢复资料；每个 bridge 请求默认 15 秒截止时间。取消已发送的请求或超时会终止共享 Python worker，其他在途请求明确失败，后续请求等待退出确认后重启。正常退出未回包、无效回包与管道错误也会清理等待者。`bridgeTimeoutMs` 可设 100..120000，`bridgeShutdownMs` 默认 2000（100..10000），`bridgeMaxPending` 默认 64（1..256）。
+
+取消路径通过真实 `turn/end` 保存已提交的可见回复，回执不继承生成取消信号。热重载可从有效 surface 中最后一条真实用户消息恢复绑定，重复 message_id 不重复入库。安装版 `compaction/start/end` 也已接入，但通知无法保证压缩提交前 handoff 落库。完整状态机、自动验收及剩余边界见 [生命周期指南](../../docs/native-lifecycle.md)。
 
 ### 当前限制
 
