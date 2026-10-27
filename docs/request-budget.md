@@ -74,3 +74,5 @@ apply(ctx, {
 wheel 0.22.0 的 45 个源码/数据文件、npm 0.11.0 的 8 个文件逐项匹配仓库；在临时目录安装 wheel 并解包原生插件后，验证零预算保存 → 同事件恢复 → 投递保存，以及安装后的插件恢复身份 → 工具变大 → 清空记忆 → 拒绝超限请求。没有调用真实 API。CI 增加显式 Node 22 和两份 JS 的语法检查，远程 CI 尚未运行。
 
 仍需真实主程序验收：hook 顺序/热更新、重启/压缩、模型切换、取消/异常退出，以及真实 tokenizer 与文件/图像/工具投影一致性。插件不会压缩宿主历史、卸载其他插件或删除已有工具定义。基础请求已接近 200k 时，只缩小记忆资料无法消除其他来源的占用。
+
+v0.27 / 原生 v0.14 新增可配置的本地 DeepSeek tokenizer 适配，固定模型映射与资产 SHA-256，真实编码文本/工具投影，完整线上请求仍标 estimated；V3 资产不自动用于当前 V4.1。文本/工具投影已与安装版 serialize 对照，文件/图像/签名 replay 明确拒绝，见 [tokenizer 接入](tokenizer-integration.md)。安装版实际 Cordis/agent/compaction 的隔离验收另见 [运行时验收](installed-harness-acceptance.md)。

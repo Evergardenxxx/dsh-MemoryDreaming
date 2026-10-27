@@ -345,6 +345,21 @@ for (let index = 0; index < 12; index++) {
 }
 ''')
 
+    def test_cordis_effect_owns_disposal_without_emitting_dispose_event(self):
+        self.run_plugin(r'''
+await h.handlers.get('dispose')();
+const baseline = process.listenerCount('exit');
+let teardown;
+h.ctx.effect = (setup, label) => { assert.equal(label,'memorydreaming lifecycle'); teardown=setup(); };
+apply(h.ctx,config);
+const s=h.session('effect-owned');
+await h.step(s,'真实 effect 卸载回归','u-effect');
+assert.equal(process.listenerCount('exit'),baseline+1);
+await teardown();
+assert.equal(process.listenerCount('exit'),baseline);
+await teardown();
+''')
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -87,7 +87,9 @@ def run_embedding_evaluation(embedder: Embedder, *, dataset_path: str | Path = D
                   "embedding_namespace": index.model_name, "k": k, "min_score": min_score,
                   "document_count": len(dataset["documents"]), "query_count": len(dataset["queries"]),
                   "status": "ok", "quality_complete": True, "results": [],
-                  "scope": "vector_candidates_only", "dataset_review": "synthetic_not_independently_reviewed"}
+                  "scope": "vector_candidates_only", "dataset_review": (
+                      "synthetic_not_independently_reviewed" if Path(dataset_path).resolve() == DEFAULT_DATASET.resolve()
+                      else "unverified_external_labels")}
         try:
             index.rebuild(scope, now)
             for query in dataset["queries"]:
@@ -125,6 +127,8 @@ def run_embedding_evaluation(embedder: Embedder, *, dataset_path: str | Path = D
                                      "mrr_at_k": average(rows, "reciprocal_rank"),
                                  } for category in ("literal", "paraphrase")}}
         report["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        report["execution_complete"] = report["quality_complete"]
+        report["quality_accepted"] = False  # 裸评估不替代独立校准、人工审查和发布门槛。
         return report
     finally:
         db.close()

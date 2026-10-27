@@ -49,7 +49,7 @@ export function measureRequest(request, config, metadata = {}) {
   }
   const output = Math.max(reserve ?? 0, actualOutput === undefined ? 0 : natural(actualOutput, 'maxTokens', true))
   const input = tokenInput(request)
-  let tokens, mode
+  let tokens, mode, precision
   if (config.requestTokenCounter !== undefined) {
     const counter = config.requestTokenCounter
     if (!counter || !['exact', 'estimated'].includes(counter.mode) || typeof counter.count !== 'function') {
@@ -57,6 +57,12 @@ export function measureRequest(request, config, metadata = {}) {
     }
     tokens = natural(counter.count(input), 'requestTokenCounter result')
     mode = counter.mode
+    if (counter.precision && typeof counter.precision === 'object' && !Array.isArray(counter.precision)) {
+      // Fixed metadata only: never copy model input or arbitrary callback state.
+      precision = Object.fromEntries(['text_tokenization', 'template_fidelity', 'projection', 'tokenizer_revision', 'tokenizer_sha256']
+        .filter(key => typeof counter.precision[key] === 'string' && counter.precision[key].length <= 200)
+        .map(key => [key, counter.precision[key]]))
+    }
   } else {
     tokens = estimateTokens(JSON.stringify(input))
     mode = 'estimated'
@@ -68,6 +74,7 @@ export function measureRequest(request, config, metadata = {}) {
     context_window: window, input_tokens: tokens, output_reserve: output,
     request_overhead: overhead, safety_margin: margin, total_tokens: total,
     remaining_tokens: Math.max(0, window - total),
+    ...(precision ? { precision } : {}),
   }
 }
 

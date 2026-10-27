@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from array import array
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import json
+import math
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
@@ -153,40 +155,77 @@ class VectorIndex:
     def search_with_status(self, scope: Scope, query_text: str, memory_types: list[MemoryType] | None = None,
                            limit: int = 20, min_score: float = 0.3,
                            *, read_filter: ReadFilter | None = None) -> VectorSearchResult:
-        result = VectorSearchResult()
         query_vector = self._encode_query(query_text)
         if not any(query_vector):
-            return result
+            return VectorSearchResult()
+        # Encoding stays outside our read transaction. Once encoded, vector
+        # rows and their final source checks share a single WAL snapshot.
+        snapshot = nullcontext() if self._db.connection.in_transaction else self._db.read_snapshot()
+        with snapshot:
+            return self._search_snapshot(scope, query_vector, memory_types, limit, min_score, read_filter)
+
+    def _eligible_memories(self, memory_ids):
+        """Fetch bounded pages only when their scores could reach the result.
+
+        Ranking vectors never authorizes a record. Every returned item still
+        passes the existing forgetting, evidence and duplicate checks.
+        """
+        for start in range(0, len(memory_ids), 128):
+            ids = memory_ids[start:start + 128]
+            memories = self._repos.memories.fetch_many(ids)
+            for memory_id in ids:
+                memory = memories.get(memory_id)
+                if memory is not None and self._eligible(memory):
+                    yield memory
+
+    def _search_snapshot(self, scope, query_vector, memory_types, limit, min_score, read_filter):
+        result = VectorSearchResult()
         rows = self._repos.vectors.load_scope(scope, self.model_name, memory_types, read_filter=read_filter)
+        query_terms = [(index, value) for index, value in enumerate(query_vector) if value]
+        scores, corrupted = {}, []
         for memory_id, memory_type, blob in rows:
-            memory = self._repos.memories.get(memory_id)
-            if memory is None or not self._eligible(memory):
-                continue
             try:
                 stored = array("f")
                 stored.frombytes(blob)
-                vector = normalized_vector(stored, self._dim)
-                if not any(vector):
+                # The blob is already float32, so the arbitrary-Python-value
+                # coercion checks in normalized_vector are unnecessary here.
+                # hypot validates finite values and computes the same norm
+                # without allocating a second dense Python vector.
+                if len(stored) != self._dim:
+                    raise EmbeddingError("INVALID_EMBEDDING")
+                norm = math.hypot(*stored)
+                if not norm or not math.isfinite(norm):
                     raise EmbeddingError("INVALID_EMBEDDING")
             except (EmbeddingError, ValueError, TypeError):
-                if "VECTOR_INDEX_CORRUPT" not in result.degraded_reasons:
-                    result.degraded_reasons.append("VECTOR_INDEX_CORRUPT")
+                corrupted.append(memory_id)
                 continue
-            score = max(-1.0, min(1.0, sum(q * s for q, s in zip(query_vector, vector))))
+            # Sparse hash queries touch few dimensions; dense semantic queries
+            # still perform a full exact dot product. No approximate shortlist
+            # or source-based candidate cap is used.
+            score = max(-1.0, min(1.0, sum(value * (stored[index] / norm) for index, value in query_terms)))
             if score >= min_score:
-                result.hits.append(VectorHit(memory_id, memory_type, score))
+                scores[memory_id] = (memory_type, score)
+
+        ranked = sorted(scores, key=lambda memory_id: (-scores[memory_id][1], memory_id))
+        for memory in self._eligible_memories(ranked):
+            memory_type, score = scores[memory.memory_id]
+            result.hits.append(VectorHit(memory.memory_id, memory_type, score))
+            if limit > 0 and len(result.hits) >= limit:
+                break
+        # A broken, suppressed record is not an available channel failure.
+        # Preserve the prior diagnostic semantics without N+1 main-row reads.
+        if next(self._eligible_memories(corrupted), None) is not None:
+            result.degraded_reasons.append("VECTOR_INDEX_CORRUPT")
 
         # 旧版没有配置指纹；错配投影要求重建。真实模型还检查完全缺失的投影。
         missing = self._repos.vectors.unindexed_scope(
             scope, self.model_name, memory_types, read_filter=read_filter,
             include_missing=not isinstance(self._embedder, HashingEmbedder),
         )
-        for memory_id in missing:
-            memory = self._repos.memories.get(memory_id)
-            if memory is not None and self._eligible(memory) and memory.render(400).strip():
+        for memory in self._eligible_memories(missing):
+            if memory.render(400).strip():
                 result.degraded_reasons.append("VECTOR_INDEX_INCOMPLETE")
                 break
-        result.hits.sort(key=lambda hit: (-hit.score, hit.memory_id))
         result.hits = result.hits[:limit]
         return result
 

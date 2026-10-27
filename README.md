@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.26，schema 25，原生插件 v0.13**。本轮一次性补齐后台预取/持久指标/状态告警、磁盘投递补偿、跨数据库 DeepSeek 配额、本地编码进程硬超时，以及隔离安装器和开源发布包流程，见 [运维与恢复](docs/operations-and-recovery.md) 和 [安装发布](docs/releasing.md)。核心双时间、摘要历史恢复、批量审批、AND/OR 证据组与受控重新学习均已完成。当前 595 项工程回归通过；真实模型质量、目标 tokenizer 和实际 Harness 桌面验收仍待验证。插件保持原生 Cordis/JSONL，不注册 MCP 工具。
+当前状态：**v0.27，schema 25，原生插件 v0.14**。一万条向量精确扫描优化约 11.5 倍；真实 BGE 中文权重及固定 DeepSeek tokenizer 已实测，校准与验收严格分离；安装版真实 Cordis/agent/tool/compaction/JSONL 10条隔离路径通过，并修复 effect 卸载兼容问题。当前 619 项工程回归通过。尚待独立人工质量数据、DeepSeek 线上抽取、当前 V4.1 完整请求计量及用户 Electron GUI 组合验收，见 [剩余证据](docs/open-problems.md)。插件保持原生 Cordis/JSONL，不注册 MCP 工具。
 
 接入从 [宿主指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 

@@ -67,3 +67,5 @@ python -X utf8 -m unittest discover -s tests -q
 
 
 v0.13 更新：持久磁盘 outbox、重启重放、投递时间保存、遗忘代次 guard 和固定故障码遥测已实现。先前本文件所列“未建立持久 outbox”是 v0.12 的历史边界，现状以 [运维与恢复](operations-and-recovery.md) 为准；实际桌面应用完整验收仍未完成。
+
+v0.14 用安装版实际运行时验收后修复卸载：Cordis4 通过 `ctx.effect` 返回的清理函数释放插件，不会自动发出 dispose 事件；优先使用 effect，只有旧接口回退事件。真实安装版 agent、工具步骤、压缩、取消、供应商失败、卸载重载和进程退出/JSONL 恢复已通过隔离验收，供应商为确定性本地适配器。详见 [安装版运行时验收](installed-harness-acceptance.md)，不代表当前用户 GUI/登录模型已实测。

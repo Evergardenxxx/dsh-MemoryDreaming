@@ -3,6 +3,7 @@ import { countMemory, measureRequest, previewRequest, RequestBudgetError } from 
 
 import { BridgeClient, boundedMaxTokens } from './bridge-client.js'
 import { DeliveryOutbox } from './delivery-outbox.js'
+import { configureLocalTokenizer } from './local-tokenizer.js'
 
 export const name = 'memorydreaming'
 // The plugin uses Cordis lifecycle events directly. It deliberately registers
@@ -174,6 +175,7 @@ async function boundedLookup(operation, signal, milliseconds) {
 
 export function apply(ctx, config = {}) {
   if (config.enabled === false) return
+  config = configureLocalTokenizer(config)
   const logger = safeLogger(ctx)
   const bridge = new BridgeClient(config, logger)
   const outbox = new DeliveryOutbox(config, bridge, logger, report => ctx.emit?.('memorydreaming/health', report))
@@ -496,9 +498,7 @@ export function apply(ctx, config = {}) {
   ctx.on('agent/context-compressing', beforeCompression)
   ctx.on('session/context-compressing', beforeCompression)
 
-  // Cordis versions expose dispose as an event; process exit is the fallback
-  // for older hosts. The bridge is local and has no network listener.
-  ctx.on('dispose', () => {
+  const dispose = () => {
     if (disposalPromise) return disposalPromise
     outbox.close()
     for (const state of states.values()) {
@@ -515,7 +515,12 @@ export function apply(ctx, config = {}) {
       } finally { clearTimeout(timer); await bridge.close() }
     })()
     return disposalPromise
-  })
+  }
+  // Installed Cordis 4 owns teardown via effects; it does not emit a plugin
+  // "dispose" event. Legacy hosts and the small compatibility fixture retain
+  // the event fallback. Both routes return the same bounded disposal promise.
+  if (typeof ctx.effect === 'function') ctx.effect(() => dispose, 'memorydreaming lifecycle')
+  else ctx.on('dispose', dispose)
 }
 
 export const __testing = { textOfContent, hasMemoryContext, boundedMaxTokens, BridgeClient, installMemory }

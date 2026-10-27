@@ -45,3 +45,7 @@ v0.12 先保存真实用户输入，再恢复资料；每个 bridge 请求默认
 ## v0.13 工程能力
 
 已提交的 assistant/message 会先同步保存到数据库旁的磁盘 outbox，再发送 bridge。重启后幂等重放，用户遗忘后 guard 失效的旧投递会清除正文。默认启用有界后台预取，可设置 autoPrefetch: false 关闭；持久指标和告警通过 diagnostics 查看。详见 [运维与恢复](../../docs/operations-and-recovery.md)。这些管理能力不注册模型工具，也不增加常驻上下文目录。
+
+## v0.14 验收与计量
+
+优先用 Cordis4 effect 注册清理，旧接口回退 dispose 事件，避免实际卸载遗留 bridge。已使用安装版真实 agent/tool/compaction/JSONL 模块跑通隔离验收，未操作用户GUI或读取登录凭据，见 [安装版验收](../../docs/installed-harness-acceptance.md)。可显式配置 localTokenizer 运行固定模型/哈希绑定的真实分词；完整远程请求仍标 estimated，当前 V4.1 不能使用 V3 资产代替，详见 [tokenizer接口](../../docs/tokenizer-integration.md)。

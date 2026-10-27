@@ -187,8 +187,11 @@ def run_extraction_evaluation(extractor, *, dataset_path=DEFAULT_DATASET, predic
               "negative_case_errors": totals["negative_case_errors"],
               "false_memory_case_rate": (totals["false_memory_cases"] / totals["negative_cases"]
                                          if totals["negative_cases"] else None),
-              "results": results,
-              "limitations": ["项目内置合成中文回归集，尚未经独立人工复核，不代表真实对话分布",
+              "results": results, "execution_complete": totals["errors"] == 0, "quality_accepted": False,
+              "limitations": [(
+                  "项目内置合成中文回归集，尚未经独立人工复核，不代表真实对话分布"
+                  if Path(dataset_path).resolve() == DEFAULT_DATASET.resolve()
+                  else "外部标注文件未经本评估器核实独立性，不能自动视为真实对话质量证据"),
                               "正文按标注字段字面匹配；同义改写需人工复核，不能据此判断事实真假",
                               "false_memory 仅衡量标注禁止 occurred 的反例；不等于最终回答幻觉率",
                               "空标签采用保守弃记策略；合法的引述/愿望候选也可能被计为标注外输出"]}
