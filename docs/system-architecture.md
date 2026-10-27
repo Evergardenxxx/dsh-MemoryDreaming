@@ -2,6 +2,8 @@
 
 本文按当前代码的真实职责组织，作为后续开发入口。宿主使用原生 Cordis 插件和本地 JSONL bridge；LLM 只接收预算内的资料，不需要了解数据库、任务队列或迁移结构。
 
+面向首次阅读者的SVG总图、Mermaid源图、普通回合及睡眠/苏醒流程见[架构总览](architecture-overview.md)。
+
 ## 运行链路
 
 ```mermaid

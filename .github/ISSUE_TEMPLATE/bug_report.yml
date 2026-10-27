@@ -1,0 +1,50 @@
+name: Bug report / 问题反馈
+description: Report a reproducible memory, lifecycle, installation, or documentation problem.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请用临时库与合成对话复现。不要上传正式数据库、私密连续性档案、API key、完整profile或真实私人对话。
+        Use synthetic messages. For suspected vulnerabilities, follow SECURITY.md.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions / 版本
+      description: Engine, native plugin, Harness, Python, Node, and OS versions when applicable.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 涉及部分
+      options:
+        - Installation / 安装
+        - Recall and sources / 检索与来源
+        - Windows, sleep, wake / 窗口与睡眠苏醒
+        - Role continuity / 角色连续性
+        - Corrections and forgetting / 纠错与遗忘
+        - Budget and lifecycle / 预算与生命周期
+        - Documentation / 文档
+        - Other / 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction / 最小复现
+      description: Exact commands, synthetic input, relevant configuration names, and whether the window was enabled.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior / 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: errors
+    attributes:
+      label: Redacted error codes or logs / 脱敏错误码或日志
+      description: Include only the relevant fragment; remove conversation text, tokens, keys, and identifying paths.
+      render: text

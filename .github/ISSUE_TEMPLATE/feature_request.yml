@@ -1,0 +1,27 @@
+name: Feature request / 功能建议
+description: Describe a concrete use case and how we can verify the result.
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: Please check ROADMAP.md and docs/open-problems.md first. 请先查看路线图与既有待办。
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem / 使用场景与问题
+      description: What triggers the problem, and what do you currently have to do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 希望的行为
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance example / 如何判断完成
+      description: Give a synthetic before/after example, including source, approval, forgetting, and context cost implications where relevant.
+    validations:
+      required: true

@@ -3,7 +3,7 @@
   "version": "0.16.0",
   "private": true,
   "license": "MIT",
-  "description": "Persistent identity and long-term memory tools for DeepSeek Harness",
+  "description": "Native Cordis plugin for persistent role memory and sleep/wake continuity in DeepSeek Harness",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

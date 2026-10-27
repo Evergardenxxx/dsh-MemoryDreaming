@@ -3,9 +3,9 @@
     "memorydreaming": {
       "command": "python",
       "args": [
-        "D:/My_project/MemoryDreaming/examples/run_mcp.py",
+        "D:/Projects/MemoryDreaming/examples/run_mcp.py",
         "--db",
-        "D:/My_project/MemoryDreaming/.memorydreaming/host-demo.db",
+        "D:/Projects/MemoryDreaming/.memorydreaming/host-demo.db",
         "mcp",
         "--user",
         "u1",

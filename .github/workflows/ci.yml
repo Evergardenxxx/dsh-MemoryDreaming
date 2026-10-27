@@ -33,7 +33,7 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install --editable .
       - name: Compile
         run: |
-          python -m compileall -q memorydreaming tests
+          python -m compileall -q memorydreaming examples tests
           node --check integrations/deepseek-harness/lib/index.js
           node --check integrations/deepseek-harness/lib/request-budget.js
           node --check integrations/deepseek-harness/lib/bridge-client.js

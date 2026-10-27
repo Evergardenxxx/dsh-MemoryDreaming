@@ -8,6 +8,8 @@
 # Private continuity archives may contain conversation and recovery material.
 *.continuity.json
 *.continuity-archive.json
+*.snapshot.json
+*.memory-snapshot.json
 *.db
 *.db-shm
 *.db-wal

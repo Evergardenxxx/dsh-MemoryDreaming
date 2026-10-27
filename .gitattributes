@@ -1,0 +1,17 @@
+# Keep source and documentation portable across Windows and Linux checkouts.
+* text=auto
+*.py text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.sql text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.mmd text eol=lf
+*.svg text eol=lf
+*.png binary
+*.jpg binary
+*.zip binary
+*.whl binary
+*.tgz binary

@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="970" viewBox="0 0 1080 970" role="img" aria-labelledby="title desc">
+  <title id="title">MemoryDreaming 系统架构</title>
+  <desc id="desc">DeepSeek Harness 原生插件通过本地 JSONL 桥接调用 MemoryRuntime。引擎管理核心与四类记忆、混合检索、角色投影和睡眠，使用 SQLite 持久化。模型接收预算内资料；本地嵌入和 DeepSeek API 抽取均为可选。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#46657c"/></marker>
+    <style>
+      text { font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif; fill: #182f40; }
+      .title { font-size: 28px; font-weight: 700; }
+      .heading { font-size: 21px; font-weight: 600; }
+      .body { font-size: 18px; }
+      .small { font-size: 16px; fill: #526777; }
+      .box { fill: #fff; stroke: #c5d2dc; stroke-width: 1.5; }
+      .flow { fill: none; stroke: #46657c; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1080" height="970" fill="#f8fafc"/>
+  <text x="36" y="45" class="title">MemoryDreaming · 系统架构</text>
+  <text x="36" y="76" class="small">引擎 0.29.0 / 原生插件 0.16.0 · 持久资料独立于聊天上下文</text>
+
+  <rect x="36" y="110" width="620" height="144" rx="8" fill="#eaf2fa" stroke="#9bb9d2" stroke-width="1.5"/>
+  <text x="60" y="147" class="heading">DeepSeek Harness · 原生 Cordis 插件</text>
+  <text x="60" y="181" class="body">用户窗口默认关闭，真实指令开启 / 关闭 / 睡眠 / 苏醒</text>
+  <text x="60" y="213" class="body">完整请求预算 · 单一记忆节点 · 已投递回复补偿</text>
+  <text x="60" y="239" class="small">index.js / window-control.js / sleep-coordinator.js</text>
+
+  <rect x="736" y="110" width="308" height="144" rx="8" class="box"/>
+  <text x="758" y="147" class="heading">LLM / 模型服务</text>
+  <text x="758" y="181" class="body">前台回复、独立睡眠审阅</text>
+  <text x="758" y="213" class="body">可选 DeepSeek API 抽取</text>
+  <text x="758" y="239" class="small">本地存储 ≠ 模型离线</text>
+  <path d="M656 182 H736" class="flow"/>
+  <text x="670" y="155" class="small">有界</text>
+  <text x="670" y="217" class="small">资料</text>
+
+  <path d="M346 254 V310" class="flow" marker-start="url(#arrow)"/>
+  <text x="363" y="288" class="small">真实输入 / 恢复资料 / 投递回执</text>
+  <rect x="36" y="310" width="620" height="86" rx="8" class="box"/>
+  <text x="60" y="343" class="heading">本地 JSONL Bridge + HostAdapter</text>
+  <text x="60" y="375" class="body">固定用户 / 角色 / 关系 / 领域 · 引用、授权与请求边界</text>
+
+  <rect x="736" y="310" width="308" height="86" rx="8" fill="#eef5f0" stroke="#aec5b6" stroke-width="1.5"/>
+  <text x="758" y="343" class="heading">可选本地语义编码</text>
+  <text x="758" y="375" class="body">独立准备权重 · 超时与降级</text>
+  <path d="M890 396 V446" class="flow" stroke-dasharray="6 5" marker-start="url(#arrow)"/>
+  <path d="M346 396 V446" class="flow" marker-start="url(#arrow)"/>
+
+  <rect x="36" y="446" width="1008" height="288" rx="8" fill="#f0f4f8" stroke="#9bb0c0" stroke-width="1.5"/>
+  <text x="60" y="482" class="heading">MemoryRuntime · 统一资源、事务与领域服务</text>
+  <rect x="60" y="504" width="304" height="88" rx="5" class="box"/>
+  <text x="78" y="536" class="heading">身份/关系与四类记忆</text>
+  <text x="78" y="567" class="body">工作 / 情景 / 语义 / 程序</text>
+  <rect x="388" y="504" width="304" height="88" rx="5" class="box"/>
+  <text x="406" y="536" class="heading">混合检索与来源复核</text>
+  <text x="406" y="567" class="body">时间 / 关键词 / 向量 / 实体 / 融合</text>
+  <rect x="716" y="504" width="304" height="88" rx="5" class="box"/>
+  <text x="734" y="536" class="heading">后台整理与任务恢复</text>
+  <text x="734" y="567" class="body">抽取 / 去重 / 摘要 / 租约 / 退避</text>
+
+  <rect x="60" y="610" width="304" height="100" rx="5" class="box"/>
+  <text x="78" y="643" class="heading">角色连续性投影</text>
+  <text x="78" y="674" class="body">自传 / 承诺 / 偏好 / 受控成长</text>
+  <text x="78" y="699" class="small">来源 + 用户审批 + 版本 + 撤回</text>
+  <rect x="388" y="610" width="304" height="100" rx="5" class="box"/>
+  <text x="406" y="643" class="heading">睡眠与苏醒</text>
+  <text x="406" y="674" class="body">分批审阅 / 虚构梦 / 连续性卡</text>
+  <text x="406" y="699" class="small">梦独立保存，不作为事实依据</text>
+  <rect x="716" y="610" width="304" height="100" rx="5" class="box"/>
+  <text x="734" y="643" class="heading">纠错、遗忘与迁移</text>
+  <text x="734" y="674" class="body">失效传播 / 删除屏障 / 私密档案</text>
+  <text x="734" y="699" class="small">主动队列默认关闭，待接推送渠道</text>
+
+  <path d="M1020 545 H1060 V182 H1044" class="flow" stroke-dasharray="6 5"/>
+  <path d="M540 734 V796" class="flow" marker-start="url(#arrow)"/>
+  <text x="559" y="771" class="small">原子提交 / 读取时复核</text>
+  <rect x="36" y="796" width="1008" height="112" rx="8" class="box"/>
+  <text x="60" y="832" class="heading">SQLite · 本地持久化</text>
+  <text x="60" y="865" class="body">原始事件、记忆、核心、角色投影、历史、任务、回执、遗忘账本与审计链</text>
+  <text x="60" y="892" class="small">FTS / 向量 / 实体 / 检索缓存可重建；私密数据库和恢复档案不进入公开仓库</text>
+  <text x="36" y="946" class="small">实线：主要本地/宿主链路　虚线：可选模型能力　所有读取受作用域、来源、版本与预算约束</text>
+</svg>
