@@ -552,6 +552,7 @@ class MemoryRepository:
         )
         if cursor.rowcount > 0:
             self._record_revision(item.memory_id, "insert", item.recorded_at)
+            EntityRepository(self._conn).index_memory(item, item.recorded_at)
             return item
         return None
 
@@ -764,6 +765,7 @@ class MemoryRepository:
         )
         if cursor.rowcount:
             self._record_revision(memory_id, f"status:{status.value}", now)
+            EntityRepository(self._conn).index_memory(self.get(memory_id), now)
         SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
     def close_validity(
@@ -783,6 +785,7 @@ class MemoryRepository:
         )
         if cursor.rowcount:
             self._record_revision(memory_id, "close_validity", now)
+            EntityRepository(self._conn).index_memory(self.get(memory_id), now)
         SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
     def mark_used(self, memory_ids: Sequence[str], now: datetime) -> None:
@@ -817,6 +820,7 @@ class MemoryRepository:
         )
         if cursor.rowcount:
             self._record_revision(memory_id, "delete", now)
+            EntityRepository(self._conn).remove_memory(memory_id)
             SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
         return cursor.rowcount > 0
 
@@ -913,6 +917,7 @@ class MemoryRepository:
             f"UPDATE memories SET {', '.join(assignments)} WHERE memory_id = ?", params
         )
         self._record_revision(memory_id, "content", now)
+        EntityRepository(self._conn).index_memory(self.get(memory_id), now)
         SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
     def _record_revision(self, memory_id: str, operation: str, now: datetime) -> None:
@@ -1658,7 +1663,8 @@ class EntityRepository:
         return indexed
 
     def index_memory(self, memory: MemoryItem, now: datetime) -> int:
-        """把新接受的记忆增量加入索引；这是可重建投影，不改变正文。"""
+        """用当前正文替换提及，避免改写/去重后旧实体残留。"""
+        self.remove_memory(memory.memory_id)
         return self._index_values(memory, now)
 
     def remove_memory(self, memory_id: str) -> None:
@@ -1708,9 +1714,9 @@ class EntityRepository:
         visible, params = scope_sql(scope, "e")
         rows = self._conn.execute(
             "SELECT e.* FROM entities e WHERE " + visible +
-            " AND (e.canonical_name LIKE ? OR e.display_name LIKE ?) "
-            "ORDER BY e.mention_count DESC,e.last_seen DESC LIMIT ?",
-            [*params, f"%{canonical}%", f"%{query.strip()}%", limit],
+            " AND (instr(e.canonical_name, ?) > 0 OR instr(?, e.canonical_name) > 0) "
+            "ORDER BY (e.canonical_name = ?) DESC, e.mention_count DESC,e.last_seen DESC LIMIT ?",
+            [*params, canonical, canonical, canonical, limit],
         ).fetchall()
         result = []
         for row in rows:

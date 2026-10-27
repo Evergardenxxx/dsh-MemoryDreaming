@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.16，增加双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照、实体索引、跨进程候选缓存、摘要派生生命周期和可选变更提议审批**。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 插件直接接入用户消息、模型请求和回合结束事件，不注册 MCP 工具；上下文压缩事件会保存短 handoff。当前 326 个回归测试通过。跨机器打包、真实 Harness 热加载、完整外部备份清理和健康趋势告警仍待完成。
+当前状态：**v0.16.1，schema 19，修复跨窗口缓存失效、摘要撤回保护和实体索引同步**。已支持双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照及可选变更提议审批。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接；上下文压缩时保存短 handoff。当前 351 个回归测试通过。真实中文语义检索、DeepSeek 请求级 token 预算、真实 Harness 生命周期验收和外部备份清理仍待完成。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -27,7 +27,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 | [LLM 接口协议 v1](docs/llm-interface-v1.md) | 宿主钩子、查询/建议工具、JSON Schema、结果/错误、模型适配与样例 |
 | [实体索引](docs/entity-index.md) | 结构化实体投影、作用域隔离、增量更新与重建边界 |
 
-早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。Python 实现查询与核心建议子集；MCP 保持只读，通用修改工具与 HTTP 服务仍未开放。
+早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)、[候选缓存](docs/retrieval-cache.md) 和 [摘要生命周期](docs/summary-lifecycle.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。Python 和原生插件已实现查询与可选变更提议；仓库中独立可选的 MCP 兼容模块只读，Harness 接入不使用该模块。
 
 ## 先跑起来
 
@@ -36,7 +36,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部测试（当前 326 项）
+python -m unittest                # 跑全部测试（当前 351 项）
 python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 python -X utf8 examples/core_proposal.py
 ```
@@ -200,7 +200,7 @@ tests/
 | `memory_vectors` | 向量索引（float32 BLOB） | 写入时显式建立，可 `reindex` |
 | `summaries` | 主题索引卡（概述 + 来源 ID） | 整理任务重建 |
 | `entities` / `entity_mentions` | 结构化实体到记忆的反查索引 | 接受记忆时增量更新，也可按作用域重建 |
-| `retrieval_cache` | 跨进程候选缓存（仅 ID 和版本指纹） | TTL、作用域代次或版本变化后失效 |
+| `retrieval_cache` / `retrieval_state` | 有界跨进程候选缓存 / 本机内容代次 | TTL、内容/遗忘代次或来源版本变化后失效 |
 | `consolidation_jobs` | 异步任务队列 | — |
 
 ## 关键取舍（以及为什么）

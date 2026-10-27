@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from memorydreaming.config import Settings
-from memorydreaming.models import MemoryItem, MemoryType, Scope, new_id
+from memorydreaming.models import MemoryItem, MemoryStatus, MemoryType, Scope, new_id
 from memorydreaming.runtime import MemoryRuntime
 
 from tests.helpers import RuntimeTestCase
@@ -91,6 +91,61 @@ class EntityIndexTest(RuntimeTestCase):
         self.assertEqual(self.runtime.search_entities("灯塔", self.scope), [])
         self.assertEqual(self.count_rows("entities"), 0)
         self.assertEqual(self.count_rows("entity_mentions"), 0)
+
+    def test_sentence_query_recalls_embedded_entity_and_normalizes_unicode(self) -> None:
+        item = self._insert(MemoryType.SEMANTIC, {"subject": "用户", "obj": "月光灯塔"})
+        self.assertEqual(self.runtime.search_entities("你还记得月光灯塔吗", self.scope)[0]["memory_ids"],
+                         [item.memory_id])
+        result = self.runtime.retrieve("你还记得月光灯塔吗", self.scope)
+        self.assertGreater(result.trace.channel_hits.get("entity", 0), 0)
+        self.assertIn(item.memory_id, result.memory_ids())
+        named = self._insert(MemoryType.SEMANTIC, {"obj": "ＡＬＩＣＥ"})
+        self.assertEqual(self.runtime.search_entities("你记得Alice吗", self.scope)[0]["memory_ids"],
+                         [named.memory_id])
+
+    def test_sql_wildcard_characters_are_literal_entity_names(self) -> None:
+        special = self._insert(MemoryType.SEMANTIC, {"obj": "项目_100%"})
+        self._insert(MemoryType.SEMANTIC, {"obj": "海边故事"})
+        for query in ("_", "%", "项目_100%"):
+            with self.subTest(query=query):
+                rows = self.runtime.search_entities(query, self.scope)
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["memory_ids"], [special.memory_id])
+
+    def test_repository_rewrite_replaces_mentions_and_retains_other_memories(self) -> None:
+        first = self._insert(MemoryType.SEMANTIC, {"obj": "旧灯塔"})
+        second = self._insert(MemoryType.SEMANTIC, {"obj": "旧灯塔"})
+        with self.runtime.db.transaction():
+            self.repos.memories.update_content(first.memory_id, {"obj": "新灯塔"}, self.clock.now())
+        self.assertEqual(self.runtime.search_entities("旧灯塔", self.scope)[0]["memory_ids"], [second.memory_id])
+        self.assertEqual(self.runtime.search_entities("旧灯塔", self.scope)[0]["mention_count"], 1)
+        self.assertEqual(self.runtime.search_entities("新灯塔", self.scope)[0]["memory_ids"], [first.memory_id])
+        # 去掉所有结构化实体字段也必须清理旧提及。
+        with self.runtime.db.transaction():
+            self.repos.memories.update_content(first.memory_id, {"scope_note": "不含实体"}, self.clock.now())
+        self.assertEqual(self.runtime.search_entities("新灯塔", self.scope), [])
+
+    def test_repository_retraction_delete_and_restore_keep_entities_in_sync(self) -> None:
+        item = self._insert(MemoryType.SEMANTIC, {"obj": "月光灯塔"})
+        with self.runtime.db.transaction():
+            self.repos.memories.update_status(item.memory_id, MemoryStatus.RETRACTED, self.clock.now())
+        self.assertEqual(self.runtime.search_entities("月光灯塔", self.scope), [])
+        with self.runtime.db.transaction():
+            self.repos.memories.update_status(item.memory_id, MemoryStatus.ACTIVE, self.clock.now())
+        self.assertTrue(self.runtime.search_entities("月光灯塔", self.scope))
+        with self.runtime.db.transaction():
+            self.repos.memories.delete(item.memory_id, self.clock.now())
+        self.assertEqual(self.runtime.search_entities("月光灯塔", self.scope), [])
+        self.assertEqual(self.count_rows("entity_mentions"), 0)
+
+    def test_failed_rewrite_restores_previous_entity_projection(self) -> None:
+        item = self._insert(MemoryType.SEMANTIC, {"obj": "旧灯塔"})
+        with self.assertRaises(RuntimeError):
+            with self.runtime.db.transaction():
+                self.repos.memories.update_content(item.memory_id, {"obj": "新灯塔"}, self.clock.now())
+                raise RuntimeError("rollback")
+        self.assertEqual(self.runtime.search_entities("旧灯塔", self.scope)[0]["memory_ids"], [item.memory_id])
+        self.assertEqual(self.runtime.search_entities("新灯塔", self.scope), [])
 
     def test_scoped_snapshot_preserves_entity_mentions_and_imports_them(self) -> None:
         item = self._insert(MemoryType.SEMANTIC, {"subject": "用户", "obj": "海边"})

@@ -1,6 +1,6 @@
-# 宿主适配与 MCP 只读接入（v0.7）
+# 宿主适配与原生插件接入
 
-这一阶段把 [接口协议 v1](llm-interface-v1.md) 的只读部分做成可执行代码：Python 宿主生命周期、受控引用、`memory_search` / `memory_read`，以及 MCP stdio 服务。仍只依赖 Python 标准库和 SQLite。当前包版本 0.10.0，数据库 schema v10；新增的可选 Python 核心建议与审批、压缩前 handoff 见 [核心候选指南](core-proposals.md)，MCP 仍只读。原生聊天桥接可选启动独立后台整理器，自动消费事件队列。
+宿主适配器实现 [接口协议 v1](llm-interface-v1.md)：Python 生命周期、受控引用、`memory_search` / `memory_read` 和可选变更提议。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，不通过 MCP。当前 Python 包版本 0.16.1，数据库 schema 19；核心建议与审批见 [核心候选指南](core-proposals.md)。原生聊天桥接可启动独立后台整理器，自动消费事件队列。仓库另保留独立可选的 MCP 只读兼容入口。
 
 ## 先运行跨窗口示例
 
