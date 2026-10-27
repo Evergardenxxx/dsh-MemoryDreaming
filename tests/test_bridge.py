@@ -15,6 +15,22 @@ from tests.helpers import RuntimeTestCase
 
 
 class BridgeTest(RuntimeTestCase):
+    def test_zero_budget_remains_zero_even_when_minimum_core_exceeds_bootstrap_limit(self):
+        scope = Scope("u1", "c1", "r1")
+        self.runtime.propose_core_update(scope, "identity", {"说明": "核心设定" * 2000}, "用户设定")
+        server = BridgeServer(self.runtime, user_id="u1", character_id="c1", relationship_id="r1", max_tokens=128)
+        request = {"id": 1, "op": "prepare_turn", "conversation_id": "full-window",
+                   "message_id": "u1", "content": "保存这句话", "max_tokens": 0}
+        prepared = server.handle(request)
+        self.assertTrue(prepared["ok"], prepared)
+        self.assertEqual(prepared["data"]["memory_status"], "skipped_budget")
+        self.assertEqual(prepared["data"]["counted_tokens"], 0)
+        self.assertEqual(len(prepared["data"]["messages"]), 1)
+        self.assertEqual(server.handle(request)["data"]["user_event_id"], prepared["data"]["user_event_id"])
+        for invalid in (False, -1):
+            response = server.handle({**request, "max_tokens": invalid})
+            self.assertEqual(response["error"]["code"], "INVALID_ARGUMENT")
+
     def test_harness_bundle_mounts_native_cordis_entry_without_mcp(self):
         root = Path(__file__).resolve().parents[1] / "integrations" / "deepseek-harness"
         package = json.loads((root / "package.json").read_text(encoding="utf-8"))

@@ -1,6 +1,6 @@
 # 宿主适配与原生插件接入
 
-宿主适配器实现 [接口协议 v1](llm-interface-v1.md)：Python 生命周期、受控引用、`memory_search` / `memory_read` 和可选变更提议。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，不通过 MCP。当前 Python 包版本 0.21.0，数据库 schema 21；核心建议见 [核心候选指南](core-proposals.md)，事实修改与清除审批见 [纠错与变更审批](correction-approval.md)，后台抽取配置见 [DeepSeek 抽取指南](deepseek-extraction.md)。原生聊天桥接可启动独立后台整理器，自动消费事件队列；同库 DeepSeek 任务自动共享[请求调度](deepseek-scheduling.md)。仓库另保留独立可选的 MCP 只读兼容入口。
+宿主适配器实现 [接口协议 v1](llm-interface-v1.md)：Python 生命周期、受控引用、`memory_search` / `memory_read` 和可选变更提议。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，不通过 MCP。当前 Python 包版本 0.22.0，数据库 schema 21；核心建议见 [核心候选指南](core-proposals.md)，事实修改与清除审批见 [纠错与变更审批](correction-approval.md)，后台抽取配置见 [DeepSeek 抽取指南](deepseek-extraction.md)。原生聊天桥接可启动独立后台整理器，自动消费事件队列；同库 DeepSeek 任务自动共享[请求调度](deepseek-scheduling.md)。仓库另保留独立可选的 MCP 只读兼容入口。
 
 ## 先运行跨窗口示例
 
@@ -103,7 +103,7 @@ SessionBinding 来自可信宿主配置，不是模型工具参数。user、char
 
 投递记录保存实际使用的事件、记忆、摘要或核心引用及内容摘要。助手原话再次展开时沿该链复核；如果它曾复述后来被遗忘或修改的依据，会保守拒绝整条回复。宿主必须准确回传 used_references，遗漏的来源无法凭空恢复。没有来源的旧核心字段、活动检查点或任意自由文本仍不能可靠关联遗忘；已发给外部模型的历史也仍需宿主撤销。完整边界见 [事实抑制](fact-suppression.md)。
 
-记忆/事件/摘要尚无完整修订历史：对外 record_version 使用 48 位内容指纹整数，属于不透明标识，不是递增时间线；引用内部比较完整摘要与 epoch。核心、活动沿用数据库的实际版本。不能把该机制解释为已实现双时间回放。
+普通记忆已有 `memory_revisions` 双时间修订回放，核心完整双时间与摘要历史正文回滚仍待完成。对外 record_version 使用 48 位内容指纹整数，属于不透明标识，不是递增时间线；引用内部比较完整摘要与 epoch。核心、活动沿用数据库实际版本；引用机制本身不等于修订日志。
 
 ## 预算、错误与能力
 
@@ -111,7 +111,9 @@ SessionBinding 来自可信宿主配置，不是模型工具参数。user、char
 
 工具按最终序列化的业务 JSON 回应计量，包括字段、引用和预算元数据。模型可请求 128..4096，宿主默认最多 4096；未指定时使用 1200。超出时删除完整低优先资料，返回 partial、截断标记和缺口，不截断 JSON 或引文。连最小错误结构也放不下时抛出 CONTEXT_BUDGET_TOO_SMALL，MCP 在传输层返回错误。
 
-prepare_turn 的 max_tokens 限制前两条记忆消息的序列化整体，包含固定说明、角色标签、围栏、核心和资料。先裁摘要/证据，再裁工作详情和活动目录；最小身份与关系放不下就失败。**它不覆盖宿主原有系统指令、当前输入、历史、工具外壳及输出预留**，这些仍由宿主计算整个模型请求预算。
+prepare_turn 的正 max_tokens 限制前两条记忆消息的序列化整体，包含固定说明、角色标签、围栏、核心和资料。先裁摘要/证据，再裁工作详情和活动目录；最小身份与关系放不下就失败。v0.22 支持可信宿主传 `max_tokens=0`：只保存真实用户事件，返回原用户消息、可关联投递的 user_event_id 和 `memory_status=recovery_status=skipped_budget`，不执行检索/恢复；同一 message_id 可增加预算幂等重试。
+
+SDK 的记忆预算不覆盖其他请求内容；原生插件 v0.11 已在 Node 侧增加原指令、历史、工具外壳、当前输入及输出预留的预览/最终两层核验，且只替换自己的一个原生消息节点。完整请求不会进入 bridge。计量精度、失败策略和诊断见 [完整请求预算](request-budget.md)。
 
 deadline 是宿主传入的带时区 datetime，在执行前后检查；不能强行取消阻塞中的自定义嵌入服务。prepare_turn 后每轮默认最多 4 次工具调用，新轮重置。纯 MCP 无消息生命周期，无法判断用户轮次，不宣称已有每轮配额或自动恢复钩子。超时/存储失败转换为可重试的结构化错误；不向模型回显内部路径或异常正文。
 

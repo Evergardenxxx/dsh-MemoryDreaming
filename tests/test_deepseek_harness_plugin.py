@@ -1,105 +1,218 @@
-"""DeepSeek Harness 原生插件的真实 JSONL bridge 生命周期验收。"""
+"""Native admission order with a real Python JSONL bridge; no provider API calls."""
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 class DeepSeekHarnessPluginTest(unittest.TestCase):
-    def test_native_embedding_config_reaches_bridge_and_reports_fallback(self):
+    def run_plugin(self, script, config=None):
         node = shutil.which("node")
         if node is None:
             self.skipTest("node 不在 PATH 中")
-        root = Path(__file__).resolve().parents[1]
-        entry = (root / "integrations" / "deepseek-harness" / "lib" / "index.js").as_uri()
         with tempfile.TemporaryDirectory() as temp:
-            config = {"repoPath": str(root), "dbPath": str(Path(temp) / "native.db"), "maxTokens": 4096,
-                      "autoConsolidation": False, "embeddingProvider": "sentence-transformers",
-                      "embeddingModelPath": str(Path(temp) / "not-downloaded"), "embeddingRevision": "fixed-v1",
-                      "embeddingDim": 512, "embeddingQueryPrefix": "检索：", "vectorMinScore": 0.65}
-            script = r'''
-import { apply } from "%ENTRY%";
-const handlers = new Map();
-const ctx = { logger: { debug() {}, warn() {} }, on(event, handler) { handlers.set(event, handler); } };
-apply(ctx, %CONFIG%);
-try {
-  const session = { id: 'semantic-window' };
-  await handlers.get('session/created')(session);
-  await handlers.get('session/event')(session, { type: 'turn/start', data: { turn: 't1' } });
-  await handlers.get('session/event')(session, { type: 'user/message', seq: 1,
-    data: { id: 'u1', source: { kind: 'user' }, content: '以前海边散步的故事' } });
-  const result = await handlers.get('agent/pre-step')(
-    { agent: { session }, signal: new AbortController().signal },
-    async () => ({ kind: 'enter', messages: [{ role: 'user', content: '以前海边散步的故事' }] }),
-  );
-  const content = result.messages.find(m => typeof m.content === 'string' && m.content.startsWith('<memory-context')).content;
-  const payload = JSON.parse(content.split('\n')[1]);
-  if (payload.search.retrieval_complete !== false) throw new Error('missing model must report partial');
-  if (!payload.search.degraded_reasons.includes('EMBEDDING_UNAVAILABLE')) throw new Error('embedding config not forwarded');
-  console.log(JSON.stringify({ ok: true }));
-} finally {
-  await handlers.get('dispose')();
-}
-'''.replace("%ENTRY%", entry).replace("%CONFIG%", json.dumps(config, ensure_ascii=False))
-            result = subprocess.run([node, "--input-type=module", "-e", script], cwd=root, text=True,
-                                    encoding="utf-8", capture_output=True, timeout=30,
+            path = Path(temp) / "native.db"
+            options = {"repoPath": str(ROOT), "dbPath": str(path), "autoConsolidation": False, **(config or {})}
+            source = '''
+import assert from 'node:assert/strict';
+import { apply, name, inject } from '%ENTRY%';
+import { harness } from '%FIXTURE%';
+const h = harness();
+const config = %CONFIG%;
+apply(h.ctx, config);
+try { %SCRIPT% } finally { await h.handlers.get('dispose')(); }
+'''.replace("%ENTRY%", (ROOT / "integrations/deepseek-harness/lib/index.js").as_uri()).replace(
+                "%FIXTURE%", (ROOT / "tests/fixtures/native-harness.mjs").as_uri()).replace(
+                "%CONFIG%", json.dumps(options, ensure_ascii=False)).replace("%SCRIPT%", script)
+            result = subprocess.run([node, "--input-type=module", "-e", source], cwd=ROOT,
+                                    text=True, encoding="utf-8", capture_output=True, timeout=30,
                                     env={**os.environ, "MEMORYDREAMING_EMBEDDING_PROVIDER": "hash", "PYTHONUTF8": "1"})
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue(json.loads(result.stdout.splitlines()[-1])["ok"])
+            with closing(sqlite3.connect(path)) as connection:
+                events = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+                deliveries = connection.execute("SELECT COUNT(*) FROM host_deliveries").fetchone()[0]
+            return events, deliveries
 
-    def test_native_lifecycle_starts_bridge_and_closes_session(self):
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("node 不在 PATH 中")
-        root = Path(__file__).resolve().parents[1]
-        entry = (root / "integrations" / "deepseek-harness" / "lib" / "index.js").as_uri()
-        with tempfile.TemporaryDirectory() as temp:
-            db_path = str(Path(temp) / "harness.db").replace("\\", "/")
-            repo_path = str(root).replace("\\", "/")
-            script = r"""
-import { apply, inject, name } from "%ENTRY%";
-const handlers = new Map();
-const ctx = {
-  logger: { debug() {}, warn() {} },
-  on(event, handler) { handlers.set(event, handler); },
-};
-apply(ctx, { repoPath: "%REPO%", dbPath: "%DB%", maxTokens: 99999, autoConsolidation: false });
-if (name !== 'memorydreaming' || inject.length !== 0) throw new Error('plugin exposes tools');
-const session = { id: 'native-window' };
-await handlers.get('session/created')(session);
-await handlers.get('session/event')(session, { type: 'turn/start', data: { turn: 'turn-1' } });
-await handlers.get('session/event')(session, { type: 'user/message', seq: 1,
-  data: { id: 'user-1', source: { kind: 'user' }, content: '我喜欢海边故事。' } });
-const decision = await handlers.get('agent/pre-step')(
-  { agent: { session }, signal: new AbortController().signal },
-  async () => ({ kind: 'enter', messages: [{ role: 'user', content: '我喜欢海边故事。' }] }),
-);
-if (!Array.isArray(decision.messages)) throw new Error('prepare_turn did not return messages');
-await handlers.get('session/event')(session, { type: 'assistant/message',
-  data: { id: 'assistant-1', content: '我记住了。' } });
-handlers.get('agent/turn-stopping')({ agent: { session }, turn: 'turn-1', signal: new AbortController().signal });
-await new Promise((resolve) => setTimeout(resolve, 250));
-await handlers.get('agent/context-compressing')({ agent: { session }, state: { goal: '继续' }, signal: new AbortController().signal });
-await handlers.get('session/disposed')(session);
-await handlers.get('dispose')();
-console.log(JSON.stringify({ ok: true, messageCount: decision.messages.length }));
-""".replace('%ENTRY%', entry).replace('%REPO%', repo_path).replace('%DB%', db_path)
-            result = subprocess.run(
-                [node, "--input-type=module", "-e", script],
-                cwd=root, text=True, encoding="utf-8", capture_output=True,
-                env={**os.environ, "PYTHONUTF8": "1"}, timeout=30,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            lines = [line for line in result.stdout.splitlines() if line.strip()]
-            self.assertTrue(lines, result.stdout)
-            self.assertEqual(json.loads(lines[-1])["ok"], True)
-            self.assertTrue((Path(temp) / "harness.db").exists())
+    def test_native_embedding_config_reaches_bridge_and_reports_fallback(self):
+        self.run_plugin(r'''
+const s = h.session('semantic-window');
+await h.step(s, '以前海边散步的故事', 'u1');
+const m = s.deriveMessages().find(m => m.source.kind === name);
+const context = m.content[0].text.split('<memory-context')[1];
+const data = JSON.parse(context.split('\n')[1]);
+assert.equal(data.search.retrieval_complete, false);
+assert.ok(data.search.degraded_reasons.includes('EMBEDDING_UNAVAILABLE'));
+''', {"maxTokens": 4096, "embeddingProvider": "sentence-transformers", "embeddingModelPath": "missing-local-model",
+      "embeddingRevision": "fixed-v1", "embeddingDim": 512, "embeddingQueryPrefix": "检索：", "vectorMinScore": 0.65})
+
+    def test_native_lifecycle_replaces_memory_and_saves_delivered_reply(self):
+        events, deliveries = self.run_plugin(r'''
+assert.equal(name, 'memorydreaming');
+assert.deepEqual(inject, []);
+const s = h.session('native-window');
+await h.handlers.get('session/created')(s);
+await h.handlers.get('session/event')(s, { type: 'turn/start', data: { turn: 't1' } });
+const request = await h.step(s, '我喜欢海边故事。', 'u1');
+assert.equal((await h.dispatch(request)).called, true);
+assert.equal(request.messages.filter(m => m.source.kind === name).length, 1);
+assert.equal(request.messages.filter(m => m.source.kind === 'user').length, 1);
+assert.equal(request.messages[0].role, 'system');
+assert.equal(request.messages[1].source.kind, name);
+await h.step(s, null, null);
+await h.step(s, '还记得吗？', 'u2');
+assert.equal(s.deriveMessages().filter(m => m.source.kind === name).length, 1);
+await h.handlers.get('session/event')(s, { type: 'assistant/message',
+  data: { message: { id: 'a1', content: [{ type: 'text', text: '我记住了。' }] } } });
+h.handlers.get('agent/turn-stopping')({ agent: { session: s }, turn: 't1', signal: new AbortController().signal });
+await h.handlers.get('agent/context-compressing')({ agent: { session: s }, signal: new AbortController().signal });
+await h.handlers.get('session/disposed')(s);
+''', {"maxTokens": 99999})
+        self.assertEqual(events, 3)
+        self.assertEqual(deliveries, 1)
+
+    def test_tools_and_output_growth_remove_memory_and_veto_oversized_request(self):
+        events, deliveries = self.run_plugin(r'''
+const s = h.session('budget-window');
+let request = await h.step(s, '我喜欢海边故事。', 'u1');
+assert.ok(s.deriveMessages().find(m => m.source.kind === name).content.length);
+await h.dispatch(request);
+const tools = [{ name: 'large-tool', description: 'x'.repeat(50000), parameters: {} }];
+request = await h.step(s, null, null, { tools });
+assert.equal(s.deriveMessages().find(m => m.source.kind === name).content.length, 0);
+assert.equal(h.budgets.at(-1).memory_status, 'skipped_budget');
+let dispatched = false;
+await assert.rejects(() => h.dispatch(request, () => { dispatched = true }), { code: 'CONTEXT_WINDOW_EXCEEDED' });
+assert.equal(dispatched, false);
+request = await h.step(s, null, null);
+assert.ok(s.deriveMessages().find(m => m.source.kind === name).content.length);
+await assert.rejects(() => h.dispatch({ ...request, maxTokens: 20000 }), { code: 'CONTEXT_WINDOW_EXCEEDED' });
+''', {"contextWindow": 12000, "maxTokens": 1200})
+        self.assertEqual(events, 1)
+        self.assertEqual(deliveries, 0)
+
+    def test_no_remaining_budget_still_saves_user_and_delivery(self):
+        events, deliveries = self.run_plugin(r'''
+const s = h.session('full-window');
+await h.step(s, '真实用户消息仍然保存', 'u1');
+assert.equal(s.deriveMessages().filter(m => m.source.kind === name).length, 0);
+assert.equal(h.budgets.at(-1).memory_status, 'skipped_budget');
+await h.handlers.get('session/event')(s, { type: 'assistant/message', data: { id: 'a1', content: '已显示的回复' } });
+h.handlers.get('agent/turn-stopping')({ agent: { session: s }, turn: 't1', signal: new AbortController().signal });
+''', {"contextWindow": 8200})
+        self.assertEqual(events, 2)
+        self.assertEqual(deliveries, 1)
+
+    def test_unknown_limits_skip_memory_and_do_not_claim_verified_budget(self):
+        events, _ = self.run_plugin(r'''
+h.ctx.get = () => undefined;
+const s = h.session('unknown-window');
+const request = await h.step(s, '你好', 'u1');
+assert.equal(h.budgets.at(-1).status, 'unavailable');
+assert.equal(s.deriveMessages().filter(m => m.source.kind === name).length, 0);
+s.setContext(undefined);
+assert.equal((await h.dispatch(request)).called, true);
+assert.equal(h.budgets.at(-1).status, 'unavailable');
+''')
+        self.assertEqual(events, 1)
+
+    def test_native_envelope_keeps_memory_under_hard_cap(self):
+        self.run_plugin(r'''
+const s = h.session('cap-window');
+await h.step(s, '海边故事', 'u1');
+const owned = s.deriveMessages().filter(m => m.source.kind === name);
+assert.ok(owned.length);
+assert.ok(h.budgets.at(-1).total_tokens <= 131072);
+const json = JSON.stringify(owned);
+const chinese = (json.match(/[\u4e00-\u9fff]/gu) ?? []).length;
+assert.ok(Math.floor(chinese + (Array.from(json).length - chinese) / 4) + 1 <= 1200);
+''')
+
+    def test_auxiliary_requests_with_same_session_id_are_not_intercepted(self):
+        self.run_plugin(r'''
+const s = h.session('auxiliary-window');
+const request = await h.step(s, '你好', 'u1');
+const count = h.budgets.length;
+const auxiliary = { ...request, signal: new AbortController().signal, maxTokens: 9999999 };
+assert.equal((await h.dispatch(auxiliary)).called, true);
+assert.equal(h.budgets.length, count);
+''')
+
+    def test_final_bound_metadata_change_is_rechecked(self):
+        self.run_plugin(r'''
+const s = h.session('changed-model');
+const request = await h.step(s, '你好', 'u1');
+s.setContext({ provider: request.provider, model: request.model, contextWindow: 8200 });
+await assert.rejects(() => h.dispatch(request), { code: 'CONTEXT_WINDOW_EXCEEDED' });
+''')
+
+    def test_missing_surface_api_preserves_event_and_reports_unavailable(self):
+        events, _ = self.run_plugin(r'''
+const s = h.session('old-host');
+delete s.surface;
+await h.step(s, '旧宿主上仍保存这句话', 'u1');
+assert.equal(h.budgets.at(-1).memory_status, 'skipped_unavailable');
+assert.equal(h.budgets.at(-1).reason, 'REQUEST_PREVIEW_UNAVAILABLE');
+''')
+        self.assertEqual(events, 1)
+
+    def test_minimum_core_does_not_fit_then_budget_can_be_restored(self):
+        events, _ = self.run_plugin(r'''
+const s = h.session('minimum-core');
+await h.step(s, '海边故事', 'u1');
+assert.equal(h.budgets.at(-1).memory_status, 'skipped_minimum_core');
+assert.equal(s.deriveMessages().filter(m => m.source.kind === name).length, 0);
+config.maxTokens = 1200;
+await h.step(s, null, null);
+assert.ok(h.budgets.at(-1).memory_status.startsWith('included'));
+assert.equal(s.deriveMessages().filter(m => m.source.kind === 'user').length, 1);
+''', {"maxTokens": 128})
+        self.assertEqual(events, 1)
+
+    def test_multiple_queued_user_inputs_are_each_persisted(self):
+        events, _ = self.run_plugin(r'''
+const s = h.session('queued-inputs');
+const second = { role: 'user', id: 'u2', source: { kind: 'user' }, content: [{ type: 'text', text: '第二句话' }] };
+await h.step(s, '第一句话', 'u1', { pending: [second] });
+assert.equal(s.deriveMessages().filter(m => m.source.kind === 'user').length, 2);
+await h.handlers.get('session/event')(s, { type: 'assistant/message', data: { id: 'a1', content: '回应第二句话' } });
+h.handlers.get('agent/turn-stopping')({ agent: { session: s }, turn: 't1', signal: new AbortController().signal });
+''')
+        self.assertEqual(events, 3)
+
+    def test_native_target_request_counter_is_used_at_final_dispatch(self):
+        self.run_plugin(r'''
+config.requestTokenCounter = { mode: 'exact', count(input) {
+  // Deterministic fake, NOT a DeepSeek tokenizer.
+  return Buffer.byteLength(JSON.stringify(input), 'utf8');
+} };
+const s = h.session('exact-counter');
+const request = await h.step(s, '海边故事', 'u1');
+await h.dispatch(request);
+assert.equal(h.budgets.at(-1).count_mode, 'exact');
+assert.ok(h.budgets.at(-1).total_tokens <= 131072);
+''', {"maxTokens": 4096})
+
+    def test_final_guard_checks_actual_retained_memory_cap(self):
+        self.run_plugin(r'''
+const s = h.session('changed-memory');
+const request = await h.step(s, '你好', 'u1');
+const changed = { ...request, messages: request.messages.map(m => m.source.kind === name
+  ? { ...m, content: [{ type: 'text', text: '字'.repeat(5000) }] } : m) };
+await assert.rejects(() => h.dispatch(changed), { code: 'MEMORY_BUDGET_EXCEEDED' });
+// Even if bookkeeping says skipped, actual retained memory must not bypass unknown limits.
+s.setContext(undefined);
+await assert.rejects(() => h.dispatch(request), { code: 'REQUEST_BUDGET_UNAVAILABLE' });
+''')
 
 
 if __name__ == "__main__":

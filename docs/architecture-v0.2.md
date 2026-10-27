@@ -56,7 +56,7 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | 模块 | 输入与输出 | 当前状态 |
 |---|---|---|
 | Runtime / Repositories | Python 数据类型与 SQLite 事务 | 已实现 |
-| Core Resolver | bootstrap、核心版本、活动目录 | 已实现核心键、字段来源和宿主记忆预算；完整供应商请求预算待接入 |
+| Core Resolver | bootstrap、核心版本、活动目录 | 已实现核心键、字段来源、宿主记忆预算和原生请求两层检查；真实 tokenizer 待接入 |
 | Retriever | Query → 证据、摘要、缺口、轨迹 | 已实现规则路由与混合检索 |
 | Consolidation Queue | extract → dedupe → summarize | 已实现租约、原子提交；文件运行时可选独立后台 worker 自动消费 |
 | Extractor / Formation Policy | EventRecord → MemoryDraft[] → validated candidates | 规则版覆盖四类记忆的显式格式；统一候选校验与 DeepSeek `LLMExtractor` 已实现，供应商调用由宿主配置 |
@@ -168,7 +168,7 @@ v0.7 适配器保存用户消息后即可准备回答；该消息作为当前输
 
 采用独立 `TokenCounter`：对最终序列化请求计数，包含工具定义、JSON 开销、资料围栏和预计输出。先保留输出空间和最小核心，再分配工作集/证据预算；过大时裁剪摘要、重复证据、旧对话。最小核心也放不下时返回预算错误，不静默丢掉身份。
 
-v0.7 已对工具业务 JSON 和宿主记忆消息整体计量并允许注入 TokenCounter，默认 estimated。整个供应商模型请求中的其他指令、历史、工具外壳及输出预留仍由宿主计算；未接目标 tokenizer 时不能保证精确 token 上限。
+v0.22 原生插件在 `agent/request` 对历史、待追加输入、系统提示、运行上下文、工具及输出预留构造预览，在 `llm/stream` 对冻结的完整请求核验。只替换一个自有 surface 节点，避免重复追加快照。未知预算/最小核心不足时保存事件并明确跳过恢复，最终超限则阻止发送。详见 [完整请求预算](request-budget.md)；默认仍为 estimated，真实目标 tokenizer 及投影一致性待验收。
 
 接口分三层：宿主生命周期 API、LLM 工具、抽取/嵌入提供者协议。MCP 或 HTTP 只负责承载相同业务契约；适配器声明支持的能力，未完成的功能返回 UNSUPPORTED，不能把普通 JSON 文件宣称为已安装插件。
 

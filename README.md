@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.21，schema 21，DeepSeek 整理任务共享请求并发上限、起始间隔与持久冷却；等待配额不消耗任务尝试次数**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引、可选本地语义模型和变更提议审批；同步纠错与结构化审批也在事务外计算向量。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 487 项工程回归通过；真实 DeepSeek/语义模型质量、完整请求 token 预算及真实 Harness 生命周期仍待验收。
+当前状态：**v0.22，schema 21，原生插件逐请求预算预览及发送前总量检查；只替换一个记忆节点，空间不足时仍保存用户事件**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引、可选本地语义模型和变更提议审批；同步纠错与结构化审批也在事务外计算向量。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 505 项工程回归通过；真实 DeepSeek/语义模型质量、目标 tokenizer/供应商投影一致性和真实 Harness 生命周期仍待验收。完整请求检查已接入，默认仍为 estimated，见 [请求预算](docs/request-budget.md)。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -14,7 +14,7 @@
 
 ### 上下文占用
 
-MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `maxTokens`（默认 1200）注入当前回合所需的记忆资料。检索候选可在多个窗口/进程间共享，但共享表只存 ID 和版本指纹，不存正文，也不会自动注入上下文。Harness 仍会把 profile 中其他已启用 MCP 工具的 schema 一起放入请求；如果上下文仍然很大，应在上下文面板按命名空间检查并关闭不使用的 MCP server（例如 `mcp__rea__*`、ComfyUI 或 PhotoCraft）。
+MemoryDreaming 不注册工具；记忆默认上限 1200，插件配置范围为 128..4096。v0.11 每次模型请求都重新检查原指令、历史、工具、当前输入及输出预留，只替换一个自有记忆节点；余量不足时跳过注入并保留用户事件，最终请求超限时阻止发送。默认计数仍为 estimated。基础请求已很大时需要宿主压缩历史或精简其他工具，详见 [完整请求预算](docs/request-budget.md)。检索缓存不存正文，也不自动注入上下文。
 
 受控修改见 [核心候选与审批](docs/core-proposals.md)，可运行 [重启后审批示例](examples/core_proposal.py)。
 
@@ -30,6 +30,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 | [事务外计算](docs/optimistic-computation.md) | 批量预计算、只读检索快照、租约和内容代次复核 |
 | [纠错与变更审批](docs/correction-approval.md) | 同步预计算、并发审批、原子回执与清除后幂等重试 |
 | [DeepSeek 请求调度](docs/deepseek-scheduling.md) | 同库共享并发与冷却、请求租约、等待重排及格式修复计数 |
+| [完整请求预算](docs/request-budget.md) | 请求预览、发送前检查、原生消息替换、零预算保存及精度边界 |
 
 早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)、[候选缓存](docs/retrieval-cache.md) 和 [摘要生命周期](docs/summary-lifecycle.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。Python 和原生插件已实现查询与可选变更提议；仓库中独立可选的 MCP 兼容模块只读，Harness 接入不使用该模块。
 
@@ -153,7 +154,7 @@ tests/
 
 独立中文抽取回归可运行 `python -X utf8 -m memorydreaming eval-extraction --extractor rules`；配置 API key 后可选 `--extractor deepseek`，也支持保存候选并离线 replay。内置 24 条合成用例的规则基线为 14/24 case 通过、标注匹配召回 28.6%；它暴露能力差距，不代表 DeepSeek 的实际成绩。
 
-如果宿主拥有目标模型的 tokenizer，可以传入 `ExactTokenCounter` 获取真实预算；引擎默认使用标记为 `estimated` 的零依赖估算，不会自行下载供应商 tokenizer。
+宿主可传 `ExactTokenCounter` 对传入字符串准确计数；完整请求还需供应商投影和 chat template，原生插件提供独立请求级计数接口。默认均使用标为 `estimated` 的零依赖估算，不会自行下载 tokenizer，见 [请求预算](docs/request-budget.md)。
 
 ## 一次对话发生了什么
 

@@ -86,7 +86,7 @@ search 示例：
 
 `detail=auto` 交给规划器；overview 优先主题索引再按需展开；evidence 优先逐条依据。detail 不等于扩大权限，也不能绕过时间/来源检查。time_range 不为空时为 `{axis,start,end}`，start/end 必须有时区、start < end，结束点不包含在区间内；当前只执行 `occurred` 轴，`recorded` / `valid` 会明确返回 unsupported。`knowledge_at` 和 `fact_at` 是带时区的 ISO 时间字符串，可分别冻结系统知识和事实有效时间。
 
-宿主若拥有目标供应商 tokenizer，可通过 `ExactTokenCounter` 注入计数函数（例如 `lambda text: len(tokenizer.encode(text))`）。引擎不会内置或下载供应商 tokenizer；未注入时使用显式标记为 `estimated` 的保守估计。预算响应中的 `count_mode` 必须传递给宿主，不能把估计值伪装成精确值。
+宿主若拥有目标供应商 tokenizer，可通过 `ExactTokenCounter` 注入计数函数（例如 `lambda text: len(tokenizer.encode(text))`）。引擎不会内置或下载供应商 tokenizer；未注入时使用显式标记为 `estimated` 的保守估计。预算响应中的 `count_mode` 必须传递给宿主，不能把估计值伪装成精确值。字符串 exact 仅保证传入字符串的计数；完整请求还需供应商投影和 chat template，原生插件的独立请求计数接口见 [请求预算](request-budget.md)。
 
 activity_ref 为 null 时沿用宿主焦点；也可指定活动目录里已授权的引用。选定活动时仍可检索当前关系内无活动归属的共享事实；不能借此读取其他关系或未授权活动。适配器需要实现受控联合检索，不能只把选定活动 ID 填入当前 Scope 后就声称共享事实也已覆盖。
 

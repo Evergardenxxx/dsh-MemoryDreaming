@@ -17,11 +17,13 @@
 
 ## 安装
 
-在 DeepSeek Harness 的插件管理器中安装本目录的绝对路径。安装后重载或重启应用。首次启动会自动创建数据库文件；插件在每个用户回合开始时调用 `HostAdapter.prepare_turn` 注入有限预算的身份、关系和相关记忆，在回合结束时调用 `after_delivery` 保存实际显示的助手回复。检测到 `agent/context-compressing` 或 `session/context-compressing` 时会调用 `pre_compress`，把当前活动压缩成短 handoff，供下一窗口 bootstrap 恢复。
+在 DeepSeek Harness 的插件管理器中安装本目录的绝对路径。安装后重载或重启应用。首次启动会自动创建数据库文件；插件在每个模型请求前调用 `HostAdapter.prepare_turn` 恢复有限预算的身份、关系和相关记忆，在回合结束时调用 `after_delivery` 保存实际显示的助手回复。检测到 `agent/context-compressing` 或 `session/context-compressing` 时会调用 `pre_compress`，把当前活动压缩成短 handoff，供下一窗口 bootstrap 恢复。
 
 ### 上下文占用
 
-MemoryDreaming 不注册工具，因此不会增加工具 schema。它只按 `maxTokens`（默认 1200，插件硬上限 4096）注入当前回合记忆；超出范围的配置会回退到 1200。如果总上下文仍然很大，应在 Harness 的上下文面板按命名空间检查其他 MCP server（例如 `mcp__rea__*`）。
+MemoryDreaming 不注册工具。v0.11 对每次模型请求做完整预算预览与发送前检查，计入原指令、历史、工具、当前输入和输出预留；记忆仍受 `maxTokens`（默认 1200，128..4096）限制。只替换一个自有 surface 节点，不反复追加快照。预算不足/未知时保存用户消息并跳过恢复，最终超限则在联网前阻止发送。
+
+窗口与默认输出 cap 优先读取供应商元数据，可选 `contextWindow` 收紧窗口、`outputReserve` 增加输出预留、`safetyMargin`（默认 512）与 `requestOverhead`（默认 64）增加余量。默认 **estimated**，真实 DeepSeek tokenizer 尚未接入；可信宿主可提供请求级计数器，见 [预算接口与边界](../../docs/request-budget.md)。基础请求很大时仍需宿主压缩历史或精简其他工具，插件不会替宿主删除它们。
 
 ### 当前限制
 

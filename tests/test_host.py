@@ -326,6 +326,20 @@ class HostTest(RuntimeTestCase):
         with self.assertRaises(ValueError):
             self.session.prepare_turn("m1", "不同的消息")
 
+    def test_zero_budget_saves_input_without_reading_core_or_searching(self):
+        with patch.object(self.session, "_search", side_effect=AssertionError("must not search")), \
+                patch.object(self.session, "_bootstrap_data", side_effect=AssertionError("must not recover")):
+            turn = self.session.prepare_turn("no-memory", "真实输入", max_tokens=0)
+        self.assertEqual(turn.messages, [{"role": "user", "content": "真实输入"}])
+        self.assertEqual(turn.memory_status, "skipped_budget")
+        self.assertEqual(turn.recovery_status, "skipped_budget")
+        self.assertEqual(turn.counted_tokens, 0)
+        retry = self.session.prepare_turn("no-memory", "真实输入", max_tokens=4096)
+        self.assertEqual(turn.user_event_id, retry.user_event_id)
+        self.assertEqual(self.count_rows("events"), 1)
+        self.session.after_delivery("a-zero", "已显示", user_event_id=turn.user_event_id)
+        self.assertEqual(self.count_rows("host_deliveries"), 1)
+
     def test_delivery_is_durable_idempotent_and_marks_only_actually_used_memory_once(self):
         item = self.add_scoped(self.scope, "海边约定")
         turn = self.session.prepare_turn("u1", "海边约定呢？")

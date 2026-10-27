@@ -57,7 +57,7 @@ class SessionBinding:
 
 @dataclass
 class PreparedTurn:
-    """user_event_id 仅供宿主关联回执；仅 messages 送给模型。预算覆盖前两项记忆消息。"""
+    """仅 messages 送给模型。零预算只保存用户事件，不恢复或检索记忆。"""
 
     user_event_id: str
     messages: list[dict]
@@ -65,6 +65,7 @@ class PreparedTurn:
     counted_tokens: int
     count_mode: str
     truncated: bool
+    memory_status: str = "included"
 
 
 @dataclass
@@ -608,7 +609,7 @@ class MemorySession:
         self._check(deadline)
         text(message_id, "message_id", 200)
         text(content, "content", 64000)
-        limit = integer(max_tokens, "max_tokens", 1, 65536)
+        limit = integer(max_tokens, "max_tokens", 0, 65536)
         moment = self._moment(occurred_at)
         with self.runtime.db.transaction():
             stored = self.runtime.observe(
@@ -618,6 +619,10 @@ class MemorySession:
             )
         # 消息已保存；即便随后预算/恢复失败也可使用相同 message_id 安全重试。
         self.current_event_id, self._calls = stored.event.event_id, 0
+        if limit == 0:
+            return PreparedTurn(stored.event.event_id, [{"role": "user", "content": content}],
+                                "skipped_budget", 0, self.adapter.counter.mode, False,
+                                memory_status="skipped_budget")
         args = {"query": content, "activity_ref": None, "time_range": None,
                 "detail": "auto", "max_items": 12, "max_tokens": 4096}
         return self._search(args, deadline=deadline, finalize=lambda search: self._prepared_turn_from_search(

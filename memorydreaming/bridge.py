@@ -11,7 +11,7 @@ import json
 import sys
 from dataclasses import asdict
 
-from .host import HostAdapter, SessionBinding
+from .host import HostAdapter, MemorySession, SessionBinding
 from .llm import AdapterError, text
 from .mcp import _reject_constant, _unique_object
 
@@ -36,7 +36,10 @@ class BridgeServer:
         if session is None:
             binding = SessionBinding(self.user_id, self.character_id, self.relationship_id,
                                      conversation_id, domain=self.domain)
-            session = self.adapter.open_session(binding, max_tokens=self.max_tokens)
+            # Lazy recovery: even an oversized core must not prevent saving the
+            # real user event or a zero-budget turn. Explicit bootstrap reads fit
+            # their own budget instead of running before event persistence.
+            session = MemorySession(self.adapter, binding)
             self.sessions[conversation_id] = session
         return session
 
@@ -57,7 +60,7 @@ class BridgeServer:
             if op == "prepare_turn":
                 session = self._session(request["conversation_id"])
                 turn = session.prepare_turn(request["message_id"], request["content"],
-                                            max_tokens=request.get("max_tokens") or self.max_tokens)
+                                            max_tokens=request.get("max_tokens", self.max_tokens))
                 return self._ok(request_id, asdict(turn))
             if op == "after_delivery":
                 session = self._session(request["conversation_id"])
@@ -70,7 +73,7 @@ class BridgeServer:
                 return self._ok(request_id, result)
             if op == "bootstrap":
                 session = self._session(request["conversation_id"])
-                return self._ok(request_id, session.opened)
+                return self._ok(request_id, session.bootstrap(max_tokens=self.max_tokens))
             if op == "pre_compress":
                 session = self._session(request["conversation_id"])
                 result = session.pre_compress(
