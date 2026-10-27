@@ -12,7 +12,7 @@ import sys
 from dataclasses import asdict
 
 from .host import HostAdapter, MemorySession, SessionBinding
-from .llm import AdapterError, text
+from .llm import AdapterError, text, timestamp
 from .mcp import _reject_constant, _unique_object
 
 
@@ -20,9 +20,9 @@ class BridgeServer:
     """为一个固定身份绑定维护多个 conversation session。"""
 
     def __init__(self, runtime, *, user_id: str, character_id: str, relationship_id: str,
-                 domain: str = "real", max_tokens: int = 1200):
+                 domain: str = "real", max_tokens: int = 1200, auto_prefetch=False):
         self.runtime = runtime
-        self.adapter = HostAdapter(runtime)
+        self.adapter = HostAdapter(runtime, background_prefetch=auto_prefetch)
         self.user_id = text(user_id, "user_id", 200)
         self.character_id = text(character_id, "character_id", 200)
         self.relationship_id = text(relationship_id, "relationship_id", 200)
@@ -61,6 +61,8 @@ class BridgeServer:
                 session = self._session(request["conversation_id"])
                 turn = session.prepare_turn(request["message_id"], request["content"],
                                             max_tokens=request.get("max_tokens", self.max_tokens))
+                if request.get("max_tokens") == 0 and self.adapter.prefetch_scheduler and len(request["content"]) <= 4000:
+                    session.schedule_prefetch(request["content"], max_tokens=self.max_tokens)
                 return self._ok(request_id, asdict(turn))
             if op == "after_delivery":
                 session = self._session(request["conversation_id"])
@@ -69,6 +71,8 @@ class BridgeServer:
                     user_event_id=request["user_event_id"],
                     delivery_state=request.get("delivery_state", "final"),
                     used_references=request.get("used_references") or [],
+                    expected_guard=request.get("expected_guard"),
+                    occurred_at=timestamp(request["occurred_at"]) if request.get("occurred_at") else None,
                 )
                 return self._ok(request_id, result)
             if op == "bootstrap":
@@ -92,6 +96,14 @@ class BridgeServer:
                     max_tokens=request.get("max_tokens") or self.max_tokens,
                 )
                 return self._ok(request_id, result)
+            if op == "schedule_prefetch":
+                session = self._session(request["conversation_id"])
+                return self._ok(request_id, session.schedule_prefetch(request["query"],
+                    max_tokens=request.get("max_tokens", self.max_tokens)))
+            if op == "diagnostics":
+                scope = self._session(request["conversation_id"]).binding.scope
+                return self._ok(request_id, {"health": self.runtime.memory_health(scope),
+                    "metrics": self.runtime.operational_trend(scope), "alerts": self.runtime.check_alerts(scope)})
             if op == "close_session":
                 conversation_id = text(request["conversation_id"], "conversation_id", 200)
                 session = self.sessions.pop(conversation_id, None)
@@ -116,6 +128,7 @@ class BridgeServer:
         for session in self.sessions.values():
             session.close()
         self.sessions.clear()
+        self.adapter.close()
 
     def serve(self, input_stream=None, output_stream=None):
         source, target = input_stream or sys.stdin, output_stream or sys.stdout

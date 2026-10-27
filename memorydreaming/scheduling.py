@@ -45,13 +45,26 @@ class DeepSeekRequestScheduler:
 
     def __init__(self, db: Database, clock: Clock, client: DeepSeekClient):
         self.db, self.clock, self.policy = db, clock, client.scheduling_policy
+        self._origin_db = db
+        self._owned_database = None
+        if self.policy.quota_db_path:
+            from pathlib import Path
+            target = Path(self.policy.quota_db_path).expanduser().resolve()
+            if db.path is None or target != db.path.resolve():
+                self._owned_database = Database.open(target)
+                self.db = self._owned_database
         parts = urlsplit(client.base_url)
         endpoint = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), parts.query, ""))
-        self.provider_key = db.repositories.forgetting.fingerprint(json.dumps(
+        self.provider_key = self.db.repositories.forgetting.fingerprint(json.dumps(
             ["deepseek-request-v1", endpoint, client.api_key], separators=(",", ":")))
 
+    def close(self):
+        if self._owned_database:
+            self._owned_database.close()
+            self._owned_database = None
+
     def _outside_transaction(self):
-        if self.db.connection.in_transaction:
+        if self.db.connection.in_transaction or self._origin_db.connection.in_transaction:
             raise StorageError("DeepSeek 请求调度必须在外部事务之外调用")
 
     def _configure(self, now):
@@ -64,11 +77,24 @@ class DeepSeekRequestScheduler:
              to_utc_iso(now), to_utc_iso(now), to_utc_iso(now)),
         )
 
-    def acquire(self, *, attempted=False) -> RequestPermit:
+    def acquire(self, *, attempted=False, token_reservation=0) -> RequestPermit:
         self._outside_transaction()
+        if isinstance(token_reservation, bool) or not isinstance(token_reservation, int) or token_reservation < 0:
+            raise ValueError("token_reservation 必须为非负整数")
         with self.db.transaction():
             now = self.clock.now()
             self._configure(now)
+            self.db.connection.execute(
+                "INSERT INTO provider_budgets VALUES(?,?,?) ON CONFLICT(provider_key) DO UPDATE SET "
+                "rpm=CASE WHEN rpm=0 THEN excluded.rpm WHEN excluded.rpm=0 THEN rpm ELSE MIN(rpm,excluded.rpm) END,"
+                "tpm=CASE WHEN tpm=0 THEN excluded.tpm WHEN excluded.tpm=0 THEN tpm ELSE MIN(tpm,excluded.tpm) END",
+                (self.provider_key, self.policy.requests_per_minute, self.policy.tokens_per_minute))
+            rpm, tpm = self.db.connection.execute("SELECT rpm,tpm FROM provider_budgets WHERE provider_key=?", (self.provider_key,)).fetchone()
+            self.db.connection.execute("DELETE FROM provider_usage WHERE started_at<=?", (to_utc_iso(now-timedelta(seconds=60)),))
+            usage = self.db.connection.execute("SELECT COUNT(*),COALESCE(SUM(reserved_tokens),0),MIN(started_at) FROM provider_usage WHERE provider_key=?",
+                                              (self.provider_key,)).fetchone()
+            if tpm and token_reservation > tpm:
+                raise LLMExtractionError("单次保守 token 预留超过一分钟配额", code="TOKEN_BUDGET_EXCEEDED", retryable=False)
             self.db.connection.execute("DELETE FROM provider_requests WHERE provider_key=? AND lease_until<=?",
                                        (self.provider_key, to_utc_iso(now)))
             row = self.db.connection.execute("SELECT * FROM provider_limits WHERE provider_key=?",
@@ -80,6 +106,9 @@ class DeepSeekRequestScheduler:
             if active[0] >= row["max_concurrent"]:
                 retry_at = max(retry_at, min(from_utc_iso(active[1]), ensure_utc(now) + timedelta(seconds=1)))
                 code = "PROVIDER_BUSY"
+            if (rpm and usage[0] >= rpm) or (tpm and usage[1]+token_reservation > tpm):
+                retry_at = max(retry_at, from_utc_iso(usage[2])+timedelta(seconds=60))
+                code = "PROVIDER_RATE_BUDGET"
             if retry_at > ensure_utc(now):
                 # 抛出异常会回滚配置/过期清理；先提交，再把延后信息交给队列。
                 deferred = ExtractionDeferred(retry_at, code, attempted=attempted)
@@ -91,6 +120,8 @@ class DeepSeekRequestScheduler:
                     (permit.token, permit.provider_key, to_utc_iso(now),
                      to_utc_iso(now + timedelta(seconds=self.policy.lease_seconds))),
                 )
+                self.db.connection.execute("INSERT INTO provider_usage VALUES(?,?,?,?)",
+                    (permit.token, permit.provider_key, to_utc_iso(now), token_reservation))
                 self.db.connection.execute(
                     "UPDATE provider_limits SET next_start_at=?,updated_at=? WHERE provider_key=?",
                     (to_utc_iso(now + timedelta(seconds=row["min_interval_seconds"])), to_utc_iso(now), self.provider_key),
@@ -123,8 +154,8 @@ class DeepSeekRequestScheduler:
         if error is None and not owned:
             raise LLMExtractionError("DeepSeek 请求租约已失效，结果已丢弃", code="REQUEST_LEASE_LOST")
 
-    def call(self, invoke: Callable[[], T], *, attempted=False) -> T:
-        permit = self.acquire(attempted=attempted)
+    def call(self, invoke: Callable[[], T], *, attempted=False, token_reservation=0) -> T:
+        permit = self.acquire(attempted=attempted, token_reservation=token_reservation)
         error = None
         try:
             with self._heartbeat(permit):

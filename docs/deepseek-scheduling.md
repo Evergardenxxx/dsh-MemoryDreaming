@@ -58,3 +58,6 @@ schema 21 新增 provider_limits 和 provider_requests，旧 schema 20 打开后
 机制参考：[Celery rate_limit](https://docs.celeryq.dev/en/stable/userguide/tasks.html#Task.rate_limit) 明确限制默认按 worker 实例计算，共享 API 配额需要统一调度。这里使用单机 SQLite 短事务协调，不需要引入外部消息队列。
 
 当前限制：配额只覆盖同一数据库的调度入口，没有跨数据库/其他应用的账户协调、token/minute 计量、分布式队列、公平调度或持久长期配额趋势；没有硬 HTTP 总时限与供应商侧取消。真实 DeepSeek 账户的吞吐和限流行为仍待验收。
+
+
+v0.26 新增可选跨库共享配额文件（MEMORYDREAMING_DEEPSEEK_QUOTA_DB）、滚动 60 秒 RPM 和保守 token 预留 TPM；输入按 UTF-8 字节/schema/输出 cap 预留，不是目标 tokenizer 的精确用量。见 [运维与恢复](operations-and-recovery.md)。

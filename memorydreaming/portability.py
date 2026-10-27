@@ -60,7 +60,7 @@ TABLES = (
     "journal_entries",
 )
 DERIVED_TABLES = ("memory_vectors", "memories_fts", "retrieval_cache")
-OPERATIONAL_TABLES = ("provider_limits", "provider_requests")
+OPERATIONAL_TABLES = ("provider_limits", "provider_requests", "provider_usage", "provider_budgets", "operational_metrics", "operational_alerts")
 
 PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "core_versions": ("scope_key", "kind", "core_version"),

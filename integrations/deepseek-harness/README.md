@@ -8,10 +8,11 @@
 - `lib/index.js`：Cordis 插件入口；不注册 MCP 工具。
 - `lib/bridge-client.js`：桥接进程监管、请求截止时间、取消与重启。
 - `lib/request-budget.js`：完整请求计量与预算预览。
+- `lib/delivery-outbox.js`：磁盘投递补偿、重放与过期正文清理。
 - `locale/en.json`、`locale/zh.json`：插件管理器显示名称和描述。
 - `icon.svg`：插件图标。
 
-插件使用 `C:\Python314\python.exe` 在本地启动一个受控 JSONL 桥接进程，并把身份绑定为 `u1 / c1 / r1`。数据库位于仓库的 `.memorydreaming/deepseek-harness.db`，不会写入 Harness profile 目录。桥接协议不注册模型工具，也不把 MCP schema 放入上下文；默认同时启动独立连接的后台整理器，自动处理抽取、去重和摘要。
+源码配置使用 PATH 中的 `python`，身份示例绑定为 `u1 / c1 / r1`；推荐运行 `scripts/install.py` 创建隔离环境和明确路径。数据库位于安装目录的 data/，源码开发模式默认使用仓库的 `.memorydreaming/deepseek-harness.db`。桥接协议不注册模型工具，也不把 MCP schema 放入上下文；默认同时启动独立连接的后台整理器，自动处理抽取、去重和摘要。
 
 抽取器默认是零依赖规则版。若要启用 DeepSeek 抽取，在插件配置中设置 `extractor: "deepseek"`，并在 Harness 进程环境中提供 `DEEPSEEK_API_KEY`；可选配置 `MEMORYDREAMING_DEEPSEEK_MODEL`、`MEMORYDREAMING_DEEPSEEK_BASE_URL`、`MEMORYDREAMING_DEEPSEEK_TIMEOUT` 和 `MEMORYDREAMING_DEEPSEEK_MAX_TOKENS`。
 
@@ -19,7 +20,7 @@
 
 ## 安装
 
-在 DeepSeek Harness 的插件管理器中安装本目录的绝对路径。安装后重载或重启应用。首次启动会自动创建数据库文件；插件在每个模型请求前调用 `HostAdapter.prepare_turn` 恢复有限预算的身份、关系和相关记忆，在回合结束时调用 `after_delivery` 保存实际显示的助手回复。检测到 `agent/context-compressing` 或 `session/context-compressing` 时会调用 `pre_compress`，把当前活动压缩成短 handoff，供下一窗口 bootstrap 恢复。
+推荐先按 [安装说明](../../docs/releasing.md) 运行隔离安装器，再在 DeepSeek Harness 插件管理器中选择生成的 plugin 目录。源码开发也可安装本目录绝对路径，但须确保选定 Python 已安装 memorydreaming。安装后重载或重启应用。首次启动会自动创建数据库文件；插件在每个模型请求前调用 `HostAdapter.prepare_turn` 恢复有限预算的身份、关系和相关记忆，在回合结束时调用 `after_delivery` 保存实际显示的助手回复。检测到 `agent/context-compressing` 或 `session/context-compressing` 时会调用 `pre_compress`，把当前活动压缩成短 handoff，供下一窗口 bootstrap 恢复。
 
 ### 上下文占用
 
@@ -35,8 +36,12 @@ v0.12 先保存真实用户输入，再恢复资料；每个 bridge 请求默认
 
 ### 当前限制
 
-- 插件依赖本机 Python 和仓库路径配置，尚未打包成跨机器安装器。
+- v0.13 已提供跨平台隔离安装器和本地离线发布包；Python/Node 和可选权重仍需预先准备。
 - 插件无法可靠知道模型实际使用了哪条不透明引用，因此投递回执暂不增加 `used_references` 热度。
 - 核心候选审批仍需要可信宿主确认；后台抽取可以选择 DeepSeek，真实中文抽取质量仍需验收。
 - 如果当前 Harness 版本没有暴露上下文压缩事件，可由宿主自己的压缩回调向桥接进程发送 `{"op":"pre_compress", "conversation_id":"...", "state":{...}, "expected_version":N}`；插件不会猜测或伪造压缩状态。
 - 可信宿主也可以发送 `{"op":"prefetch", "conversation_id":"...", "query":"..."}` 预热当前窗口缓存；该操作不会向模型返回记忆正文。
+
+## v0.13 工程能力
+
+已提交的 assistant/message 会先同步保存到数据库旁的磁盘 outbox，再发送 bridge。重启后幂等重放，用户遗忘后 guard 失效的旧投递会清除正文。默认启用有界后台预取，可设置 autoPrefetch: false 关闭；持久指标和告警通过 diagnostics 查看。详见 [运维与恢复](../../docs/operations-and-recovery.md)。这些管理能力不注册模型工具，也不增加常驻上下文目录。

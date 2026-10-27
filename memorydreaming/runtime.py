@@ -104,9 +104,18 @@ class MemoryRuntime:
         # 时钟可替换是「可测试」的关键：测试里用 FixedClock 就能模拟时间流逝
         self._clock = clock or SystemClock()
         self._tz = load_timezone(self._settings.timezone)
+        self._owns_embedder = embedder is None
+        if embedder is None and self._settings.embedding_provider == "sentence-transformers":
+            from .retrieval.isolated import IsolatedSentenceTransformerEmbedder
+            embedder = IsolatedSentenceTransformerEmbedder(self._settings.embedding_model_path,
+                revision=self._settings.embedding_revision, dim=self._settings.embedding_dim,
+                query_prefix=self._settings.embedding_query_prefix, document_prefix=self._settings.embedding_document_prefix,
+                max_seq_length=self._settings.embedding_max_seq_length, batch_size=self._settings.embedding_batch_size,
+                timeout_seconds=self._settings.embedding_timeout_seconds)
         embedder = embedder if embedder is not None else embedder_from_settings(self._settings)
         self._db = Database.open(self._settings.db_path)
         self._repos = self._db.repositories
+        self._host_adapters = []
         self._consolidator: ConsolidationWorker | None = None
 
         # 嵌入模型同样可替换。默认的哈希嵌入是零依赖占位实现，
@@ -144,8 +153,13 @@ class MemoryRuntime:
         self.close()
 
     def close(self) -> None:
+        for adapter in self._host_adapters:
+            adapter.close()
+        self._host_adapters.clear()
         if self._consolidator is not None:
             self._consolidator.stop()
+        if self._owns_embedder and hasattr(self._vectors._embedder, "close"):
+            self._vectors._embedder.close()
         self._db.close()
 
     @property
@@ -731,6 +745,14 @@ class MemoryRuntime:
         return [{"snapshot_id": row["snapshot_id"], "captured_at": row["captured_at"],
                  "health": json.loads(row["payload_json"])} for row in rows]
 
+    def operational_trend(self, scope: Scope, *, hours: int = 24) -> list[dict]:
+        from .operations import metric_trend
+        return metric_trend(self, scope, hours)
+
+    def check_alerts(self, scope: Scope) -> list[dict]:
+        from .operations import check_alerts
+        return check_alerts(self, scope)
+
     def rebuild_entities(self, scope: Scope) -> int:
         """从当前有效记忆重建作用域实体索引，返回实体提及数。"""
         with self._db.transaction():
@@ -998,7 +1020,7 @@ class MemoryRuntime:
         affected: set[Scope] = {scope}
         explicit_tables = (
             "activities", "session_handoffs", "events", "memories", "memory_revisions",
-            "summaries", "summary_revisions", "consolidation_jobs", "health_snapshots",
+            "summaries", "summary_revisions", "consolidation_jobs", "health_snapshots", "operational_metrics",
             "entities",
         )
         for table in explicit_tables:
@@ -1018,7 +1040,7 @@ class MemoryRuntime:
         key_tables = ("forgotten_events", "memory_tombstones", "session_handoffs",
                       "scope_mutations", "core_field_tombstones", "core_proposals",
                       "change_proposals", "scope_purges", "relearning_grants", "fact_forgetting_barriers",
-                      "summary_restore_receipts", "proposal_batches")
+                      "summary_restore_receipts", "proposal_batches", "operational_alerts")
         for table in key_tables:
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if "scope_key" not in columns:
@@ -1079,12 +1101,12 @@ class MemoryRuntime:
             self._repos.retrieval_cache.delete_scopes(list(scope_keys))
 
             for table in ("memory_revisions", "memories", "summaries", "summary_revisions", "consolidation_jobs",
-                          "health_snapshots", "entities", "session_handoffs", "events", "activities"):
+                          "health_snapshots", "operational_metrics", "entities", "session_handoffs", "events", "activities"):
                 delete_scoped(table)
             if scope_keys:
                 placeholders = ",".join("?" for _ in scope_keys)
                 for table in ("core_field_tombstones", "core_proposals", "change_proposals",
-                              "memory_tombstones", "scope_purges", "summary_restore_receipts", "proposal_batches"):
+                              "memory_tombstones", "scope_purges", "summary_restore_receipts", "proposal_batches", "operational_alerts"):
                     conn.execute(f"DELETE FROM {table} WHERE scope_key IN ({placeholders})", list(scope_keys))
             # 核心键采用 user/character/domain/relationship 四元组，不能用普通
             # scope 的五元组删除；两个命名空间必须分别处理。

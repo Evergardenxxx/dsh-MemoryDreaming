@@ -92,3 +92,6 @@ python -m memorydreaming --db .memorydreaming/deepseek-harness.db reindex --user
 412 项 unittest、compileall、原生插件 Node 语法检查及 diff 检查通过。新增回归覆盖依赖缺失、前缀区分、配置隔离、非法数值、索引损坏、写入失败回滚、重建期间跨连接修改和遗忘，以及降级不缓存后的恢复。Node 模拟 Cordis 事件并启动真实 Python bridge，验证模型配置透传及降级；这不等于真实 Harness 主程序验收。
 
 实际降级响应通过 JSON Schema 校验。v0.18 wheel 已在独立临时目录安装并运行内置评估，44 个源码/数据文件与仓库一致，可选依赖元数据存在。上述验证均未加载真实语义模型，不能证明真实模型依赖组合、语义质量或性能已通过验收。
+
+
+v0.26 Runtime 默认以独立进程运行本地 SentenceTransformer，MEMORYDREAMING_EMBEDDING_TIMEOUT_SECONDS 默认 30 秒，超时终止并在下次调用重启。直接构造底层适配器或注入自定义 Embedder 仍由可信调用方负责终止语义；模型权重质量仍未验收。详见 [运维与恢复](operations-and-recovery.md)。

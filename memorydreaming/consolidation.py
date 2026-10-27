@@ -131,6 +131,18 @@ def run_pending_jobs(
     repos = db.repositories
     report = ConsolidationReport()
     scheduler = DeepSeekRequestScheduler(db, clock, extractor.client) if isinstance(extractor, DeepSeekExtractor) else None
+    if scheduler is not None and scheduler._owned_database is not None:
+        # 调度连接只在一次网络调用内打开，避免后台循环持有跨库句柄。
+        scheduler.close()
+        scheduler = None
+        class SharedScheduler:
+            def call(self, invoke, **kwargs):
+                current = DeepSeekRequestScheduler(db, clock, extractor.client)
+                try:
+                    return current.call(invoke, **kwargs)
+                finally:
+                    current.close()
+        scheduler = SharedScheduler()
     if (
         isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
         or not 0 < lease_seconds < float("inf")

@@ -64,3 +64,6 @@ python -X utf8 -m unittest discover -s tests -q
 2026-10-27 验证：完整回归 525 项通过，其中原生插件与进程监管 33 项。已构建原生插件 `local-memorydreaming-0.12.0.tgz` 与 Python `memorydreaming-0.22.0-py3-none-any.whl`，逐项核对包内文件与源码。在临时目录独立安装 wheel、解包插件，确认 Python 从安装目录导入，并通过跨窗口核心恢复、中断投递、热重载、进程超时后重启及退出监听清理；运行期间未调用模型 API。
 
 仍待完成：真实主程序版本中的完整重启/压缩/取消/异常退出/热更新验收；持久投递 outbox 和故障告警；任意第三方模型进程树监管；独立 SDK 的本地嵌入硬超时。真实 tokenizer 和抽取/嵌入质量按用户安排暂不开展。
+
+
+v0.13 更新：持久磁盘 outbox、重启重放、投递时间保存、遗忘代次 guard 和固定故障码遥测已实现。先前本文件所列“未建立持久 outbox”是 v0.12 的历史边界，现状以 [运维与恢复](operations-and-recovery.md) 为准；实际桌面应用完整验收仍未完成。

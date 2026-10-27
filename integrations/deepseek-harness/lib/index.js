@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { countMemory, measureRequest, previewRequest, RequestBudgetError } from './request-budget.js'
 
 import { BridgeClient, boundedMaxTokens } from './bridge-client.js'
+import { DeliveryOutbox } from './delivery-outbox.js'
 
 export const name = 'memorydreaming'
 // The plugin uses Cordis lifecycle events directly. It deliberately registers
@@ -51,6 +52,7 @@ function stateFor(states, session) {
       pendingUser: null,
       prepared: false,
       userEventId: null,
+      deliveryGuard: null,
       memoryMessages: [],
       latestAssistant: '',
       latestAssistantId: null,
@@ -83,6 +85,7 @@ function resetUser(state, event) {
   }
   state.prepared = false
   state.userEventId = null
+  state.deliveryGuard = null
   state.memoryMessages = []
   state.latestAssistant = ''
   state.latestAssistantId = null
@@ -173,6 +176,7 @@ export function apply(ctx, config = {}) {
   if (config.enabled === false) return
   const logger = safeLogger(ctx)
   const bridge = new BridgeClient(config, logger)
+  const outbox = new DeliveryOutbox(config, bridge, logger, report => ctx.emit?.('memorydreaming/health', report))
   const states = new Map()
   const disposedSessions = new WeakSet()
   const deliveryTasks = new Set()
@@ -191,25 +195,17 @@ export function apply(ctx, config = {}) {
       user_event_id: state.userEventId, content: state.latestAssistant,
       delivery_state: state.latestInterrupted ? 'interrupted' : deliveryState,
       used_references: [],
+      expected_guard: state.deliveryGuard,
     }
     const key = JSON.stringify([request.user_event_id, request.message_id])
     if (state.delivered.has(key)) return Promise.resolve()
     if (state.deliveryPending.has(key)) return state.deliveryPending.get(key)
-    // Delivery has already happened. Its persistence must not inherit the
-    // cancelled generation signal. Retry the SAME id/payload once after an
-    // uncertain transport outcome; storage provides the atomic idempotency.
+    // Commit to the local durable queue before returning from admission.
+    // Acknowledgement removes the file; uncertain results survive a restart.
     const task = (async () => {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          await bridge.request('after_delivery', request)
-          state.delivered.add(key)
-          while (state.delivered.size > 128) state.delivered.delete(state.delivered.values().next().value)
-          return
-        } catch (error) {
-          if (attempt === 0 && !disposed && ['BRIDGE_EXITED', 'BRIDGE_RESTARTED', 'BRIDGE_IO_ERROR', 'BRIDGE_TIMEOUT'].includes(error.code)) continue
-          logger.warn?.(`[memorydreaming] after_delivery failed: ${error.code ?? 'UNAVAILABLE'}`)
-          return
-        }
+      if (await outbox.deliver(request)) {
+        state.delivered.add(key)
+        while (state.delivered.size > 128) state.delivered.delete(state.delivered.values().next().value)
       }
     })()
     state.deliveryPending.set(key, task)
@@ -263,6 +259,7 @@ export function apply(ctx, config = {}) {
         state.latestAssistant = content
         state.latestAssistantId = event.data?.id ?? event.data?.message?.id ?? state.latestAssistantId
         state.latestInterrupted = event.data?.interrupted === true
+        void saveDelivery(state, event.data?.turn, state.latestInterrupted ? 'interrupted' : 'final')
       }
     }
   }
@@ -334,6 +331,7 @@ export function apply(ctx, config = {}) {
         if (live(state, pending) && state.requestRevision === revision) {
           state.prepared = true
           state.userEventId = stored.user_event_id
+          state.deliveryGuard = stored.delivery_guard
         }
       } catch (error) {
         logger.warn?.(`[memorydreaming] user event persistence failed: ${error.code ?? 'UNAVAILABLE'}`)
@@ -390,6 +388,7 @@ export function apply(ctx, config = {}) {
         if (!current()) return route
         state.prepared = true
         state.userEventId = prepared.user_event_id
+        state.deliveryGuard = prepared.delivery_guard
         if (limit === 0) break
         memoryMessages = prepared.messages.slice(0, -1)
         const native = nativeMemory(memoryMessages)
@@ -419,6 +418,7 @@ export function apply(ctx, config = {}) {
         if (current()) {
           state.prepared = true
           state.userEventId = stored.user_event_id
+          state.deliveryGuard = stored.delivery_guard
         }
       } catch {}
       budget = { status: 'unavailable', reason: error.code ?? 'REQUEST_PREVIEW_UNAVAILABLE', count_mode: null }
@@ -500,6 +500,7 @@ export function apply(ctx, config = {}) {
   // for older hosts. The bridge is local and has no network listener.
   ctx.on('dispose', () => {
     if (disposalPromise) return disposalPromise
+    outbox.close()
     for (const state of states.values()) {
       state.requestRevision++
       state.lifetime.abort()

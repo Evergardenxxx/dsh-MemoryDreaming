@@ -6,6 +6,7 @@ import json
 import hashlib
 import secrets
 import sqlite3
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -66,6 +67,7 @@ class PreparedTurn:
     count_mode: str
     truncated: bool
     memory_status: str = "included"
+    delivery_guard: str | None = None
 
 
 @dataclass
@@ -87,7 +89,8 @@ class HostAdapter:
                  tool_token_limit=4096, max_calls_per_turn=4, reference_ttl_seconds=1800,
                  core_policy: CoreProposalPolicy | None = None,
                  retrieval_cache_ttl_seconds=30, retrieval_cache_capacity=32,
-                 shared_retrieval_cache=True, shared_retrieval_cache_capacity=1024):
+                 shared_retrieval_cache=True, shared_retrieval_cache_capacity=1024,
+                 background_prefetch=False):
         self.runtime, self.clock = runtime, clock or runtime.clock
         self.counter = token_counter or EstimatedTokenCounter()
         if self.counter.mode not in ("estimated", "exact"):
@@ -108,6 +111,16 @@ class HostAdapter:
         self.core_policy = core_policy if core_policy is not None else CoreProposalPolicy()
         if not isinstance(self.core_policy, CoreProposalPolicy):
             raise TypeError("core_policy 必须由宿主构造为 CoreProposalPolicy")
+        if not isinstance(background_prefetch, bool):
+            raise ValueError("background_prefetch 必须为布尔值")
+        from .operations import PrefetchScheduler
+        self.prefetch_scheduler = PrefetchScheduler(self) if background_prefetch else None
+        if background_prefetch:
+            runtime._host_adapters.append(self)
+
+    def close(self):
+        if self.prefetch_scheduler:
+            self.prefetch_scheduler.close()
 
     @property
     def tools(self):
@@ -155,6 +168,8 @@ class MemorySession:
                                "stale": 0, "prefetches": 0, "revision_retries": 0}
 
     def close(self):
+        if self.adapter.prefetch_scheduler:
+            self.adapter.prefetch_scheduler.cancel(self.binding_ref)
         self._closed = True
         self.registry = ReferenceRegistry(self.clock)
         self._search_cache.clear()
@@ -178,6 +193,23 @@ class MemorySession:
     def cache_stats(self) -> dict[str, int]:
         """返回本会话缓存计数；只包含运维指标，不包含查询或记忆正文。"""
         return dict(self._cache_metrics)
+
+    def _metric(self, name, milliseconds=0):
+        if name in self._cache_metrics:
+            self._cache_metrics[name] += 1
+        from .operations import record_metric
+        record_metric(self.runtime, self.binding.scope, name, milliseconds)
+
+    def schedule_prefetch(self, query: str, *, detail="auto", max_items=12, max_tokens=1200):
+        self._check()
+        text(query, "query", 4000)
+        if detail not in ("auto", "overview", "evidence"):
+            raise AdapterError("INVALID_ARGUMENT", "预取 detail 无效")
+        options = {"detail": detail, "max_items": integer(max_items, "max_items", 1, 20),
+                   "max_tokens": integer(max_tokens, "max_tokens", 128, 4096)}
+        if not self.adapter.prefetch_scheduler:
+            return {"scheduled": False, "reason": "SCHEDULER_DISABLED"}
+        return self.adapter.prefetch_scheduler.submit(self, query, options)
 
     def _remember_search(self, cache_key, data, epoch, generation, expires_at):
         self._search_cache[cache_key] = _SearchCacheEntry(
@@ -233,12 +265,12 @@ class MemorySession:
                 if view.revision != cached["summary_revisions"].get(target):
                     raise ValueError("summary revision changed")
                 summary_views.append(view)
-            self._cache_metrics["shared_hits"] += 1
+            self._metric("shared_hits")
             return (self._render_cached_views(evidence_views, summary_views,
                                              cached["retrieval_complete"], activities),
                     datetime.fromisoformat(cached["expires_at"]))
         except (AdapterError, KeyError, ValueError, json.JSONDecodeError, AttributeError):
-            self._cache_metrics["stale"] += 1
+            self._metric("stale")
             self.runtime.db.repositories.retrieval_cache.delete(cache_key)
             return None
 
@@ -379,14 +411,14 @@ class MemorySession:
                     try:
                         evidence_views = self.registry.resolve(list(cached.memory_refs), reader)
                         summary_views = self.registry.resolve(list(cached.summary_refs), reader)
-                        self._cache_metrics["local_hits"] += 1
+                        self._metric("local_hits")
                         self._search_cache.move_to_end(cache_key)
                         return self._render_cached_views(
                             evidence_views, summary_views, cached.retrieval_complete, activities,
                         )
                     except (AdapterError, KeyError, json.JSONDecodeError):
                         pass
-                self._cache_metrics["stale"] += 1
+                self._metric("stale")
                 self._search_cache.pop(cache_key, None)
 
             shared = self._shared_cached_search(cache_key, reader, activities, epoch, generation)
@@ -395,11 +427,18 @@ class MemorySession:
                 data, expires_at = shared
                 self._remember_search(cache_key, data, epoch, generation, expires_at)
                 return data
-            self._cache_metrics["misses"] += 1
+            self._metric("misses")
 
         return None
 
     def _search(self, args, *, finalize=None, deadline=None):
+        started = time.perf_counter()
+        try:
+            return self._search_impl(args, finalize=finalize, deadline=deadline)
+        finally:
+            self._metric("search", (time.perf_counter()-started)*1000)
+
+    def _search_impl(self, args, *, finalize=None, deadline=None):
         """短事务查缓存 → WAL 只读检索 → 代次复核后投递/写缓存。
 
         finalize 在最终短事务内恢复核心或生成工具响应，避免复用旧快照的 ViewReader。
@@ -411,6 +450,9 @@ class MemorySession:
         for attempt in range(2):
             self._check(deadline)
             with db.transaction():
+                if self.current_event_id and (db.repositories.events.get(self.current_event_id) is None
+                        or db.repositories.forgetting.is_event_forgotten(self.current_event_id)):
+                    raise forbidden()
                 reader = self._reader()
                 activities, interval, cache_key, cacheable = self._search_context(args, reader)
                 cached = self._cached_search(cache_key, cacheable, reader, activities)
@@ -428,8 +470,11 @@ class MemorySession:
                 )
             with db.transaction():
                 self._check(deadline)
+                if self.current_event_id and (db.repositories.events.get(self.current_event_id) is None
+                        or db.repositories.forgetting.is_event_forgotten(self.current_event_id)):
+                    raise forbidden()
                 if db.repositories.retrieval_cache.generation() != generation:
-                    self._cache_metrics["revision_retries"] += 1
+                    self._metric("revision_retries")
                     continue
                 data = self._render_search_result(result, self._reader(), activities, cache_key, cacheable)
                 return finalize(data) if finalize else data
@@ -502,7 +547,7 @@ class MemorySession:
         args = {"query": query, "activity_ref": None, "time_range": None,
                 "detail": detail, "max_items": max_items, "max_tokens": max_tokens}
         data = self._search(args)
-        self._cache_metrics["prefetches"] += 1
+        self._metric("prefetches")
         return {"status": "partial" if data.get("degraded_reasons") else "ok",
                 "cached": not bool(data.get("degraded_reasons")), "query": query,
                 "ttl_seconds": self.adapter.retrieval_cache_ttl_seconds}
@@ -671,7 +716,7 @@ class MemorySession:
         if limit == 0:
             return PreparedTurn(stored.event.event_id, [{"role": "user", "content": content}],
                                 "skipped_budget", 0, self.adapter.counter.mode, False,
-                                memory_status="skipped_budget")
+                                memory_status="skipped_budget", delivery_guard=self.delivery_guard(stored.event))
         args = {"query": content, "activity_ref": None, "time_range": None,
                 "detail": "auto", "max_items": 12, "max_tokens": 4096}
         return self._search(args, deadline=deadline, finalize=lambda search: self._prepared_turn_from_search(
@@ -679,6 +724,9 @@ class MemorySession:
         ))
 
     def _prepared_turn_from_search(self, search, event_id, content, limit, deadline):
+        source_event = self.runtime.db.repositories.events.get(event_id)
+        if source_event is None or self.runtime.db.repositories.forgetting.is_event_forgotten(event_id):
+            raise forbidden()
         bootstrap = self._bootstrap_data(self._reader())
         working = None
         if self.binding.selected_activity_id:
@@ -727,7 +775,7 @@ class MemorySession:
             search["retrieval_complete"] = False
         self._check(deadline)
         return PreparedTurn(event_id, memory_messages + [{"role": "user", "content": content}],
-                            bootstrap["recovery_status"], count, self.adapter.counter.mode, payload["truncated"])
+                            bootstrap["recovery_status"], count, self.adapter.counter.mode, payload["truncated"], delivery_guard=self.delivery_guard(source_event))
 
     def pre_compress(self, state: dict | None = None, *, expected_version: int | None = None,
                      request_id: str | None = None, idempotency_key: str | None = None,
@@ -890,7 +938,7 @@ class MemorySession:
         return ensure_utc(moment)
 
     def after_delivery(self, message_id: str, content: str, *, user_event_id: str,
-                       delivery_state="final", occurred_at=None, used_references=None) -> dict:
+                       delivery_state="final", occurred_at=None, used_references=None, expected_guard=None) -> dict:
         self._check()
         text(message_id, "message_id", 200)
         text(content, "content", 64000)
@@ -903,8 +951,12 @@ class MemorySession:
             source = self.runtime.db.repositories.events.get(user_event_id)
             reader = self._reader()
             if (source is None or not reader.visible(source.scope) or source.speaker != "user"
+                    or self.runtime.db.repositories.forgetting.is_event_forgotten(user_event_id)
                     or source.conversation_id != self.binding.conversation_id):
                 raise forbidden()
+            if expected_guard is not None and (not isinstance(expected_guard, str)
+                    or not secrets.compare_digest(expected_guard, self.delivery_guard(source))):
+                raise AdapterError("STALE_DELIVERY", "投递排队期间发生遗忘或来源变更，旧内容不重新写入")
             warning = None
             try:
                 views = self.registry.resolve(refs, reader)
@@ -928,3 +980,10 @@ class MemorySession:
                 self.runtime.mark_used(used)
             return {"event_id": stored.event.event_id, "duplicate": stored.duplicate,
                     "delivery_state": delivery_state, "warning": warning}
+
+    def delivery_guard(self, event):
+        from .assertions import confirmation_material
+        scopes = [self.binding.scope, event.scope, *[Scope(self.binding.user_id, self.binding.character_id,
+                   self.binding.relationship_id, activity, self.binding.domain) for activity in self.binding.allowed_activity_ids]]
+        epochs = sorted({(_scope_key(scope), self.runtime.db.repositories.forgetting.epoch(scope)) for scope in scopes})
+        return self.runtime.db.repositories.forgetting.fingerprint(dumps([confirmation_material(event), epochs]))

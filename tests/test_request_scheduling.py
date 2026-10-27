@@ -252,7 +252,8 @@ os._exit(17)
         snapshot = export_snapshot(self.runtime.db)
         self.assertNotIn("provider_limits", snapshot["tables"])
         self.assertNotIn("provider_requests", snapshot["tables"])
-        self.assertEqual(snapshot["manifest"]["operational_tables_skipped"], ["provider_limits", "provider_requests"])
+        self.assertEqual(snapshot["manifest"]["operational_tables_skipped"], ["provider_limits", "provider_requests",
+            "provider_usage", "provider_budgets", "operational_metrics", "operational_alerts"])
         stored = [dict(row) for table in ("provider_limits", "provider_requests")
                   for row in self.runtime.db.connection.execute(f"SELECT * FROM {table}")]
         payload = json.dumps(stored)

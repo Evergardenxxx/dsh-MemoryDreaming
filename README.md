@@ -2,9 +2,9 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.25，schema 24，已完成核心/摘要历史工作包**：核心字段支持双时间回放，摘要记录内容版本并可复核来源后恢复历史正文，已有提议可由可信宿主整批审批，见 [历史与批量审批](docs/core-summary-history.md)。[类型化 AND/OR 证据组](docs/evidence-groups.md) 和 [受控重新学习](docs/relearning.md) 已完成。原生插件 v0.12 保持 Cordis 与本地 JSONL 接入，不注册 MCP 工具。当前 581 项工程回归通过；真实模型质量、目标 tokenizer 和真实 Harness 生命周期仍待验收，默认 token 计数为 estimated。
+当前状态：**v0.26，schema 25，原生插件 v0.13**。本轮一次性补齐后台预取/持久指标/状态告警、磁盘投递补偿、跨数据库 DeepSeek 配额、本地编码进程硬超时，以及隔离安装器和开源发布包流程，见 [运维与恢复](docs/operations-and-recovery.md) 和 [安装发布](docs/releasing.md)。核心双时间、摘要历史恢复、批量审批、AND/OR 证据组与受控重新学习均已完成。当前 595 项工程回归通过；真实模型质量、目标 tokenizer 和实际 Harness 桌面验收仍待验证。插件保持原生 Cordis/JSONL，不注册 MCP 工具。
 
-接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
+接入从 [宿主指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
 ### DeepSeek Harness 接入
 

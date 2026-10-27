@@ -380,6 +380,44 @@ CREATE TABLE IF NOT EXISTS proposal_batches (
     UNIQUE(scope_key,idempotency_key)
 );
 
+-- 运维只保存计数/耗时与固定告警码，不保存查询或记忆正文。
+CREATE TABLE IF NOT EXISTS operational_metrics (
+    scope_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    relationship_id TEXT,
+    activity_id TEXT,
+    domain TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    total_ms REAL NOT NULL DEFAULT 0,
+    max_ms REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY(scope_key,bucket,metric)
+);
+CREATE TABLE IF NOT EXISTS operational_alerts (
+    scope_key TEXT NOT NULL,
+    code TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    state TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    resolved_at TEXT,
+    PRIMARY KEY(scope_key,code)
+);
+CREATE TABLE IF NOT EXISTS provider_usage (
+    request_token TEXT PRIMARY KEY,
+    provider_key TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    reserved_tokens INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_usage_window ON provider_usage(provider_key,started_at);
+CREATE TABLE IF NOT EXISTS provider_budgets (
+    provider_key TEXT PRIMARY KEY,
+    rpm INTEGER NOT NULL,
+    tpm INTEGER NOT NULL
+);
+
 -- ----------------------------------------------------------------------------
 -- 异步整理任务：抽取、去重、归纳、核心更新候选
 -- ----------------------------------------------------------------------------

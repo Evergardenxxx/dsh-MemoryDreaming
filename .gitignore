@@ -28,6 +28,8 @@ __pycache__/
 node_modules/
 dist/
 build/
+*.outbox/
+*.prefetch/
 coverage/
 
 # Editor and operating system files

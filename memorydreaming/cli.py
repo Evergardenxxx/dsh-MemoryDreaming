@@ -57,6 +57,11 @@ def _build_parser() -> argparse.ArgumentParser:
     embedding_eval.add_argument("--min-score", type=float, help="覆盖配置中的向量阈值")
     embedding_eval.add_argument("--output", help="保存不含查询/文档正文的 JSON 报告")
     sub.add_parser("jobs", help="查看任务就绪、退避、租约与失败统计")
+    diagnostics = sub.add_parser("diagnostics", help="查看无正文的运维趋势与状态告警")
+    diagnostics.add_argument("--user", required=True)
+    diagnostics.add_argument("--character", required=True)
+    diagnostics.add_argument("--relationship")
+    diagnostics.add_argument("--domain", default="real")
 
     reindex = sub.add_parser("reindex", help="重建某个角色的向量和实体索引")
     reindex.add_argument("--user", required=True)
@@ -122,6 +127,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="每轮记忆消息预算，默认 1200")
     bridge.add_argument("--auto-consolidation", action="store_true",
                         help="启动后台记忆整理器；事件入队后自动抽取、去重和摘要")
+    bridge.add_argument("--auto-prefetch", action="store_true", help="有界后台预取，查询仅在内存中排队")
     bridge.add_argument("--extractor", choices=("rules", "deepseek"), default="rules",
                         help="后台抽取器；deepseek 从 DEEPSEEK_API_KEY 读取凭据")
     return parser
@@ -221,9 +227,11 @@ def main(argv: list[str] | None = None) -> int:
         try:
             server = BridgeServer(runtime, user_id=args.user, character_id=args.character,
                                   relationship_id=args.relationship, domain=args.domain,
-                                  max_tokens=args.max_tokens)
+                                  max_tokens=args.max_tokens, auto_prefetch=args.auto_prefetch)
             return server.serve()
         finally:
+            if 'server' in locals():
+                server.close()
             runtime.close()
 
     runtime = _open_runtime(args)
@@ -244,6 +252,11 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
 
     if args.command == "jobs":
         print(json.dumps(runtime.job_stats(), ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "diagnostics":
+        scope = Scope(args.user, args.character, args.relationship, domain=args.domain)
+        print(json.dumps({"health": runtime.memory_health(scope), "metrics": runtime.operational_trend(scope),
+                          "alerts": runtime.check_alerts(scope)}, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "reindex":

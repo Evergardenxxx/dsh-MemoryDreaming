@@ -7,6 +7,10 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
 const MAX_LINE_BYTES = 1024 * 1024
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
+export function bridgeDatabasePath(config) {
+  return resolve(config.dbPath ?? resolve(config.repoPath ?? REPO_ROOT, '.memorydreaming', 'deepseek-harness.db'))
+}
+
 export function boundedMaxTokens(value) {
   return Number.isInteger(value) && value >= 128 && value <= 4096 ? value : 1200
 }
@@ -60,7 +64,7 @@ export class BridgeClient {
     if (this.active) return this.active
     const python = this.config.pythonCommand ?? process.env.MEMORYDREAMING_PYTHON ?? 'python'
     const repoPath = this.config.repoPath ?? REPO_ROOT
-    const dbPath = this.config.dbPath ?? resolve(repoPath, '.memorydreaming', 'deepseek-harness.db')
+    const dbPath = bridgeDatabasePath(this.config)
     const extractor = this.config.extractor === 'deepseek' ? 'deepseek' : 'rules'
     const args = [
       '-X', 'utf8', '-m', 'memorydreaming', '--db', dbPath, 'bridge',
@@ -71,12 +75,14 @@ export class BridgeClient {
       '--max-tokens', String(boundedMaxTokens(this.config.maxTokens)), '--extractor', extractor,
     ]
     if (this.config.autoConsolidation !== false || extractor === 'deepseek') args.push('--auto-consolidation')
+    if (this.config.autoPrefetch !== false) args.push('--auto-prefetch')
     const env = { ...process.env, PYTHONUTF8: '1' }
     const options = {
       embeddingProvider: 'EMBEDDING_PROVIDER', embeddingModelPath: 'EMBEDDING_MODEL_PATH',
       embeddingRevision: 'EMBEDDING_REVISION', embeddingDim: 'EMBEDDING_DIM',
       embeddingQueryPrefix: 'EMBEDDING_QUERY_PREFIX', embeddingDocumentPrefix: 'EMBEDDING_DOCUMENT_PREFIX',
       embeddingMaxSeqLength: 'EMBEDDING_MAX_SEQ_LENGTH', embeddingBatchSize: 'EMBEDDING_BATCH_SIZE',
+      embeddingTimeoutSeconds: 'EMBEDDING_TIMEOUT_SECONDS',
       vectorMinScore: 'VECTOR_MIN_SCORE',
     }
     for (const [key, suffix] of Object.entries(options)) {

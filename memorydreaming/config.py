@@ -43,8 +43,17 @@ class DeepSeekSchedulingPolicy:
     min_interval_seconds: float = 0.0
     cooldown_seconds: float = 5.0
     lease_seconds: float = 120.0
+    quota_db_path: str = ""
+    requests_per_minute: int = 0
+    tokens_per_minute: int = 0
 
     def __post_init__(self):
+        if not isinstance(self.quota_db_path, str):
+            raise ValueError("quota_db_path 必须为路径字符串")
+        for name in ("requests_per_minute", "tokens_per_minute"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100000000:
+                raise ValueError(f"{name} 必须为非负整数")
         if (isinstance(self.max_concurrent, bool) or not isinstance(self.max_concurrent, int)
                 or not 1 <= self.max_concurrent <= 32):
             raise ValueError("DeepSeek max_concurrent 必须在 1..32 内")
@@ -64,6 +73,9 @@ class DeepSeekSchedulingPolicy:
                 min_interval_seconds=float(_env_str("DEEPSEEK_MIN_INTERVAL_SECONDS", "0")),
                 cooldown_seconds=float(_env_str("DEEPSEEK_COOLDOWN_SECONDS", "5")),
                 lease_seconds=float(_env_str("DEEPSEEK_REQUEST_LEASE_SECONDS", "120")),
+                quota_db_path=_env_str("DEEPSEEK_QUOTA_DB", ""),
+                requests_per_minute=_env_int("DEEPSEEK_RPM", 0),
+                tokens_per_minute=_env_int("DEEPSEEK_TPM", 0),
             )
         except (TypeError, ValueError) as exc:
             raise ValueError("DeepSeek 调度配置无效") from exc
@@ -123,6 +135,7 @@ class Settings:
     embedding_document_prefix: str = ""
     embedding_max_seq_length: int = 512
     embedding_batch_size: int = 16
+    embedding_timeout_seconds: float = 30.0
 
     # bootstrap 时附带多少条「重要经历」摘要
     bootstrap_highlight_limit: int = 5
@@ -140,6 +153,9 @@ class Settings:
     consolidation_batch_size: int = 4
 
     def __post_init__(self) -> None:
+        if (isinstance(self.embedding_timeout_seconds, bool) or not isinstance(self.embedding_timeout_seconds, (int, float))
+                or not math.isfinite(self.embedding_timeout_seconds) or not 0.1 <= self.embedding_timeout_seconds <= 300):
+            raise ValueError("embedding_timeout_seconds 必须为 0.1..300")
         if self.embedding_provider not in ("hash", "sentence-transformers"):
             raise ValueError("embedding_provider 必须为 hash 或 sentence-transformers")
         if self.embedding_provider == "sentence-transformers" and (
@@ -193,6 +209,7 @@ class Settings:
             embedding_document_prefix=_env_str("EMBEDDING_DOCUMENT_PREFIX", ""),
             embedding_max_seq_length=_env_int("EMBEDDING_MAX_SEQ_LENGTH", 512),
             embedding_batch_size=_env_int("EMBEDDING_BATCH_SIZE", 16),
+            embedding_timeout_seconds=float(_env_str("EMBEDDING_TIMEOUT_SECONDS", "30")),
             job_lease_seconds=_env_int("JOB_LEASE_SECONDS", 120),
             job_max_attempts=_env_int("JOB_MAX_ATTEMPTS", 3),
             job_retry_base_seconds=_env_int("JOB_RETRY_BASE_SECONDS", 5),

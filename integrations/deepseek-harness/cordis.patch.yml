@@ -3,9 +3,8 @@
       name: '@local/memorydreaming'
       config:
         enabled: true
-        pythonCommand: 'C:\Python314\python.exe'
-        repoPath: 'D:\My_project\MemoryDreaming'
-        dbPath: 'D:\My_project\MemoryDreaming\.memorydreaming\deepseek-harness.db'
+        # For isolated installation, run scripts/install.py before importing the plugin.
+        pythonCommand: python
         userId: u1
         characterId: c1
         relationshipId: r1
@@ -17,3 +16,4 @@
         bridgeTimeoutMs: 15000
         bridgeShutdownMs: 2000
         bridgeMaxPending: 64
+        autoPrefetch: true

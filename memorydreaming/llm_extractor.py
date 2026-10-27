@@ -485,7 +485,9 @@ class DeepSeekExtractor(LLMExtractor):
         prompt = self.prompt(event)
         for attempt in range(2 if self.repair_invalid_output else 1):
             try:
-                raw = (scheduler.call(lambda: self._call_provider(prompt), attempted=bool(attempt))
+                # 输入按 UTF-8 字节保守预留，并计入 schema/外壳与输出上限；不冒充精确 tokenizer。
+                reservation = len(prompt.encode("utf-8")) + len(json.dumps(EXTRACTION_SCHEMA).encode("utf-8")) + self.client.max_tokens + 1024
+                raw = (scheduler.call(lambda: self._call_provider(prompt), attempted=bool(attempt), token_reservation=reservation)
                        if scheduler is not None else self._call_provider(prompt))
                 return self.parse(event, raw)
             except LLMExtractionError as exc:
