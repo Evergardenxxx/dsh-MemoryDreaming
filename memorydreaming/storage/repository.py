@@ -1923,12 +1923,14 @@ class JobRepository:
             [to_utc_iso(now + timedelta(seconds=lease_seconds))],
         )
 
-    def release(self, job_id: str, claim_token: str, now: datetime) -> None:
+    def release(self, job_id: str, claim_token: str, now: datetime, *, available_at: datetime | None = None) -> None:
         """主动退回，不消耗尝试次数；旧持有者不能释放新持有者的任务。"""
+        if available_at is not None and ensure_utc(available_at) < ensure_utc(now):
+            raise ValueError("任务释放后的可用时间不能早于当前时间")
         self._owned_update(
             job_id, claim_token, now,
             "status = 'pending', attempts = MAX(0, attempts - 1), "
-            "claim_token = NULL, lease_until = NULL, available_at = ?", [to_utc_iso(now)],
+            "claim_token = NULL, lease_until = NULL, available_at = ?", [to_utc_iso(available_at or now)],
         )
 
     def complete(self, job_id: str, claim_token: str, now: datetime) -> None:

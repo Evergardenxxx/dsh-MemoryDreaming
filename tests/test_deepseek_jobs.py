@@ -112,14 +112,16 @@ class DeepSeekJobTests(RuntimeTestCase):
         self.assertEqual(self.count_rows("consolidation_jobs"), 1)
         self.assertEqual(self.job(observed.job_id)["status"], "pending")
 
-    def test_one_rate_limited_event_does_not_block_other_ready_events(self):
+    def test_one_rate_limited_event_defers_other_events_on_the_same_account(self):
         first = self.observe("first")
         second = self.observe("second")
         opener = Mock(side_effect=[http_error(429, 60), good_response()])
         report = self.runtime.run_consolidation(DeepSeekExtractor(DeepSeekClient("sk-test", opener=opener)))
-        self.assertEqual((report.claimed, report.created, report.failed), (2, 1, 1))
+        self.assertEqual((report.claimed, report.created, report.failed, report.deferred), (2, 0, 1, 1))
+        self.assertEqual(opener.call_count, 1)
         states = sorted(self.job(item.job_id)["status"] for item in (first, second))
-        self.assertEqual(states, ["done", "pending"])
+        self.assertEqual(states, ["pending", "pending"])
+        self.assertEqual(sorted(self.job(item.job_id)["attempts"] for item in (first, second)), [0, 1])
 
     def test_reextracting_same_event_with_random_model_keys_is_idempotent(self):
         observed = self.observe()

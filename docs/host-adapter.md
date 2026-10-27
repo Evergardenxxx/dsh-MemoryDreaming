@@ -1,6 +1,6 @@
 # 宿主适配与原生插件接入
 
-宿主适配器实现 [接口协议 v1](llm-interface-v1.md)：Python 生命周期、受控引用、`memory_search` / `memory_read` 和可选变更提议。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，不通过 MCP。当前 Python 包版本 0.20.0，数据库 schema 20；核心建议见 [核心候选指南](core-proposals.md)，事实修改与清除审批见 [纠错与变更审批](correction-approval.md)，后台抽取配置见 [DeepSeek 抽取指南](deepseek-extraction.md)。原生聊天桥接可启动独立后台整理器，自动消费事件队列。仓库另保留独立可选的 MCP 只读兼容入口。
+宿主适配器实现 [接口协议 v1](llm-interface-v1.md)：Python 生命周期、受控引用、`memory_search` / `memory_read` 和可选变更提议。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，不通过 MCP。当前 Python 包版本 0.21.0，数据库 schema 21；核心建议见 [核心候选指南](core-proposals.md)，事实修改与清除审批见 [纠错与变更审批](correction-approval.md)，后台抽取配置见 [DeepSeek 抽取指南](deepseek-extraction.md)。原生聊天桥接可启动独立后台整理器，自动消费事件队列；同库 DeepSeek 任务自动共享[请求调度](deepseek-scheduling.md)。仓库另保留独立可选的 MCP 只读兼容入口。
 
 ## 先运行跨窗口示例
 

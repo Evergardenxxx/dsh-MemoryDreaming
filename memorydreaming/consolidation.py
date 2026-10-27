@@ -24,10 +24,11 @@ from dataclasses import dataclass, field, replace
 from datetime import tzinfo, timezone
 from typing import Any, Protocol
 
-from .clock import Clock, ensure_utc
+from .clock import Clock, ensure_utc, to_utc_iso
 from .errors import JobLeaseLost, SourceRevisionChanged
 from .formation import MemoryFormationPolicy
-from .llm_extractor import LLMExtractionError
+from .llm_extractor import DeepSeekExtractor, LLMExtractionError
+from .scheduling import DeepSeekRequestScheduler, ExtractionDeferred
 from .models import (
     EpistemicStatus,
     EventRecord,
@@ -97,6 +98,7 @@ class ConsolidationReport:
     lease_lost: int = 0       # 已失去提交权，交给新持有者或下一批恢复
     suppressed: int = 0       # 因持久遗忘标记隔离的候选
     stale_results: int = 0    # 计算期间内容代次变化，丢弃并重新排队
+    deferred: int = 0         # 等待共享请求配额/冷却，尚未访问供应商时不消耗尝试
     errors: list[str] = field(default_factory=list)
 
 
@@ -128,6 +130,7 @@ def run_pending_jobs(
     """
     repos = db.repositories
     report = ConsolidationReport()
+    scheduler = DeepSeekRequestScheduler(db, clock, extractor.client) if isinstance(extractor, DeepSeekExtractor) else None
     if (
         isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
         or not 0 < lease_seconds < float("inf")
@@ -196,7 +199,8 @@ def run_pending_jobs(
                                 idempotency_key=f"job:{job.job_id}:attempt:{job.attempts}:completed",
                             )
                         continue
-                    drafts = extractor.extract(event)
+                    drafts = (extractor.extract_scheduled(event, scheduler) if scheduler is not None
+                              else extractor.extract(event))
 
                 generation = None
                 extract_plan = None
@@ -258,6 +262,31 @@ def run_pending_jobs(
             report.merged += merged
             report.summarized += summarized
             report.suppressed += suppressed
+        except ExtractionDeferred as exc:
+            report.deferred += 1
+            try:
+                with db.transaction():
+                    now = clock.now()
+                    retry_at = max(ensure_utc(now), ensure_utc(exc.retry_at))
+                    if exc.attempted:
+                        # 初次请求已返回非法候选，修复等待配额：保留这次真实尝试，
+                        # 避免反复重新抽取而无限绕过 max_attempts。
+                        repos.jobs.fail(
+                            job.job_id, job.claim_token, "DeepSeek 格式修复等待共享调度", now,
+                            retry_base_seconds=retry_base_seconds, retry_max_seconds=retry_max_seconds,
+                            retry_after_seconds=min(86400, (retry_at - ensure_utc(now)).total_seconds()),
+                        )
+                    else:
+                        repos.jobs.release(job.job_id, job.claim_token, now, available_at=retry_at)
+                    repos.journal.append(
+                        "consolidation.deferred", scope=job.scope, entity_id=job.job_id,
+                        payload={"job_type": job.job_type, "reason": exc.code, "attempt_consumed": exc.attempted},
+                        now=now, idempotency_key=f"job:{job.job_id}:attempt:{job.attempts}:deferred:{to_utc_iso(retry_at)}",
+                    )
+                if exc.attempted:
+                    report.failed += 1
+            except JobLeaseLost:
+                report.lease_lost += 1
         except SourceRevisionChanged as exc:
             report.stale_results += 1
             report.errors.append(f"{job.job_id}: {exc}")

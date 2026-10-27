@@ -36,6 +36,40 @@ def _env_int(name: str, default: int) -> int:
 
 
 @dataclass(frozen=True)
+class DeepSeekSchedulingPolicy:
+    """同库、同端点、同凭据的请求配额；不进入模型上下文。"""
+
+    max_concurrent: int = 1
+    min_interval_seconds: float = 0.0
+    cooldown_seconds: float = 5.0
+    lease_seconds: float = 120.0
+
+    def __post_init__(self):
+        if (isinstance(self.max_concurrent, bool) or not isinstance(self.max_concurrent, int)
+                or not 1 <= self.max_concurrent <= 32):
+            raise ValueError("DeepSeek max_concurrent 必须在 1..32 内")
+        for name, minimum, maximum in (("min_interval_seconds", 0, 3600),
+                                       ("cooldown_seconds", 0.1, 86400),
+                                       ("lease_seconds", 1, 3600)):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or not minimum <= value <= maximum):
+                raise ValueError(f"DeepSeek {name} 必须在 {minimum}..{maximum} 内")
+
+    @classmethod
+    def from_env(cls):
+        try:
+            return cls(
+                max_concurrent=int(_env_str("DEEPSEEK_MAX_CONCURRENT", "1")),
+                min_interval_seconds=float(_env_str("DEEPSEEK_MIN_INTERVAL_SECONDS", "0")),
+                cooldown_seconds=float(_env_str("DEEPSEEK_COOLDOWN_SECONDS", "5")),
+                lease_seconds=float(_env_str("DEEPSEEK_REQUEST_LEASE_SECONDS", "120")),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("DeepSeek 调度配置无效") from exc
+
+
+@dataclass(frozen=True)
 class Settings:
     """引擎配置。frozen=True 表示创建后不可改，避免运行时被意外篡改。
 

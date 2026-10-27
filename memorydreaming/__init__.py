@@ -19,7 +19,7 @@
 阅读顺序建议见 README.md 的「代码导读」。
 """
 
-from .config import Settings
+from .config import DeepSeekSchedulingPolicy, Settings
 from .models import (
     Activity,
     ActivityStatus,
@@ -60,12 +60,15 @@ from .llm_extractor import (
 from .formation import MemoryFormationPolicy
 from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 from .proposals import CoreProposalPolicy
+from .scheduling import DeepSeekRequestScheduler
 from .portability import export_snapshot, import_snapshot, load_snapshot, validate_snapshot, write_snapshot
 
-__version__ = "0.20.0"
+__version__ = "0.21.0"
 
 __all__ = [
     "MemoryRuntime",
+    "DeepSeekSchedulingPolicy",
+    "DeepSeekRequestScheduler",
     "HostAdapter",
     "MemorySession",
     "PreparedTurn",

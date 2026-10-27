@@ -18,11 +18,15 @@ import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .clock import ensure_utc
+from .config import DeepSeekSchedulingPolicy
 from .formation import MemoryFormationPolicy
 from .models import EpistemicStatus, EventRecord, MemoryDraft, MemoryType, Modality
+
+if TYPE_CHECKING:
+    from .scheduling import DeepSeekRequestScheduler
 
 
 EXTRACTION_SCHEMA: dict[str, Any] = {
@@ -122,6 +126,7 @@ class DeepSeekClient:
         timeout: float = 30.0,
         max_tokens: int = 1200,
         opener: Any | None = None,
+        scheduling_policy: DeepSeekSchedulingPolicy | None = None,
     ) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise ValueError("DeepSeek API key 不能为空")
@@ -140,6 +145,9 @@ class DeepSeekClient:
         self.timeout = float(timeout)
         self.max_tokens = max_tokens
         self._opener = opener or urllib.request.urlopen
+        if scheduling_policy is not None and not isinstance(scheduling_policy, DeepSeekSchedulingPolicy):
+            raise ValueError("DeepSeek scheduling_policy 类型无效")
+        self.scheduling_policy = scheduling_policy or DeepSeekSchedulingPolicy()
 
     @classmethod
     def from_env(cls) -> "DeepSeekClient":
@@ -156,6 +164,7 @@ class DeepSeekClient:
             base_url=os.environ.get("MEMORYDREAMING_DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             timeout=timeout,
             max_tokens=max_tokens,
+            scheduling_policy=DeepSeekSchedulingPolicy.from_env(),
         )
 
     def __call__(self, prompt: str, *, schema: dict[str, Any]) -> str:
@@ -464,12 +473,21 @@ class DeepSeekExtractor(LLMExtractor):
         self.repair_invalid_output = repair_invalid_output
 
     def extract(self, event: EventRecord) -> list[MemoryDraft]:
+        return self._extract(event)
+
+    def extract_scheduled(self, event: EventRecord, scheduler: DeepSeekRequestScheduler) -> list[MemoryDraft]:
+        """队列入口：每个 HTTP 请求（包括格式修复）单独经过共享闸门。"""
+        return self._extract(event, scheduler)
+
+    def _extract(self, event: EventRecord, scheduler: DeepSeekRequestScheduler | None = None) -> list[MemoryDraft]:
         if event.speaker != "user":
             return []
         prompt = self.prompt(event)
         for attempt in range(2 if self.repair_invalid_output else 1):
             try:
-                return self.parse(event, self._call_provider(prompt))
+                raw = (scheduler.call(lambda: self._call_provider(prompt), attempted=bool(attempt))
+                       if scheduler is not None else self._call_provider(prompt))
+                return self.parse(event, raw)
             except LLMExtractionError as exc:
                 if attempt or not self.repair_invalid_output or exc.code != "INVALID_OUTPUT":
                     raise

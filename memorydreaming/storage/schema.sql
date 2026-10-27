@@ -550,3 +550,20 @@ CREATE TABLE IF NOT EXISTS change_purge_receipts (
     receipt_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_change_purge_receipts_scope ON change_purge_receipts(scope_key);
+
+-- 运行调度状态：与用户 scope 无关；不含端点、API key、事件或正文，不导出。
+CREATE TABLE IF NOT EXISTS provider_limits (
+    provider_key TEXT PRIMARY KEY,
+    max_concurrent INTEGER NOT NULL CHECK(max_concurrent BETWEEN 1 AND 32),
+    min_interval_seconds REAL NOT NULL CHECK(min_interval_seconds BETWEEN 0 AND 3600),
+    not_before TEXT NOT NULL,
+    next_start_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_requests (
+    request_token TEXT PRIMARY KEY,
+    provider_key TEXT NOT NULL REFERENCES provider_limits(provider_key),
+    started_at TEXT NOT NULL,
+    lease_until TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_requests_lease ON provider_requests(provider_key,lease_until);

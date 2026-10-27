@@ -51,6 +51,7 @@ TABLES = (
     "journal_entries",
 )
 DERIVED_TABLES = ("memory_vectors", "memories_fts", "retrieval_cache")
+OPERATIONAL_TABLES = ("provider_limits", "provider_requests")
 
 PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "core_versions": ("scope_key", "kind", "core_version"),
@@ -180,6 +181,7 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
         "tables": {name: {"count": len(rows), "sha256": _table_fingerprint(rows)}
                    for name, rows in tables.items()},
         "derived_tables_skipped": list(DERIVED_TABLES),
+        "operational_tables_skipped": list(OPERATIONAL_TABLES),
     }
     return {"manifest": manifest, "tables": tables}
 

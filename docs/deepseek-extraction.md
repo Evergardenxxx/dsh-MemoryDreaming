@@ -1,6 +1,6 @@
 # DeepSeek 抽取工程与中文评估
 
-Python 包 v0.17 的抽取器使用 DeepSeek `chat/completions` JSON object 模式，依赖标准库。DeepSeek Harness 仍使用原生 Cordis 插件与本地 JSONL bridge；这次没有增加 MCP 工具或聊天启动时的上下文。
+Python 包 v0.21 的抽取器使用 DeepSeek `chat/completions` JSON object 模式，依赖标准库。DeepSeek Harness 仍使用原生 Cordis 插件与本地 JSONL bridge；请求调度不增加工具或聊天启动时的上下文。
 
 ## 调用与写入边界
 
@@ -25,9 +25,9 @@ LLM 未提供事件时间时保留 `occurred_start=null, occurred_precision=unkn
 | `finish_reason=content_filter` | `CONTENT_FILTERED`，当前任务直接 failed |
 | 非法候选/非 JSON 输出 | 最多一次格式修复，再失败则进入队列退避 |
 
-没有在 worker 内 sleep 或立即循环重发网络请求。服务端 `Retry-After` 支持秒数和 HTTP-date；上限 86400 秒，取它与本地指数退避的较大值，保存到现有 `available_at`，重启后继续遵守。该机制是每任务退避，尚不是跨任务的全局请求配额调度器。
+没有在 worker 内 sleep 或立即循环重发网络请求。服务端 `Retry-After` 支持秒数和 HTTP-date；上限 86400 秒，取它与本地指数退避的较大值，保存到现有 `available_at`，重启后继续遵守。v0.21 增加同库、同端点与凭据的跨任务闸门：共享并发、起始间隔和供应商冷却，包括格式修复请求。纯等待重排不消耗尝试次数，已发请求返回非法候选后等待修复则保留真实尝试，见 [调度算法与边界](deepseek-scheduling.md)。
 
-格式修复最多增加一次 API 调用，只重发原事件与固定格式约束，不把出错的模型正文重新拼进指令。单任务尝试默认最多 3 次，因此持续格式失败最坏可调用 6 次 API；可以用 `DeepSeekExtractor(client, repair_invalid_output=False)` 关闭修复。传输响应上限 2 MiB，候选 JSON 上限 256000 字符；HTTP 错误正文不读取、不写日志，异常链不回显凭据和供应商原始错误。全部候选校验通过后才能开始持久写入。
+格式修复最多增加一次 API 调用，只重发原事件与固定格式约束，不把出错的模型正文重新拼进指令。单任务尝试默认最多 3 次，因此持续格式失败通常最多可调用 6 次 API；进程崩溃、来源代次变化后的重新计算仍可能增加实际调用次数，不能视为计费硬上限。可以用 `DeepSeekExtractor(client, repair_invalid_output=False)` 关闭修复。修复若未获得配额，本次计失败并延后；下一次从原事件重新抽取，不持久保存出错输出或恢复半次修复。传输响应上限 2 MiB，候选 JSON 上限 256000 字符；HTTP 错误正文不读取、不写日志，异常链不回显凭据和供应商原始错误。全部候选校验通过后才能开始持久写入。
 
 ## 可复现评估
 

@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .clock import Clock
+from .clock import Clock, load_timezone
 from .errors import JobLeaseLost
 from .storage.database import Database
 from .storage.repository import JobRecord
@@ -154,7 +154,6 @@ class ConsolidationWorker:
         from .consolidation import run_pending_jobs
         from .retrieval.vector import VectorIndex
         from .storage.database import Database
-        from zoneinfo import ZoneInfo
 
         db = None
         try:
@@ -175,7 +174,7 @@ class ConsolidationWorker:
                         extractor=self._extractor,
                         vector_index=vectors,
                         limit=self._batch_size,
-                        tz=ZoneInfo(self._timezone),
+                        tz=load_timezone(self._timezone),
                         lease_seconds=self._lease_seconds,
                         retry_base_seconds=self._retry_base_seconds,
                         retry_max_seconds=self._retry_max_seconds,
@@ -187,7 +186,7 @@ class ConsolidationWorker:
                     if report.claimed == 0:
                         break
                     # 失败任务有退避时间；继续循环只会空转，等下一次唤醒。
-                    if report.failed or report.lease_lost or report.stale_results:
+                    if report.failed or report.lease_lost or report.stale_results or report.deferred:
                         break
         except Exception as exc:  # 后台故障不能杀死宿主进程
             logger.exception("记忆后台整理器停止")
