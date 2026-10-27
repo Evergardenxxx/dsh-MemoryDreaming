@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.16.1，schema 19，修复跨窗口缓存失效、摘要撤回保护和实体索引同步**。已支持双时间修订回放、作用域物理清除、原子快照导入、关系图遍历、健康趋势快照及可选变更提议审批。模型默认只能读；可信宿主显式开启策略后，模型也只能创建纠错、遗忘或检查点提议，审批仍由宿主独立完成。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接；上下文压缩时保存短 handoff。当前 351 个回归测试通过。真实中文语义检索、DeepSeek 请求级 token 预算、真实 Harness 生命周期验收和外部备份清理仍待完成。
+当前状态：**v0.17，schema 19，完善 DeepSeek 抽取的错误分级、限流退避、单次格式修复、来源对齐与中文评估**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引和可选变更提议审批。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 385 个回归测试通过；真实 DeepSeek 质量、中文语义嵌入、完整请求 token 预算及真实 Harness 生命周期仍待验收。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -36,7 +36,7 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部测试（当前 351 项）
+python -m unittest                # 跑全部测试（当前 385 项）
 python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 python -X utf8 examples/core_proposal.py
 ```
@@ -143,6 +143,10 @@ tests/
 `schema`）并返回 JSON 的 provider，传给 `LLMExtractor(provider)`，再作为
 `MemoryRuntime(consolidation_extractor=...)` 的抽取器。模型输出仍会经过来源片段、
 四类正文和作用域校验；文件库可用 `Settings(auto_consolidation=True)` 自动消费队列。
+
+当前生产适配器为 `DeepSeekExtractor.from_env()`。它支持可持久化的 429/网络退避、不可重试错误分级和最多一次格式修复；后端生成稳定去重键，来源引句唯一时可对齐 Unicode 偏移，未知事件时间保留 unknown。配置、实际 Schema 和边界见 [DeepSeek 抽取指南](docs/deepseek-extraction.md)。
+
+独立中文抽取回归可运行 `python -X utf8 -m memorydreaming eval-extraction --extractor rules`；配置 API key 后可选 `--extractor deepseek`，也支持保存候选并离线 replay。内置 24 条合成用例的规则基线为 14/24 case 通过、标注匹配召回 28.6%；它暴露能力差距，不代表 DeepSeek 的实际成绩。
 
 如果宿主拥有目标模型的 tokenizer，可以传入 `ExactTokenCounter` 获取真实预算；引擎默认使用标记为 `estimated` 的零依赖估算，不会自行下载供应商 tokenizer。
 

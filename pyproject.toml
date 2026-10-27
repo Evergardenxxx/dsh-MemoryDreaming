@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memorydreaming"
-version = "0.16.1"
+version = "0.17.0"
 description = "面向长期陪伴角色的持久记忆引擎：身份、关系、共同经历可跨窗口恢复"
 readme = "README.md"
 requires-python = ">=3.10"          # 用到了 X | None 这种新式类型标注
@@ -24,4 +24,4 @@ packages = ["memorydreaming", "memorydreaming.storage", "memorydreaming.retrieva
 
 [tool.setuptools.package-data]
 # schema.sql 是运行时读取的建表脚本，必须跟着包一起安装
-memorydreaming = ["storage/*.sql", "llm-tools.json"]
+memorydreaming = ["storage/*.sql", "llm-tools.json", "data/*.json"]

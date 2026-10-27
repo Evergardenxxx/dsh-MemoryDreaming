@@ -45,6 +45,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", help="初始化数据库结构")
     sub.add_parser("demo", help="跑一遍完整演示场景")
     sub.add_parser("eval", help="跑一遍检索评估（Recall@5 / MRR / 无依据拒绝）")
+    extraction_eval = sub.add_parser("eval-extraction", help="独立中文抽取评估，不写记忆库")
+    extraction_eval.add_argument("--extractor", choices=("rules", "deepseek", "replay"), default="rules")
+    extraction_eval.add_argument("--dataset", help="自定义标注 JSON；默认内置中文合成回归集")
+    extraction_eval.add_argument("--predictions", help="replay 模式读取保存的候选文件")
+    extraction_eval.add_argument("--save-predictions", help="保存候选供离线复核；可能包含评估正文")
+    extraction_eval.add_argument("--output", help="将不含正文的评分报告保存为 JSON")
     sub.add_parser("jobs", help="查看任务就绪、退避、租约与失败统计")
 
     reindex = sub.add_parser("reindex", help="重建某个角色的向量和实体索引")
@@ -126,6 +132,29 @@ def main(argv: list[str] | None = None) -> int:
         # 评估用临时库，跑完即弃；传 --db 可以保留下来慢慢看
         print(run_evaluation(args.db).render())
         return 0
+
+    if args.command == "eval-extraction":
+        from pathlib import Path
+        from .extraction_evaluation import (DEFAULT_DATASET, ReplayExtractor, dataset_fingerprint,
+                                            load_dataset, run_extraction_evaluation)
+        dataset_path = args.dataset or DEFAULT_DATASET
+        dataset = load_dataset(dataset_path)
+        if args.extractor == "replay":
+            if not args.predictions:
+                parser.error("replay 模式需要 --predictions")
+            extractor = ReplayExtractor(args.predictions, dataset["dataset_id"],
+                                        dataset_sha256=dataset_fingerprint(dataset))
+        else:
+            if args.predictions:
+                parser.error("--predictions 只用于 replay 模式")
+            extractor = DeepSeekExtractor.from_env() if args.extractor == "deepseek" else RuleBasedExtractor()
+        report = run_extraction_evaluation(extractor, dataset_path=dataset_path,
+                                           predictions_output=args.save_predictions)
+        rendered = json.dumps(report, ensure_ascii=False, indent=2)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
+        return 0 if report["passed"] == report["case_count"] else 1
 
     if args.command == "mcp":
         from .host import HostAdapter, SessionBinding

@@ -200,7 +200,7 @@ JSON 模式只接受独立的结构化工具意图，不从面向用户的自由
 
 ## 7. 后台抽取模型契约
 
-输入：宿主绑定的单条原始事件、说话者、时间/时区及模态提示。正文作为不可信资料；抽取器没有聊天用户的工具权限。输出按 [extraction-response.schema.json](contracts/extraction-response.schema.json) 校验：
+输入：宿主绑定的单条原始事件、说话者、时间/时区及模态提示。正文作为不可信资料；抽取器没有聊天用户的工具权限。下列 [extraction-response.schema.json](contracts/extraction-response.schema.json) 是后续完整契约设计；当前 DeepSeek 生产适配器使用更小的 [candidates 契约](contracts/deepseek-extraction.schema.json)，字段映射、重试和验收边界见 [DeepSeek 抽取指南](deepseek-extraction.md)：
 
 ```text
 schema_version = 1.0
@@ -218,7 +218,7 @@ source_span 使用原始事件正文的 Unicode 码点下标，左闭右开；�
 
 event_id、scope、extractor_version、candidate_key、assertion_key、job token、版本与核心写入结果均由后端产生。模型不填写这些权限/标识字段。后台将合法候选映射到 MemoryDraft，再验证遗忘标记、模态和时间；JSON 合法不代表事实正确。缺模型配置、超时或结构错误按算法规格降级/重试。
 
-当前规则抽取器已提供原文码点区间，运行时校验其上下界并写入 MemoryItem.source_spans。未来模型适配器还须按上文核对 quote，再映射为 MemoryDraft.source_span=(start,end)；现有本地抽取协议并未实现 JSON Schema/quote 校验。
+当前规则抽取器已提供原文码点区间，运行时校验上下界并写入 MemoryItem.source_spans。DeepSeek v2 已验证候选字段、四类正文、数字和时间；`source_quote` 提供时会逐字核对并在唯一匹配时修正位置。旧 callable 可以不提供 quote，此时只有下标验证。实际 `source_span` 为 `[start,end]` 数组，时间采用 `occurred_start/end/precision`；完整设计中的对象结构尚未直接用于生产，不能混用两份契约。
 
 ## 8. 版本与发布门槛
 
