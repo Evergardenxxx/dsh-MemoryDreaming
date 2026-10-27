@@ -1318,6 +1318,21 @@ class ForgetRepository:
         return spans
 
     def is_suppressed(self, item: MemoryItem) -> bool:
+        if self.is_fact_suppressed(item):
+            return True
+        # 尚未插入的抽取候选不读取持久支持图；显式绑定在插入后独立审批。
+        if self._conn.execute(
+            "SELECT 1 FROM evidence_sets WHERE memory_id=? UNION ALL "
+            "SELECT 1 FROM memory_links WHERE from_memory_id=? AND relation='derived_from' LIMIT 1",
+            (item.memory_id, item.memory_id),
+        ).fetchone():
+            from ..evidence import EvidenceEngine
+            engine = EvidenceEngine(self._conn, item.scope).solve([("memory", item.memory_id)])
+            return ("memory", item.memory_id) not in engine.live
+        return False
+
+    def is_fact_suppressed(self, item: MemoryItem) -> bool:
+        """仅遗忘账本，不递归支持图；供最小不动点的节点资格检查。"""
         tombstone = self.assertion_tombstone(item)
         authorized = self._relearning_tombstone(item) if tombstone is not None else None
         if tombstone is not None and tombstone != authorized:

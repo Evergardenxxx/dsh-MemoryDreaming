@@ -13,6 +13,7 @@ from functools import cached_property
 from .clock import to_utc_iso
 from .llm import AdapterError, dumps
 from .models import CoreKind, LinkRelation, MemoryStatus, Scope
+from .evidence import EvidenceEngine
 
 
 def forbidden() -> AdapterError:
@@ -88,6 +89,7 @@ class ViewReader:
         self.binding, self.clock = binding, clock
         self.excluded = set(exclude_event_ids)
         self._cache: dict[tuple[str, str], RecordView] = {}
+        self._support = {}
         self._visiting: set[tuple[str, str]] = set()
         self.nodes = 0
 
@@ -125,14 +127,27 @@ class ViewReader:
                 or self.repos.forgetting.is_suppressed(item)
                 or (item.status is MemoryStatus.SUPERSEDED and self.repos.links.has_relation(target, LinkRelation.PART_OF))):
             raise forbidden()
-        sources = [self.load("event", ref) for ref in sorted(set(item.source_event_ids))]
-        sources += [self.load("memory", ref) for ref in sorted(set(self.repos.links.parents_of(target)))]
+        # 只展开一组存活 AND 依据；失效的 OR 分支不能遮蔽有效分支。
+        if target not in self._support:
+            engine = EvidenceEngine(self.runtime.db.connection, item.scope,
+                                    excluded_events=self.excluded).solve([("memory", target)])
+            if ("memory", target) not in engine.live:
+                raise forbidden()
+            for node in engine.live:
+                if node[0] == "memory":
+                    self._support.setdefault(node[1], engine.witness.get(node, []))
+        sources = [self.load(kind, ref) for kind, ref in self._support[target]]
         data = self._record_data("memory", dumps(item.body), item.occurred_start, item.occurred_end, item.occurred_precision)
         data.update(memory_type=item.memory_type.value,
                     speaker=item.source_speaker if item.source_speaker in ("user", "character", "system") else None,
                     epistemic_status=item.epistemic_status.value, modality=item.modality.value,
                     valid_from=to_utc_iso(item.valid_from), valid_to=to_utc_iso(item.valid_to),
                     valid_now=item.is_current(self.clock.now()))
+        config = self.runtime.db.connection.execute(
+            "SELECT version FROM evidence_sets WHERE memory_id=?", (target,),
+        ).fetchone()
+        if config:
+            data["support"] = {"mode": "all", "evidence_version": config[0]}
         return RecordView("memory", target, data, self.repos.forgetting.epoch(item.scope), sources)
 
     def _event(self, target: str) -> RecordView:
@@ -206,12 +221,20 @@ class ViewReader:
         return RecordView("summary", target, data, self.repos.forgetting.epoch(item.scope), sources)
 
     def _core(self, target: str) -> RecordView:
+        expected = None
         try:
-            kind = CoreKind(target)
-        except ValueError:
+            if target.startswith("["):
+                scope_key, core_name, expected = json.loads(target)
+                kind = CoreKind(core_name)
+                from .assertions import core_scope_key
+                if scope_key != core_scope_key(self.binding.scope, kind):
+                    raise ValueError()
+            else:
+                kind = CoreKind(target)
+        except (ValueError, TypeError):
             raise forbidden() from None
         core = self.repos.cores.latest(self.binding.scope, kind)
-        if core is None:
+        if core is None or (expected is not None and core.core_version != expected):
             raise forbidden()
         payload, fields, sources = {}, {}, {}
         for name, value in core.payload.items():
@@ -246,6 +269,8 @@ class ViewReader:
 def render_record(view: RecordView, registry: ReferenceRegistry) -> dict:
     data = dict(view.data)
     data.update(ref=registry.issue(view), source_refs=[registry.issue(item) for item in view.sources[:20]])
+    if "support" in data:
+        data["support"] = {**data["support"], "source_refs": data["source_refs"]}
     # 事件/记忆尚无完整修订日志，使用 48 位内容指纹作不透明版本标识，保持 JS 安全整数范围。
     data.setdefault("record_version", int(view.revision[:12], 16) + 1)
     return data

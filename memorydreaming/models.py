@@ -769,6 +769,15 @@ class ForgetResult:
     updated_memory_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class EvidenceRef:
+    """可信宿主签发的持久依据，revision 锁定内容与来源版本。"""
+
+    kind: str
+    target: str
+    revision: str
+
+
 @dataclass
 class RelearningResult:
     """可信宿主明确批准重新学习后的持久回执，不包含被遗忘正文。"""

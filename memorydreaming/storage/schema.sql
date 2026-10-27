@@ -250,6 +250,32 @@ CREATE TABLE IF NOT EXISTS memory_links (
 CREATE INDEX IF NOT EXISTS idx_links_to   ON memory_links (to_memory_id, relation);
 CREATE INDEX IF NOT EXISTS idx_links_from ON memory_links (from_memory_id, relation);
 
+-- 一个组内 AND，多个组之间 OR；空组无效，不产生无依据的事实根。
+CREATE TABLE IF NOT EXISTS evidence_sets (
+    memory_id TEXT PRIMARY KEY REFERENCES memories(memory_id),
+    scope_key TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version > 0),
+    content_key TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS evidence_groups (
+    group_id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL REFERENCES evidence_sets(memory_id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    UNIQUE(memory_id, position)
+);
+CREATE TABLE IF NOT EXISTS evidence_members (
+    group_id TEXT NOT NULL REFERENCES evidence_groups(group_id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('event','memory','core_version')),
+    target TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    PRIMARY KEY(group_id, position),
+    UNIQUE(group_id, kind, target)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_target ON evidence_members(kind,target);
+
 -- ----------------------------------------------------------------------------
 -- 向量索引：语义通道的候选来源
 -- ----------------------------------------------------------------------------

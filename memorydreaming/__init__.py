@@ -30,6 +30,7 @@ from .models import (
     CorrectionResult,
     EpistemicStatus,
     EventRecord,
+    EvidenceRef,
     ForgetResult,
     ForgetSelector,
     RelearningResult,
@@ -64,7 +65,7 @@ from .proposals import CoreProposalPolicy
 from .scheduling import DeepSeekRequestScheduler
 from .portability import export_snapshot, import_snapshot, load_snapshot, validate_snapshot, write_snapshot
 
-__version__ = "0.23.0"
+__version__ = "0.24.0"
 
 __all__ = [
     "MemoryRuntime",
@@ -95,6 +96,7 @@ __all__ = [
     "CoreKind",
     "CoreSnapshot",
     "EventRecord",
+    "EvidenceRef",
     "Query",
     "QueryPlan",
     "RetrievalResult",

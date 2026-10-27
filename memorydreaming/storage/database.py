@@ -55,7 +55,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 20：作用域清除审批的无正文最小回执，纯新增表由初始化自动创建。
 # 版本 21：跨任务 DeepSeek 请求配额与可恢复的在途请求租约，纯新增表。
 # 版本 22：重新学习授权与遗忘屏障；旧抑制账本继续保留。
-SCHEMA_VERSION = "22"
+# 版本 23：类型化 AND/OR 证据组，纯新增表；旧链接保持 OR 兼容语义。
+SCHEMA_VERSION = "23"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -260,6 +261,7 @@ class Database:
             "memory_tombstones", "tombstone_sources", "forgotten_events",
             "scope_mutations", "scope_purges", "core_field_tombstones", "host_deliveries",
             "fact_forgetting_barriers", "relearning_grants",
+            "evidence_sets", "evidence_groups", "evidence_members",
         )
         for table in tables:
             for operation in ("INSERT", "UPDATE", "DELETE"):

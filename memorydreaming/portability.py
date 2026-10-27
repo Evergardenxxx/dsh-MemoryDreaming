@@ -34,6 +34,9 @@ TABLES = (
     "memories",
     "memory_revisions",
     "memory_links",
+    "evidence_sets",
+    "evidence_groups",
+    "evidence_members",
     "summaries",
     "consolidation_jobs",
     "memory_tombstones",
@@ -64,6 +67,9 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "memories": ("memory_id",),
     "memory_revisions": ("revision_id",),
     "memory_links": ("link_id",),
+    "evidence_sets": ("memory_id",),
+    "evidence_groups": ("group_id",),
+    "evidence_members": ("group_id", "position"),
     "summaries": ("summary_id",),
     "consolidation_jobs": ("job_id",),
     "memory_tombstones": ("tombstone_id",),
@@ -141,7 +147,7 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
     selected_event_ids: set[str] = set()
     for table in TABLES:
         rows = [_row_dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
-        if scope is not None and table not in {"memory_links", "tombstone_sources", "entity_mentions"}:
+        if scope is not None and table not in {"memory_links", "tombstone_sources", "entity_mentions", "evidence_groups", "evidence_members"}:
             rows = [row for row in rows if _row_scope_matches(row, scope)]
         if table == "memories":
             selected_memory_ids = {str(row["memory_id"]) for row in rows}
@@ -150,6 +156,10 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
         tables[table] = rows
 
     if scope is not None:
+        supported_ids = {row["memory_id"] for row in tables["evidence_sets"]}
+        tables["evidence_groups"] = [row for row in tables["evidence_groups"] if row["memory_id"] in supported_ids]
+        group_ids = {row["group_id"] for row in tables["evidence_groups"]}
+        tables["evidence_members"] = [row for row in tables["evidence_members"] if row["group_id"] in group_ids]
         tables["memory_links"] = [
             row for row in tables["memory_links"]
             if row.get("from_memory_id") in selected_memory_ids
@@ -241,6 +251,9 @@ def validate_snapshot(db: Database, snapshot: dict[str, Any]) -> dict[str, Any]:
         if (table in {"fact_forgetting_barriers", "relearning_grants"} and source_schema < 22
                 and table not in tables and table not in manifest.get("tables", {})):
             continue
+        if (table in {"evidence_sets", "evidence_groups", "evidence_members"} and source_schema < 23
+                and table not in tables and table not in manifest.get("tables", {})):
+            continue
         if not isinstance(rows, list):
             errors.append({"code": "TABLE_INVALID", "message": f"表 {table} 不是数组"})
             continue
@@ -277,6 +290,30 @@ def validate_snapshot(db: Database, snapshot: dict[str, Any]) -> dict[str, Any]:
     for row in tables.get("memory_links", []):
         if row.get("from_memory_id") not in memory_ids or row.get("to_memory_id") not in memory_ids:
             errors.append({"code": "MISSING_LINK_TARGET", "message": f"链接 {row.get('link_id')} 指向不存在的记忆"})
+    evidence_ids = {row.get("memory_id") for row in tables.get("evidence_sets", [])}
+    groups = {row.get("group_id"): row for row in tables.get("evidence_groups", [])}
+    core_versions = {(row.get("scope_key"), row.get("kind"), row.get("core_version")) for row in tables.get("core_versions", [])}
+    for row in tables.get("evidence_members", []):
+        valid = row.get("group_id") in groups
+        if row.get("kind") == "memory":
+            valid = valid and row.get("target") in memory_ids
+        elif row.get("kind") == "event":
+            valid = valid and row.get("target") in event_ids
+        elif row.get("kind") == "core_version":
+            try:
+                valid = valid and tuple(json.loads(row["target"])) in core_versions
+            except (ValueError, TypeError):
+                valid = False
+        else:
+            valid = False
+        if not valid:
+            errors.append({"code": "MISSING_EVIDENCE_SOURCE", "message": "证据成员引用不存在的组或来源"})
+    for key in evidence_ids:
+        if key not in memory_ids or not any(row["memory_id"] == key for row in groups.values()):
+            errors.append({"code": "EMPTY_EVIDENCE_SET", "message": "显式支持集缺少目标或支持组"})
+    for key, row in groups.items():
+        if row.get("memory_id") not in evidence_ids or not any(member.get("group_id") == key for member in tables.get("evidence_members", [])):
+            errors.append({"code": "EMPTY_EVIDENCE_GROUP", "message": "证据组必须有目标和非空前提"})
 
     source_journal = manifest.get("journal") or {}
     if not manifest.get("partial") and source_journal.get("valid") is not True:
@@ -356,7 +393,7 @@ def _decode_jsonable(value: Any) -> Any:
 # 当前数据库的触发器/重建流程产生。
 _IMPORT_ORDER = (
     "events", "activities", "core_versions", "session_handoffs", "memories",
-    "memory_revisions", "memory_links", "summaries", "consolidation_jobs",
+    "memory_revisions", "memory_links", "evidence_sets", "evidence_groups", "evidence_members", "summaries", "consolidation_jobs",
     "forgotten_events", "scope_mutations", "scope_purges", "memory_tombstones",
     "tombstone_sources", "core_field_tombstones", "health_snapshots", "entities", "entity_mentions", "host_deliveries",
     "fact_forgetting_barriers", "relearning_grants",

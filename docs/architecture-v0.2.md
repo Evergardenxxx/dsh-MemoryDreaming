@@ -2,7 +2,7 @@
 
 日期：2026-10-26。代码基线：v0.5.0 / `48cf876`，SQLite schema v5。本文是后续开发的设计基线，**不表示所有模块已实现**。算法见 [算法规格](algorithms-v0.2.md)，调用契约见 [LLM 接口协议](llm-interface-v1.md)。v0.1 保留为早期提案与开源参考记录。
 
-v0.6 进展：schema v6 已实现持久事实抑制、来源片段、scope mutation epoch、核心字段来源及领域/关系版本隔离，见 [实现说明](fact-suppression.md)。以下状态表已同步；完整擦除与类型化证据组仍未实现。
+v0.6 已实现持久事实抑制、来源片段、scope mutation epoch、核心字段来源及领域/关系隔离；v0.23 增加受控重新学习，v0.24 实现类型化 AND/OR 支持组，见 [事实抑制](fact-suppression.md) 与 [证据组](evidence-groups.md)。完整外部擦除仍未实现。
 
 v0.7 进展：HostAdapter、受控引用、逐轮记忆预算和 MCP 两个只读工具已实现，schema v7 新增实际投递记录，见 [接入指南](host-adapter.md)。具体聊天产品的生命周期 hook 和供应商工具往返仍待完成。
 
@@ -62,7 +62,7 @@ LLM 服务是可替换的计算提供者。对话模型、记忆抽取模型和�
 | Extractor / Formation Policy | EventRecord → MemoryDraft[] → validated candidates | 规则版覆盖四类记忆的显式格式；统一候选校验与 DeepSeek `LLMExtractor` 已实现，供应商调用由宿主配置 |
 | Mutation Service | 撤回、替代、来源变化、删除 | 已实现部分纠正与事实抑制；正文擦除待实现 |
 | Host / LLM Adapter | 会话钩子、JSON 工具、参数与权限校验 | 已实现 Python 生命周期、pre-compress handoff、可选核心建议与宿主审批、MCP 只读服务；产品 hook 与通用修改待接入 |
-| Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | 抑制与 scope epoch 已实现；类型化 AND/OR 组待实现 |
+| Evidence / Tombstone | 类型化来源、依赖组、持久抑制、版本栅栏 | v0.24 已实现类型化 AND/OR 组、版本锁定和最小不动点校验，见 [证据组](evidence-groups.md) |
 | Health / Observability | 记忆、摘要、队列和工作循环的健康摘要 | `MemoryRuntime.memory_health()` 已实现无正文指标；趋势、告警和 UI 待实现 |
 | Session Cache / Prefetch | 会话级候选缓存与宿主预取 | 已实现 TTL、作用域代次、事件和引用 revision 校验；跨进程缓存与调度待实现 |
 | TokenCounter / Embedding Provider | 目标分词器与真实语义向量 | 可注入 TokenCounter；默认估计与哈希向量，真实模型待接入 |
@@ -153,7 +153,7 @@ v0.7 适配器保存用户消息后即可准备回答；该消息作为当前输
 | 四类记忆 | memories + body_json + source_spans_json；抑制时计算稳定断言键 | 完整正文校验、修订记录 |
 | 身份/关系 | core_versions + core_proposals；候选/生效分离、字段来源、审批与来源版本检查 | 长期归纳、完整修订日志及来源授权细化 |
 | 持续活动 | activities | 保持版本 CAS，检查点引用具体事件 |
-| 来源与关系 | source_event_ids + memory_links | typed evidence_refs + AND/OR 支持组 |
+| 来源与关系 | source_event_ids + memory_links + evidence_sets/groups/members | typed evidence_refs 与 AND/OR 支持组已实现；增量求解及历史回放仍不支持 |
 | 遗忘标记 | memory_tombstones、tombstone_sources、scope_mutations、core_field_tombstones、fact_forgetting_barriers、relearning_grants | 更完整内容擦除与外部上下文撤销；受控重新学习已实现 |
 | 巩固 | consolidation_jobs；租约、抑制和 epoch 检查 | 来源修订与 scope generation 检查 |
 | 派生索引 | FTS、memory_vectors、summaries | 记录 source_revision / projection_epoch，失效后再重建 |

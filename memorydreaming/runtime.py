@@ -40,6 +40,7 @@ from .models import (
     Correction,
     CorrectionResult,
     EventRecord,
+    EvidenceRef,
     ForgetResult,
     ForgetSelector,
     LinkRelation,
@@ -802,7 +803,7 @@ class MemoryRuntime:
             for name in patch:
                 fields[name] = list((field_evidence_ids or {}).get(name, evidence_ids or []))
             refs = sorted({ref for values in fields.values() for ref in values})
-            return self._repos.cores.append(
+            result = self._repos.cores.append(
                 scope=scope,
                 kind=core_kind,
                 payload=merged,
@@ -813,6 +814,29 @@ class MemoryRuntime:
                 expected_version=expected_version,
                 field_evidence_ids=fields,
             )
+            self.refresh_evidence()
+            return result
+
+    def evidence_ref(self, kind: str, target: str, scope: Scope) -> EvidenceRef:
+        """可信宿主获取内容版本锁定的依据；不属于模型写工具。"""
+        from .evidence import evidence_reference
+        return evidence_reference(self, kind, target, scope)
+
+    def set_evidence_groups(self, memory_id: str, scope: Scope, groups: list[list[EvidenceRef]],
+                            *, expected_version: int, reason: str) -> dict:
+        """组内 AND，组间 OR；显式组替代目标的旧扁平来源语义。"""
+        from .evidence import set_groups
+        return set_groups(self, memory_id, scope, groups, expected_version=expected_version, reason=reason)
+
+    def refresh_evidence(self) -> list[str]:
+        """可信管理入口：撤回已失去全部支持的派生记忆，不自动重新激活。"""
+        from .evidence import invalidate
+        with self._db.transaction():
+            return invalidate(self)
+
+    def inspect_evidence(self, memory_id: str, scope: Scope) -> dict:
+        from .evidence import inspect
+        return inspect(self, memory_id, scope)
 
     # -- 6. 纠正与删除 -----------------------------------------------------
 
@@ -894,9 +918,11 @@ class MemoryRuntime:
                 self._vectors.index_memory(new_item, now, prepared=plan.vectors)
                 self._repos.entities.index_memory(new_item, now)
 
+            invalidated = self.refresh_evidence()
             return CorrectionResult(
                 old_memory=old,
                 new_memory=inserted or new_item,
+                invalidated_derived=invalidated,
                 note="旧记录保留为历史值，新记录已生效。",
             )
 
@@ -1005,6 +1031,7 @@ class MemoryRuntime:
                 conn.execute("DELETE FROM forgotten_events WHERE event_id IN (" + ",".join("?" for _ in event_ids) + ")", event_ids)
             if memory_ids:
                 placeholders = ",".join("?" for _ in memory_ids)
+                conn.execute(f"DELETE FROM evidence_sets WHERE memory_id IN ({placeholders})", memory_ids)
                 conn.execute(f"DELETE FROM memory_links WHERE from_memory_id IN ({placeholders}) OR to_memory_id IN ({placeholders})", [*memory_ids, *memory_ids])
                 conn.execute(f"DELETE FROM memory_vectors WHERE memory_id IN ({placeholders})", memory_ids)
                 conn.execute(f"DELETE FROM entity_mentions WHERE memory_id IN ({placeholders})", memory_ids)
@@ -1059,6 +1086,7 @@ class MemoryRuntime:
                 "scope.purged", scope=scope, payload={"redacted": True, "scope_count": len(scope_keys)},
                 now=now, idempotency_key=f"scope-purge:{_scope_key(scope)}:{now.isoformat()}",
             )
+            self.refresh_evidence()
 
         return ForgetResult(
             deleted_ids=sorted(memory_ids), forgotten_event_ids=sorted(event_ids),
@@ -1131,11 +1159,8 @@ class MemoryRuntime:
                     self._vectors.delete(item.memory_id)
                     self._repos.entities.remove_memory(item.memory_id)
 
-            if deleted:
-                invalidated = self._invalidate_derived(
-                    deleted[0], now, being_removed=set(deleted)
-                )
             self._repos.events.redact(event_id)
+            invalidated = self.refresh_evidence()
             core_fields = self._repos.forgetting.redact_cores(now)
 
         return ForgetResult(
@@ -1182,7 +1207,7 @@ class MemoryRuntime:
                     tombstones.add(self._repos.forgetting.suppress(item, now))
                     conservative.update(event_id for event_id in item.source_event_ids
                                         if not item.source_spans.get(event_id))
-            targets.update(item.memory_id for item in candidates if self._repos.forgetting.is_suppressed(item))
+            targets.update(item.memory_id for item in candidates if self._repos.forgetting.is_fact_suppressed(item))
             for memory_id in sorted(targets):
                 if self._repos.memories.delete(memory_id, now):
                     deleted.append(memory_id)
@@ -1190,11 +1215,8 @@ class MemoryRuntime:
                     # 否则它还会出现在语义通道的候选里。
                     self._vectors.delete(memory_id)
                     self._repos.entities.remove_memory(memory_id)
-            if deleted:
-                # 整批显式删除完成后统一判断来源，避免遍历顺序改变结果。
-                invalidated = self._invalidate_derived(
-                    deleted[0], now, being_removed=set(deleted)
-                )
+            # 整批变更后统一判断 memory/event/core 三类来源。
+            invalidated = self.refresh_evidence()
             core_fields = self._repos.forgetting.redact_cores(now)
 
         return ForgetResult(
@@ -1365,62 +1387,8 @@ class MemoryRuntime:
         now: datetime,
         being_removed: set[str] | None = None,
     ) -> list[str]:
-        """把「失去全部来源支持」的派生记录标成 retracted。
-
-        规则取自 Zep 的 remove_episode：**只有当一个事实的所有父来源都没了，
-        它才该消失**。如果一条派生记忆同时由 A 和 B 支撑，删掉 A 不该动它——
-        否则删一次来源就会误伤别的证据。
-
-        先取受影响子图，再保留仍能连接到外部有效来源的节点。
-        不等长路径和环形依赖都不能凭互相引用充当独立证据。
-        """
-        removed = set(being_removed or ()) | {memory_id}
-        affected: set[str] = set()
-        queue = deque(sorted(removed))
-        while queue:
-            for dependent in self._repos.links.dependents(queue.popleft()):
-                if dependent not in affected and dependent not in removed:
-                    affected.add(dependent)
-                    queue.append(dependent)
-
-        supported: set[str] = set()
-        for dependent in affected:
-            item = self._repos.memories.get(dependent)
-            if item is None or item.status in (MemoryStatus.RETRACTED, MemoryStatus.DELETED):
-                continue
-            for parent_id in self._repos.links.parents_of(dependent):
-                if parent_id in affected or parent_id in removed:
-                    continue
-                parent = self._repos.memories.get(parent_id)
-                if parent is not None and parent.status not in (
-                    MemoryStatus.RETRACTED, MemoryStatus.DELETED,
-                ):
-                    supported.add(dependent)
-                    break
-
-        queue = deque(sorted(supported))
-        while queue:
-            for dependent in self._repos.links.dependents(queue.popleft()):
-                if dependent not in affected or dependent in supported:
-                    continue
-                item = self._repos.memories.get(dependent)
-                if item is not None and item.status not in (
-                    MemoryStatus.RETRACTED, MemoryStatus.DELETED,
-                ):
-                    supported.add(dependent)
-                    queue.append(dependent)
-
-        invalidated: list[str] = []
-        for dependent in sorted(affected - supported):
-            item = self._repos.memories.get(dependent)
-            if item is not None and item.status not in (
-                MemoryStatus.RETRACTED, MemoryStatus.DELETED,
-            ):
-                self._repos.memories.update_status(dependent, MemoryStatus.RETRACTED, now)
-                self._vectors.delete(dependent)
-                self._repos.entities.remove_memory(dependent)
-                invalidated.append(dependent)
-        return invalidated
+        """兼容内部入口；统一求解类型化支持组和旧 OR 派生链接。"""
+        return self.refresh_evidence()
 
     @staticmethod
     def _scope_matches(actual: Scope, requested: Scope) -> bool:
