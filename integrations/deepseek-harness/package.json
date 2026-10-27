@@ -1,6 +1,6 @@
 {
   "name": "@local/memorydreaming",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "Persistent identity and long-term memory tools for DeepSeek Harness",
   "type": "module",

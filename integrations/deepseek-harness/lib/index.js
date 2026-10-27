@@ -78,9 +78,26 @@ class BridgeClient {
       '--extractor', extractor,
     ]
     if (this.config.autoConsolidation !== false || extractor === 'deepseek') args.push('--auto-consolidation')
+    const env = { ...process.env, PYTHONUTF8: '1' }
+    const embeddingOptions = {
+      embeddingProvider: 'EMBEDDING_PROVIDER',
+      embeddingModelPath: 'EMBEDDING_MODEL_PATH',
+      embeddingRevision: 'EMBEDDING_REVISION',
+      embeddingDim: 'EMBEDDING_DIM',
+      embeddingQueryPrefix: 'EMBEDDING_QUERY_PREFIX',
+      embeddingDocumentPrefix: 'EMBEDDING_DOCUMENT_PREFIX',
+      embeddingMaxSeqLength: 'EMBEDDING_MAX_SEQ_LENGTH',
+      embeddingBatchSize: 'EMBEDDING_BATCH_SIZE',
+      vectorMinScore: 'VECTOR_MIN_SCORE',
+    }
+    for (const [key, suffix] of Object.entries(embeddingOptions)) {
+      if (this.config[key] !== undefined && this.config[key] !== null) {
+        env[`MEMORYDREAMING_${suffix}`] = String(this.config[key])
+      }
+    }
     const child = spawn(python, args, {
       cwd: repoPath,
-      env: { ...process.env, PYTHONUTF8: '1' },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })

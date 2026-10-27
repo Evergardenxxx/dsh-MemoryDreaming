@@ -1,178 +1,189 @@
-"""向量索引：增量维护记忆向量，并提供余弦相似度检索。
-
-第一版是**暴力检索**（全量载入、逐条点乘），理由和取舍：
-
-- 本地场景记忆量在几百到几千条，一次全量点乘是毫秒级，没有性能问题；
-- 没有近似误差，评估检索效果时不会被 ANN 的召回率干扰；
-- 代码短、可读，新手能完整看懂「向量检索」到底发生了什么。
-
-规模真的上去（十万条以上）再换 sqlite-vec、faiss 或 pgvector，
-那时只需要替换这个类的 search 实现，pipeline 不用动。
-
-和 FTS 索引一样，向量是**派生数据**：随时可以用 rebuild() 从 memories 重建。
-换嵌入模型时请调 rebuild()，否则新旧向量混在一起，相似度没有意义。
-"""
+"""作用域内的向量派生索引；配置隔离、损坏回退与原子重建。"""
 
 from __future__ import annotations
 
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+import hashlib
+import json
 
 from ..clock import utcnow
+from ..errors import SourceRevisionChanged
 from ..models import LinkRelation, MemoryItem, MemoryStatus, MemoryType, ReadFilter, Scope
 from ..storage.database import Database
 from ..storage.repository import scope_sql
-from .embedding import Embedder, HashingEmbedder
+from .embedding import Embedder, EmbeddingError, HashingEmbedder, normalized_vector
 
 
 @dataclass
 class VectorHit:
-    """一条向量命中。score 是余弦相似度，范围大致在 -1~1，越大越像。"""
-
     memory_id: str
     memory_type: MemoryType
     score: float
 
 
+@dataclass
+class VectorSearchResult:
+    hits: list[VectorHit] = field(default_factory=list)
+    degraded_reasons: list[str] = field(default_factory=list)
+
+
 class VectorIndex:
-    """记忆向量的增量维护与检索。"""
+    """单投影、精确扫描；更换模型配置后显式重建，不混用向量空间。"""
 
     def __init__(self, db: Database, embedder: Embedder | None = None) -> None:
         self._db = db
         self._repos = db.repositories
-        self._embedder: Embedder = embedder or HashingEmbedder()
+        self._embedder = embedder if embedder is not None else HashingEmbedder()
+        self._dim = self._embedder.dim
+        if isinstance(self._dim, bool) or not isinstance(self._dim, int) or not 1 <= self._dim <= 65536:
+            raise ValueError("嵌入维度超出范围")
+        signature = {"model": self._embedder.name, "dim": self._dim,
+                     "config": getattr(self._embedder, "cache_signature", None),
+                     "projection": "memory-render-400-l2-float32-v1"}
+        self._signature = json.loads(json.dumps(signature, ensure_ascii=False, sort_keys=True, allow_nan=False))
+        digest = hashlib.sha256(json.dumps(self._signature, ensure_ascii=False, sort_keys=True,
+                                           separators=(",", ":")).encode("utf-8")).hexdigest()
+        self._model_name = f"{self._embedder.name}:{digest}"
 
     @property
     def model_name(self) -> str:
-        """当前嵌入模型的名字，会写进 memory_vectors.model。"""
-        return self._embedder.name
+        return self._model_name
 
     @property
     def cache_signature(self) -> dict:
-        """模型名须标识版本/前缀/归一化策略；自定义模型可补充配置指纹。"""
-        return {"model": self._embedder.name, "dim": self._embedder.dim,
-                "config": getattr(self._embedder, "cache_signature", None)}
+        return {"namespace": self._model_name}
+
+    def _encode_documents(self, texts: list[str]) -> list[list[float]]:
+        try:
+            encode = getattr(self._embedder, "embed_documents", None)
+            rows = encode(texts) if encode is not None else [self._embedder.embed(text) for text in texts]
+            if len(rows) != len(texts):
+                raise EmbeddingError("INVALID_EMBEDDING")
+            vectors = [normalized_vector(row, self._dim) for row in rows]
+            if not isinstance(self._embedder, HashingEmbedder) and any(not any(row) for row in vectors):
+                raise EmbeddingError("INVALID_EMBEDDING")
+            return vectors
+        except EmbeddingError:
+            raise
+        except Exception as exc:
+            raise EmbeddingError() from exc
+
+    def _encode_query(self, text: str) -> list[float]:
+        try:
+            encode = getattr(self._embedder, "embed_query", self._embedder.embed)
+            vector = normalized_vector(encode(text), self._dim)
+            if not any(vector) and not isinstance(self._embedder, HashingEmbedder):
+                raise EmbeddingError("INVALID_EMBEDDING")
+            return vector
+        except EmbeddingError:
+            raise
+        except Exception as exc:
+            raise EmbeddingError() from exc
+
+    def _eligible(self, memory: MemoryItem) -> bool:
+        return memory.status in (MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED) and not (
+            self._repos.forgetting.is_suppressed(memory) or (
+                memory.status is MemoryStatus.SUPERSEDED
+                and self._repos.links.has_relation(memory.memory_id, LinkRelation.PART_OF)
+            )
+        )
+
+    def _store(self, memory_id: str, vector: list[float], now: datetime) -> bool:
+        if not any(vector):
+            self.delete(memory_id)
+            return False
+        self._repos.vectors.upsert(memory_id, self.model_name, self._dim, array("f", vector).tobytes(), now)
+        return True
 
     def index_memory(self, memory: MemoryItem, now: datetime | None = None) -> bool:
-        """为一条记忆建立/更新向量。返回 False 表示正文为空，跳过。
-
-        空正文不索引是有意为之：零向量和任何东西的相似度都是 0，
-        留在库里只会拖慢扫描。
-        """
-        # 用 render() 而不是 body_text 建向量：
-        # body_text 是给检索用的扁平串，会把「用户提到的约定，尚未完成」这类
-        # 模板话术也算进向量，稀释真正的内容。render() 是按类型组织过的正文，
-        # 更接近人读到的句子，向量更集中。
-        if memory.status in (MemoryStatus.DELETED, MemoryStatus.RETRACTED) or self._repos.forgetting.is_suppressed(memory):
+        if not self._eligible(memory):
             self.delete(memory.memory_id)
             return False
         text = memory.render(400).strip()
         if not text:
+            self.delete(memory.memory_id)
             return False
-
-        vector = self._embedder.embed(text)
-        if not any(vector):
-            return False
-
-        payload = array("f", vector).tobytes()  # float32 比 JSON 省四分之三空间
-        self._repos.vectors.upsert(
-            memory_id=memory.memory_id,
-            model=self._embedder.name,
-            dim=self._embedder.dim,
-            vector=payload,
-            now=now or utcnow(),
-        )
-        return True
+        vector = self._encode_documents([text])[0]
+        return self._store(memory.memory_id, vector, now or utcnow())
 
     def index_memories(self, memories: list[MemoryItem], now: datetime | None = None) -> int:
-        """批量建索引，返回成功条数。"""
         return sum(1 for memory in memories if self.index_memory(memory, now))
 
     def delete(self, memory_id: str) -> None:
-        """删除记忆时同步清掉向量，避免它换个形式又被检索到。"""
         self._repos.vectors.delete(memory_id)
 
-    def search(
-        self,
-        scope: Scope,
-        query_text: str,
-        memory_types: list[MemoryType] | None = None,
-        limit: int = 20,
-        min_score: float = 0.3,
-        *, read_filter: ReadFilter | None = None,
-    ) -> list[VectorHit]:
-        """按余弦相似度检索。
+    def search(self, scope: Scope, query_text: str, memory_types: list[MemoryType] | None = None,
+               limit: int = 20, min_score: float = 0.3, *, read_filter: ReadFilter | None = None) -> list[VectorHit]:
+        """兼容的底层接口；宿主使用 search_with_status 保留降级状态。"""
+        return self.search_with_status(scope, query_text, memory_types, limit, min_score,
+                                       read_filter=read_filter).hits
 
-        参数:
-            min_score: 低于这个分数直接丢弃。没有阈值的话，
-                       任何两句中文都会因为共享「我们」「什么」而有一点分，
-                       结果就是噪声淹没真信号。
-        """
-        query_vector = self._embedder.embed(query_text)
+    def search_with_status(self, scope: Scope, query_text: str, memory_types: list[MemoryType] | None = None,
+                           limit: int = 20, min_score: float = 0.3,
+                           *, read_filter: ReadFilter | None = None) -> VectorSearchResult:
+        result = VectorSearchResult()
+        query_vector = self._encode_query(query_text)
         if not any(query_vector):
-            return []
-
-        rows = self._repos.vectors.load_scope(scope, self._embedder.name, memory_types, read_filter=read_filter)
-        hits: list[VectorHit] = []
-
+            return result
+        rows = self._repos.vectors.load_scope(scope, self.model_name, memory_types, read_filter=read_filter)
         for memory_id, memory_type, blob in rows:
             memory = self._repos.memories.get(memory_id)
-            if memory is None or self._repos.forgetting.is_suppressed(memory):
+            if memory is None or not self._eligible(memory):
                 continue
-            stored = array("f")
-            stored.frombytes(blob)
-            # 维度不一致说明索引是旧模型留下的（换 dim 却没重建），跳过而不是报错
-            if len(stored) != len(query_vector):
+            try:
+                stored = array("f")
+                stored.frombytes(blob)
+                vector = normalized_vector(stored, self._dim)
+                if not any(vector):
+                    raise EmbeddingError("INVALID_EMBEDDING")
+            except (EmbeddingError, ValueError, TypeError):
+                if "VECTOR_INDEX_CORRUPT" not in result.degraded_reasons:
+                    result.degraded_reasons.append("VECTOR_INDEX_CORRUPT")
                 continue
-
-            score = sum(q * s for q, s in zip(query_vector, stored))
+            score = max(-1.0, min(1.0, sum(q * s for q, s in zip(query_vector, vector))))
             if score >= min_score:
-                hits.append(VectorHit(memory_id, memory_type, score))
+                result.hits.append(VectorHit(memory_id, memory_type, score))
 
-        hits.sort(key=lambda hit: hit.score, reverse=True)
-        return hits[:limit]
+        # 旧版没有配置指纹；错配投影要求重建。真实模型还检查完全缺失的投影。
+        missing = self._repos.vectors.unindexed_scope(
+            scope, self.model_name, memory_types, read_filter=read_filter,
+            include_missing=not isinstance(self._embedder, HashingEmbedder),
+        )
+        for memory_id in missing:
+            memory = self._repos.memories.get(memory_id)
+            if memory is not None and self._eligible(memory) and memory.render(400).strip():
+                result.degraded_reasons.append("VECTOR_INDEX_INCOMPLETE")
+                break
+        result.hits.sort(key=lambda hit: (-hit.score, hit.memory_id))
+        result.hits = result.hits[:limit]
+        return result
 
     def rebuild(self, scope: Scope, now: datetime | None = None) -> int:
-        """重建某个角色的全部向量，返回重建条数。
+        """短事务快照 → 事务外批量编码 → 代次复核后原子发布。
 
-        什么时候需要它：
-          - 换嵌入模型之后；
-          - 从备份恢复、或者早期版本没有向量时；
-          - 发现检索结果和正文对不上时（可能是索引漂移）。
+        任一连接在编码期间修改来源/遗忘/索引，都会保守拒绝此次发布。
+        模型失败、代次冲突和提交失败均不会先删掉原有完整索引。
         """
+        if self._db.connection.in_transaction:
+            raise ValueError("向量重建必须在外部事务之外调用")
         moment = now or utcnow()
-        # 重建不能使用检索候选上限，否则第 10001 条以后的有效向量会被误删。
-        memories = self._repos.memories.list_by_scope(
-            scope, limit=-1, statuses=(MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)
-        )
-        memories = [
-            memory for memory in memories
-            if not self._repos.forgetting.is_suppressed(memory) and not (
-                memory.status is MemoryStatus.SUPERSEDED
-                and self._repos.links.has_relation(memory.memory_id, LinkRelation.PART_OF)
+        with self._db.transaction():
+            generation = self._repos.retrieval_cache.generation()
+            memories = [m for m in self._repos.memories.list_by_scope(
+                scope, limit=-1, statuses=(MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)
+            ) if self._eligible(m) and m.render(400).strip()]
+        vectors = self._encode_documents([m.render(400).strip() for m in memories]) if memories else []
+        with self._db.transaction():
+            if self._repos.retrieval_cache.generation() != generation:
+                raise SourceRevisionChanged("向量计算期间来源或派生索引已变化，请重新重建")
+            visible, params = scope_sql(scope, "m")
+            self._db.connection.execute(
+                f"DELETE FROM memory_vectors WHERE memory_id IN (SELECT m.memory_id FROM memories m WHERE {visible})",
+                params,
             )
-        ]
-        alive = {memory.memory_id for memory in memories}
-
-        # 清理范围必须与读取范围一致。重建真实世界或活动 A 时，
-        # 不能把同角色的虚构世界/活动 B 向量当成孤立数据清掉。
-        visible, params = scope_sql(scope, "m")
-        rows = self._db.connection.execute(
-            f"""
-            SELECT v.memory_id
-            FROM memory_vectors v
-            JOIN memories m ON m.memory_id = v.memory_id
-            WHERE {visible}
-            """,
-            params,
-        ).fetchall()
-        for row in rows:
-            if row["memory_id"] not in alive:
-                self._repos.vectors.delete(row["memory_id"])
-
-        return self.index_memories(memories, moment)
+            return sum(self._store(m.memory_id, vector, moment) for m, vector in zip(memories, vectors))
 
     def count(self) -> int:
-        """当前模型下已建索引的条数。"""
-        return self._repos.vectors.count(self._embedder.name)
+        return self._repos.vectors.count(self.model_name)

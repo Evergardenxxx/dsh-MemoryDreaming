@@ -12,6 +12,47 @@ from pathlib import Path
 
 
 class DeepSeekHarnessPluginTest(unittest.TestCase):
+    def test_native_embedding_config_reaches_bridge_and_reports_fallback(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node 不在 PATH 中")
+        root = Path(__file__).resolve().parents[1]
+        entry = (root / "integrations" / "deepseek-harness" / "lib" / "index.js").as_uri()
+        with tempfile.TemporaryDirectory() as temp:
+            config = {"repoPath": str(root), "dbPath": str(Path(temp) / "native.db"), "maxTokens": 4096,
+                      "autoConsolidation": False, "embeddingProvider": "sentence-transformers",
+                      "embeddingModelPath": str(Path(temp) / "not-downloaded"), "embeddingRevision": "fixed-v1",
+                      "embeddingDim": 512, "embeddingQueryPrefix": "检索：", "vectorMinScore": 0.65}
+            script = r'''
+import { apply } from "%ENTRY%";
+const handlers = new Map();
+const ctx = { logger: { debug() {}, warn() {} }, on(event, handler) { handlers.set(event, handler); } };
+apply(ctx, %CONFIG%);
+try {
+  const session = { id: 'semantic-window' };
+  await handlers.get('session/created')(session);
+  await handlers.get('session/event')(session, { type: 'turn/start', data: { turn: 't1' } });
+  await handlers.get('session/event')(session, { type: 'user/message', seq: 1,
+    data: { id: 'u1', source: { kind: 'user' }, content: '以前海边散步的故事' } });
+  const result = await handlers.get('agent/pre-step')(
+    { agent: { session }, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [{ role: 'user', content: '以前海边散步的故事' }] }),
+  );
+  const content = result.messages.find(m => typeof m.content === 'string' && m.content.startsWith('<memory-context')).content;
+  const payload = JSON.parse(content.split('\n')[1]);
+  if (payload.search.retrieval_complete !== false) throw new Error('missing model must report partial');
+  if (!payload.search.degraded_reasons.includes('EMBEDDING_UNAVAILABLE')) throw new Error('embedding config not forwarded');
+  console.log(JSON.stringify({ ok: true }));
+} finally {
+  await handlers.get('dispose')();
+}
+'''.replace("%ENTRY%", entry).replace("%CONFIG%", json.dumps(config, ensure_ascii=False))
+            result = subprocess.run([node, "--input-type=module", "-e", script], cwd=root, text=True,
+                                    encoding="utf-8", capture_output=True, timeout=30,
+                                    env={**os.environ, "MEMORYDREAMING_EMBEDDING_PROVIDER": "hash", "PYTHONUTF8": "1"})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(json.loads(result.stdout.splitlines()[-1])["ok"])
+
     def test_native_lifecycle_starts_bridge_and_closes_session(self):
         node = shutil.which("node")
         if node is None:

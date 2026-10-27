@@ -504,6 +504,14 @@
         },
         "retrieval_complete": {
           "type": "boolean"
+        },
+        "degraded_reasons": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["EMBEDDING_UNAVAILABLE", "INVALID_EMBEDDING", "VECTOR_INDEX_CORRUPT", "VECTOR_INDEX_INCOMPLETE"]
+          }
         }
       },
       "required": [

@@ -2,7 +2,7 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.17，schema 19，完善 DeepSeek 抽取的错误分级、限流退避、单次格式修复、来源对齐与中文评估**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引和可选变更提议审批。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 385 个回归测试通过；真实 DeepSeek 质量、中文语义嵌入、完整请求 token 预算及真实 Harness 生命周期仍待验收。
+当前状态：**v0.18，schema 19，增加可选本地中文语义模型接口、配置隔离、原子索引重建、检索降级和中文向量评估**。已支持跨窗口恢复、有界候选缓存、双时间修订回放、作用域物理清除、原子快照导入、摘要撤回保护、实体索引和可选变更提议审批。模型默认只能读，提议需由可信宿主独立审批。DeepSeek Harness 使用原生 Cordis 插件和本地 JSONL 桥接，压缩时保存短 handoff。当前 412 项工程回归通过；真实 DeepSeek/语义模型质量、完整请求 token 预算及真实 Harness 生命周期仍待验收。
 
 接入从 [宿主与 MCP 指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -10,7 +10,7 @@
 
 插件使用固定的会话绑定（`u1 / c1 / r1`）和独立数据库 `.memorydreaming/deepseek-harness.db`，因此切换聊天窗口不会改变记忆引擎的身份边界。安装或更新时应通过 Harness 的插件管理器安装 `integrations/deepseek-harness` 目录；插件由本地 Python 桥接进程调用 HostAdapter，在每轮请求前注入有限预算的恢复资料，并在回合结束后保存实际显示的助手回复。
 
-当前 Harness 插件已接通逐轮用户事件、受预算限制的恢复检索和助手投递保存；后台整理队列、记忆抽取和核心候选审批仍需要独立宿主调度。
+当前 Harness 插件已接通逐轮用户事件、受预算限制的恢复检索和助手投递保存，默认启动后台整理器；核心候选生效仍需要可信宿主独立审批。
 
 ### 上下文占用
 
@@ -26,17 +26,19 @@ MemoryDreaming 不注册工具，因此不会增加工具 schema；只会按 `ma
 | [算法规格 v0.2](docs/algorithms-v0.2.md) | 形成、路由、时间、融合排序、预算、纠错、遗忘和核心成长 |
 | [LLM 接口协议 v1](docs/llm-interface-v1.md) | 宿主钩子、查询/建议工具、JSON Schema、结果/错误、模型适配与样例 |
 | [实体索引](docs/entity-index.md) | 结构化实体投影、作用域隔离、增量更新与重建边界 |
+| [本地语义嵌入](docs/semantic-embedding.md) | 可选模型、配置指纹、升级重建、失败回退和中文评估 |
 
 早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)、[候选缓存](docs/retrieval-cache.md) 和 [摘要生命周期](docs/summary-lifecycle.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。Python 和原生插件已实现查询与可选变更提议；仓库中独立可选的 MCP 兼容模块只读，Harness 接入不使用该模块。
 
 ## 先跑起来
 
-要求 Python 3.10 以上（开发用的是 3.13），**没有任何第三方依赖**，clone 下来就能跑。
+要求 Python 3.10 以上（当前开发环境为 3.14），默认路径**没有第三方运行时依赖**，clone 下来就能跑。真实语义模型使用可选依赖 `.[semantic]`，需要另行准备本地权重。
 
 ```bash
 python -m memorydreaming demo     # 建核心 → 记对话 → 抽取 → 去重 → 检索 → 纠错 → 删除
 python -m memorydreaming eval     # 检索评估：Recall@5 / MRR / 无依据拒绝 / 主题索引
-python -m unittest                # 跑全部测试（当前 385 项）
+python -m unittest                # 跑全部工程回归测试
+python -m memorydreaming eval-embedding  # 临时库评估字面/同义改写与无依据查询
 python -X utf8 examples/host_lifecycle.py --db .memorydreaming/host-demo.db
 python -X utf8 examples/core_proposal.py
 ```
@@ -94,7 +96,7 @@ memorydreaming/
     ├── timeexpr.py   中文时间表达 → 明确时间范围
     ├── planner.py    查询计划：四类相关度、时间、预算、是否延续当前交流
     ├── keyword.py    关键词检索（FTS5 trigram + LIKE 降级）+ n-gram 特征
-    ├── embedding.py  嵌入模型协议 + 零依赖的哈希嵌入
+    ├── embedding.py  嵌入协议、哈希基线与可选本地语义模型
     ├── vector.py     向量索引：增量维护 + 暴力余弦检索
     ├── decay.py      可用性衰减：半衰期随重要度变化，带下限
     ├── fusion.py     RRF 倒数排名融合
@@ -308,16 +310,16 @@ MRR：1.000
 
 ## 已知限制与下一步
 
-这一版是**骨架**，不是成品。刻意没做的部分：
+当前仍是工程原型，主要边界如下：
 
-- **抽取仍是有限的正则规则**，目前覆盖名字、称呼、约定和喜好。它证明了接口和流水线能跑通，不代表开放对话中的抽取质量。接模型时需实现 `MemoryExtractor`，并验证来源、模态和事实抑制规则。
-- **嵌入是字面哈希**。同义改写召回不了（见评估的观察项）。换真实模型是替换一个类，但要重新标定 `vector_min_score` 并 `reindex`。
+- **抽取默认使用有限规则**；可选 DeepSeek 抽取器已有来源对齐、错误分级、持久退避及中文合成评估，真实账号质量和独立人工标注验收待完成，见 [抽取指南](docs/deepseek-extraction.md)。
+- **嵌入默认是字面哈希**。可选本地 Sentence Transformers 适配器已接入，但未运行真实中文模型，必须评估并校准 `vector_min_score` 后 `reindex`，见 [语义嵌入指南](docs/semantic-embedding.md)。
 - **摘要抽取式生成**。读起来像清单，不是概述；主题词靠二字词频率，遇到指代会失效。
-- **冲突检测只到规则级**。单值谓词换值和否定翻转能识别，复杂表达的冲突仍需验证（「养了猫」与「对猫过敏」本身可以同时成立，不能自动视作矛盾）；`as_of` 按「记录时间 + 有效期」回放，没有记录「何时得知失效」。
+- **冲突检测只到规则级**。单值谓词换值和否定翻转能识别，复杂表达仍需验证（「养了猫」与「对猫过敏」可以同时成立）。记忆双时间修订已实现；核心双时间与摘要历史正文回滚尚未完成。
 - **向量检索是暴力扫描**。本地几百上千条够用，十万条以上要换 ANN。
 - **后台尚不会自动归纳人格成长**。`propose_core` 任务仍没有执行器；已支持基于实际用户消息提出核心字段候选并由宿主独立审批，见 [核心建议](docs/core-proposals.md)。
 - **真实 Harness 往返仍待验收**。已有原生 Cordis 插件、生命周期桥接和进程内 HostAdapter；还需要在 Harness 主程序重启后验证多窗口、压缩、工具回合和异常退出等真实场景。
-- **队列需要宿主持续轮询**。每次 `run_consolidation()` 会回收过期任务；库本身不会启动常驻进程。文件库可在耗时抽取时续租，内存库只有同步租约校验。向量计算仍在写事务内，接远程嵌入前需要把这一步移到事务外；跨设备同步尚未实现。
+- **常驻整理需要运行中的宿主**。文件库可启动后台整理器、租约续期和崩溃回收，内存库仍需显式执行任务。整库向量重建在事务外计算；增量编码和宿主检索的写锁占用仍待缩短。跨设备同步尚未实现。
 
 事实抑制的 API、迁移和边界见 [持久事实抑制](docs/fact-suppression.md)。完整问题清单见 **[docs/open-problems.md](docs/open-problems.md)**。schema v6 增加来源片段、抑制账本、内容代次及核心字段来源；v7 增加 host_deliveries；v8 纯新增 core_proposals，保存待审候选、来源版本与审批回执。迁移保留旧记忆与版本，不补造旧库没有的精确片段。
 
@@ -327,4 +329,4 @@ MRR：1.000
 - Windows 上的 Python 默认不带 IANA 时区数据库，`clock.py` 对常用时区做了固定偏移兜底；想要完整的夏令时支持，`pip install tzdata`。
 - `.memorydreaming/`、`*.db` 已在 `.gitignore` 中忽略，本地数据不会进版本库。
 - 配置项见 `.env.example`，都可以用环境变量覆盖。
-- 换嵌入模型或改维度后，旧向量会被自动跳过（维度不符），必须 `reindex` 一次。
+- v0.18 升级或更换模型/前缀/版本后，旧投影会因配置指纹不匹配被跳过，必须用与插件一致的配置执行 `reindex`。

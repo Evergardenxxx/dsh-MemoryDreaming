@@ -51,11 +51,19 @@ def _build_parser() -> argparse.ArgumentParser:
     extraction_eval.add_argument("--predictions", help="replay 模式读取保存的候选文件")
     extraction_eval.add_argument("--save-predictions", help="保存候选供离线复核；可能包含评估正文")
     extraction_eval.add_argument("--output", help="将不含正文的评分报告保存为 JSON")
+    embedding_eval = sub.add_parser("eval-embedding", help="临时库中文向量召回评估，不写用户记忆")
+    embedding_eval.add_argument("--dataset", help="自定义 JSON 数据集；默认内置中文合成集")
+    embedding_eval.add_argument("--k", type=int, default=3, help="Recall/MRR 的候选上限，默认 3")
+    embedding_eval.add_argument("--min-score", type=float, help="覆盖配置中的向量阈值")
+    embedding_eval.add_argument("--output", help="保存不含查询/文档正文的 JSON 报告")
     sub.add_parser("jobs", help="查看任务就绪、退避、租约与失败统计")
 
     reindex = sub.add_parser("reindex", help="重建某个角色的向量和实体索引")
     reindex.add_argument("--user", required=True)
     reindex.add_argument("--character", required=True)
+    reindex.add_argument("--relationship", help="只重建指定关系；不填则覆盖该角色的全部关系")
+    reindex.add_argument("--domain", default="real")
+    reindex.add_argument("--activity", help="只重建指定活动")
 
     consolidate = sub.add_parser("consolidate", help="执行待处理的抽取任务（使用示例规则抽取器）")
     consolidate.add_argument("--limit", type=int, default=20, help="本次最多处理多少任务")
@@ -132,6 +140,22 @@ def main(argv: list[str] | None = None) -> int:
         # 评估用临时库，跑完即弃；传 --db 可以保留下来慢慢看
         print(run_evaluation(args.db).render())
         return 0
+
+    if args.command == "eval-embedding":
+        from pathlib import Path
+        from .embedding_evaluation import DEFAULT_DATASET, run_embedding_evaluation
+        from .retrieval.embedding import embedder_from_settings
+        settings = Settings.from_env()
+        report = run_embedding_evaluation(
+            embedder_from_settings(settings), dataset_path=args.dataset or DEFAULT_DATASET,
+            min_score=args.min_score if args.min_score is not None else settings.vector_min_score, k=args.k,
+        )
+        rendered = json.dumps(report, ensure_ascii=False, indent=2)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
+        # 工程执行成功不等于质量验收通过，指标不隐藏在退出码中。
+        return 0 if report["quality_complete"] else 2
 
     if args.command == "eval-extraction":
         from pathlib import Path
@@ -211,7 +235,8 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
         return 0
 
     if args.command == "reindex":
-        scope = Scope(user_id=args.user, character_id=args.character)
+        scope = Scope(user_id=args.user, character_id=args.character, relationship_id=args.relationship,
+                      activity_id=args.activity, domain=args.domain)
         vector_count = runtime.rebuild_vectors(scope)
         entity_count = runtime.rebuild_entities(scope)
         print(f"已重建 {vector_count} 条向量（模型：{runtime.vectors.model_name}），{entity_count} 条实体提及")

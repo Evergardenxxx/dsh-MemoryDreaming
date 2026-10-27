@@ -43,7 +43,6 @@ from .models import (
     LinkRelation,
     MemoryItem,
     MemoryStatus,
-    MemoryStatus,
     ObserveResult,
     Query,
     ReadFilter,
@@ -54,7 +53,7 @@ from .models import (
     Turn,
     new_id,
 )
-from .retrieval.embedding import Embedder
+from .retrieval.embedding import Embedder, embedder_from_settings
 from .retrieval.pipeline import RetrievalPipeline
 from .retrieval.vector import VectorIndex
 from .summarization import build_summaries
@@ -82,6 +81,7 @@ class MemoryRuntime:
         # 时钟可替换是「可测试」的关键：测试里用 FixedClock 就能模拟时间流逝
         self._clock = clock or SystemClock()
         self._tz = load_timezone(self._settings.timezone)
+        embedder = embedder if embedder is not None else embedder_from_settings(self._settings)
         self._db = Database.open(self._settings.db_path)
         self._repos = self._db.repositories
         self._consolidator: ConsolidationWorker | None = None
@@ -1159,8 +1159,7 @@ class MemoryRuntime:
           - 从备份恢复，或者早期版本写的记忆还没有向量；
           - 手动改过记忆正文，怀疑索引漂移。
         """
-        with self._db.transaction():
-            return self._vectors.rebuild(scope, self._clock.now())
+        return self._vectors.rebuild(scope, self._clock.now())
 
     def run_consolidation(
         self,

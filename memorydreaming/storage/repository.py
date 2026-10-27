@@ -917,6 +917,7 @@ class MemoryRepository:
             f"UPDATE memories SET {', '.join(assignments)} WHERE memory_id = ?", params
         )
         self._record_revision(memory_id, "content", now)
+        VectorRepository(self._conn).delete(memory_id)
         EntityRepository(self._conn).index_memory(self.get(memory_id), now)
         SummaryRepository(self._conn).invalidate_for_memories([memory_id], now)
 
@@ -2055,6 +2056,18 @@ class VectorRepository:
 
         rows = self._conn.execute(sql, params).fetchall()
         return [(row["memory_id"], MemoryType(row["memory_type"]), row["vector"]) for row in rows]
+
+    def unindexed_scope(self, scope: Scope, model: str, memory_types: list[MemoryType] | None = None,
+                        *, read_filter: ReadFilter | None = None, include_missing: bool = True) -> list[str]:
+        visible, params = retrieval_sql(scope, "m", read_filter)
+        condition = "(v.model != ? OR v.memory_id IS NULL)" if include_missing else "v.model != ?"
+        sql = (f"SELECT m.memory_id FROM memories m LEFT JOIN memory_vectors v ON v.memory_id=m.memory_id "
+               f"WHERE {visible} AND m.status IN ('active','superseded') AND {condition}")
+        params = [*params, model]
+        if memory_types:
+            sql += f" AND m.memory_type IN ({_placeholders(len(memory_types))})"
+            params.extend(t.value for t in memory_types)
+        return [row[0] for row in self._conn.execute(sql, params).fetchall()]
 
     def count(self, model: str | None = None) -> int:
         if model:

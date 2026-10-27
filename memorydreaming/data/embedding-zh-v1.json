@@ -1,0 +1,36 @@
+{
+  "dataset_id": "embedding-zh-v1",
+  "description": "中文陪伴记忆的合成向量召回诊断集，未经独立人工复核；只测字面、同义改写与无依据查询，不代表真实用户质量。",
+  "documents": [
+    {"id": "d_sea", "text": "我最喜欢傍晚沿着海边散步，听浪声，看落日。"},
+    {"id": "d_story", "text": "临睡前请给我讲一个温柔的小故事，这样我比较容易入眠。"},
+    {"id": "d_coffee", "text": "咖啡里不要放糖，我喜欢苦一点的味道。"},
+    {"id": "d_cat", "text": "我养了一只橘猫，它叫年糕。"},
+    {"id": "d_cold", "text": "天冷时手指容易发僵，需要戴上保暖手套。"},
+    {"id": "d_book", "text": "我们约好了星期六去图书馆还书。"},
+    {"id": "d_noise", "text": "工作时嘈杂的环境会让我难以专心，我喜欢安静。"},
+    {"id": "d_lamp", "text": "上次停电时，我们点了一支蜡烛，坐在窗边一起看星星。"},
+    {"id": "d_music", "text": "心情低落的时候，我会弹钢琴放松自己。"},
+    {"id": "d_camera", "text": "出门拍照前要先充满相机电池，再检查存储卡。"},
+    {"id": "d_rain", "text": "下雨天我喜欢坐在窗边喝热茶，听雨滴落在屋檐上。"},
+    {"id": "d_recipe", "text": "煮面时先烧开水，再下面条，最后放青菜。"}
+  ],
+  "queries": [
+    {"id": "q_literal_sea", "text": "海边散步看落日", "relevant_ids": ["d_sea"], "category": "literal"},
+    {"id": "q_literal_cat", "text": "橘猫年糕", "relevant_ids": ["d_cat"], "category": "literal"},
+    {"id": "q_literal_camera", "text": "相机电池存储卡", "relevant_ids": ["d_camera"], "category": "literal"},
+    {"id": "q_literal_rain", "text": "雨天窗边喝热茶", "relevant_ids": ["d_rain"], "category": "literal"},
+    {"id": "q_para_sea", "text": "黄昏的时候去沙滩走走欣赏夕阳", "relevant_ids": ["d_sea"], "category": "paraphrase"},
+    {"id": "q_para_story", "text": "就寝之前用轻柔的童话帮助我睡着", "relevant_ids": ["d_story"], "category": "paraphrase"},
+    {"id": "q_para_coffee", "text": "那杯提神饮料需要加甜味吗", "relevant_ids": ["d_coffee"], "category": "paraphrase"},
+    {"id": "q_para_cold", "text": "冬季怎样保护双手免受寒冻", "relevant_ids": ["d_cold"], "category": "paraphrase"},
+    {"id": "q_para_noise", "text": "周围太吵会不会妨碍我集中注意力", "relevant_ids": ["d_noise"], "category": "paraphrase"},
+    {"id": "q_para_lamp", "text": "断电那晚借着烛光仰望夜空的经历", "relevant_ids": ["d_lamp"], "category": "paraphrase"},
+    {"id": "q_para_music", "text": "情绪消沉时我用哪种乐器舒缓压力", "relevant_ids": ["d_music"], "category": "paraphrase"},
+    {"id": "q_para_recipe", "text": "做汤面应该按什么顺序操作", "relevant_ids": ["d_recipe"], "category": "paraphrase"},
+    {"id": "q_negative_space", "text": "火星探测器的轨道参数", "relevant_ids": [], "category": "negative"},
+    {"id": "q_negative_bank", "text": "我的银行卡密码是什么", "relevant_ids": [], "category": "negative"},
+    {"id": "q_negative_medicine", "text": "我服用降压药的剂量是多少", "relevant_ids": [], "category": "negative"},
+    {"id": "q_negative_address", "text": "我的家庭住址和邮编", "relevant_ids": [], "category": "negative"}
+  ]
+}

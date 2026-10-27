@@ -141,6 +141,8 @@ read 中任一引用越权/不存在，整次请求返回 NOT_FOUND_OR_FORBIDDEN
 
 状态：ok 为调用完成；partial 为超时、预算截断或通道降级后返回部分资料；not_found 为查无依据；proposed 为尚未应用的建议；error 为请求未完成且带结构化错误。`retrieval_complete=true` 只表示计划中的可用通道执行完毕，不意味着找遍所有人类经历或证明事件没发生。
 
+v0.18 的向量故障会保留其他通道，返回 `partial`、`retrieval_complete=false` 和 `warnings`，搜索数据可附带 `degraded_reasons`：`EMBEDDING_UNAVAILABLE`、`INVALID_EMBEDDING`、`VECTOR_INDEX_CORRUPT`、`VECTOR_INDEX_INCOMPLETE`。降级候选不缓存，具体恢复方式见 [语义嵌入指南](semantic-embedding.md)。
+
 证据记录包含 ref、record_kind、memory_type、text、record_version、speaker、epistemic_status、modality、发生区间、valid_now、有效期和 source_refs。返回 event 原话时，memory_type 等不适用字段为 null。返回 summary 时不得把它算作独立来源；必要时 read 其 source_refs。
 
 v0.7 的适配器已转换枚举、UTC 时间、缺口和受控引用。旧 Runtime 对象仍不是此协议 JSON，不能直接把 `dataclass.__dict__` 发送给模型。记忆/事件/摘要暂无修订日志，其 record_version 为 48 位内容指纹整数，不是递增业务版本；引用内部使用完整摘要与 epoch 校验，核心版本仍为真实序号。

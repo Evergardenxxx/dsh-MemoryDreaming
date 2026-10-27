@@ -8,12 +8,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memorydreaming"
-version = "0.17.0"
+version = "0.18.0"
 description = "面向长期陪伴角色的持久记忆引擎：身份、关系、共同经历可跨窗口恢复"
 readme = "README.md"
 requires-python = ">=3.10"          # 用到了 X | None 这种新式类型标注
 dependencies = []                    # 刻意留空，见文件顶部注释
 license = { text = "MIT" }
+
+[project.optional-dependencies]
+semantic = ["sentence-transformers>=3.4,<6"]
 
 [project.scripts]
 # 安装后可以直接在命令行敲 memorydreaming，效果等同 python -m memorydreaming

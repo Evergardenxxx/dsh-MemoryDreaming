@@ -40,6 +40,7 @@ from .fusion import ChannelHit, FusedCandidate, fuse
 from .keyword import KeywordIndex
 from .planner import QueryPlanner
 from .vector import VectorIndex
+from .embedding import EmbeddingError
 
 # 通道权重：得分越高，说明这个通道对本次问题越可信。
 # 时间通道是硬约束，权重固定为 1.0；关键词通道用类型相关度加权。
@@ -91,6 +92,7 @@ class RetrievalPipeline:
         # 使用逐条恢复的修订快照和可解释的关键词/时间匹配。
         summary_hits, summary_channels = self._summary_stage(plan, query)
         hits: list[ChannelHit] = []
+        degraded: list[str] = []
         hits.extend(summary_channels)
         if plan.knowledge_at is not None:
             hits.extend(self._historical_keyword_channel(plan, query))
@@ -99,7 +101,11 @@ class RetrievalPipeline:
             hits.extend(self._recent_channel(plan, query, now))
             hits.extend(self._keyword_channel(plan, query))
             hits.extend(self._entity_channel(plan, query))
-            hits.extend(self._vector_channel(plan, query))
+            try:
+                vector_hits, degraded = self._vector_channel(plan, query)
+                hits.extend(vector_hits)
+            except EmbeddingError as exc:
+                degraded = [exc.code]
             hits.extend(self._time_channel(plan, query))
 
         # 2) 融合排序
@@ -125,6 +131,9 @@ class RetrievalPipeline:
             ],
         )
         gaps = self._collect_gaps(selected, plan, hits)
+        if degraded:
+            gaps.append("向量通道不可用或索引不完整，已使用其他检索通道；当前结果可能遗漏同义表达。")
+            trace.notes.extend(degraded)
 
         result = RetrievalResult(
             query_text=query.text,
@@ -133,6 +142,7 @@ class RetrievalPipeline:
             summaries=summary_hits,
             trace=trace,
             gaps=gaps,
+            degraded_reasons=degraded,
         )
         self._fit_context_budget(result)
         return result
@@ -245,7 +255,7 @@ class RetrievalPipeline:
         return [ChannelHit(hit.memory_id, hit.channel, rank, hit.weight)
                 for rank, hit in enumerate(hits[:self._settings.keyword_candidate_limit], start=1)]
 
-    def _vector_channel(self, plan: QueryPlan, query: Query) -> list[ChannelHit]:
+    def _vector_channel(self, plan: QueryPlan, query: Query) -> tuple[list[ChannelHit], list[str]]:
         """向量通道：找「意思接近但用词不同」的记忆。
 
         第一版的嵌入是字面哈希（见 retrieval/embedding.py），所以这个通道
@@ -256,9 +266,9 @@ class RetrievalPipeline:
         如果不做这层过滤，程序记忆会挤掉本来该给情景记忆的位置。
         """
         if self._vector is None or not plan.keywords:
-            return []
+            return [], []
 
-        results = self._vector.search(
+        results = self._vector.search_with_status(
             query.scope,
             plan.query_text,
             limit=self._settings.vector_candidate_limit,
@@ -268,13 +278,13 @@ class RetrievalPipeline:
 
         hits: list[ChannelHit] = []
         rank = 0
-        for result in results:
+        for result in results.hits:
             if plan.per_type_budget.get(result.memory_type, 0) <= 0:
                 continue
             rank += 1
             weight = 0.55 + 0.45 * plan.type_scores.get(result.memory_type, 0.5)
             hits.append(ChannelHit(result.memory_id, "vector", rank, weight))
-        return hits
+        return hits, results.degraded_reasons
 
     def _entity_channel(self, plan: QueryPlan, query: Query) -> list[ChannelHit]:
         """实体名称通道：把结构化 subject/object 命中映射回记忆。"""

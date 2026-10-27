@@ -672,6 +672,7 @@ class RetrievalResult:
     summaries: list[SummaryHit] = field(default_factory=list)
     trace: RetrievalTrace = field(default_factory=RetrievalTrace)
     gaps: list[str] = field(default_factory=list)
+    degraded_reasons: list[str] = field(default_factory=list)
 
     def memory_ids(self) -> list[str]:
         return [item.memory_id for item in self.items]

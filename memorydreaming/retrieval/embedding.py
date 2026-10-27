@@ -24,11 +24,39 @@
 from __future__ import annotations
 
 import math
+import hashlib
+from pathlib import Path
+from threading import RLock
 import zlib
 from collections import Counter
 from typing import Protocol
 
 from .keyword import text_shingles
+
+
+class EmbeddingError(Exception):
+    """可报告的向量通道失败；消息不得包含模型路径或待编码正文。"""
+
+    def __init__(self, code: str = "EMBEDDING_UNAVAILABLE") -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def normalized_vector(values, dim: int) -> list[float]:
+    """统一验证和归一化，避免 NaN、错维度或巨大数破坏排序。"""
+    try:
+        values = list(values)
+        if len(values) != dim or any(isinstance(v, (bool, str, bytes)) for v in values):
+            raise ValueError
+        vector = [float(v) for v in values]
+        if not all(math.isfinite(v) for v in vector):
+            raise ValueError
+        norm = math.hypot(*vector)
+        if not math.isfinite(norm):
+            raise ValueError
+        return [v / norm for v in vector] if norm else vector
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise EmbeddingError("INVALID_EMBEDDING") from exc
 
 
 class Embedder(Protocol):
@@ -97,3 +125,94 @@ class HashingEmbedder:
         if norm == 0:  # 理论上不会发生，除非所有词都恰好互相抵消
             return vector
         return [value / norm for value in vector]
+
+
+class SentenceTransformerEmbedder:
+    """显式本地权重、CPU、懒加载的可选语义模型，不在会话启动时下载。
+
+    revision 是部署者提供的不可变权重版本；替换本地权重必须更新它。
+    同一实例可由宿主和后台整理器共享，模型加载与 encode 由锁串行保护。
+    """
+
+    name = "sentence-transformers-local"
+
+    def __init__(self, model_path: str | Path, *, revision: str, dim: int,
+                 query_prefix: str = "", document_prefix: str = "",
+                 max_seq_length: int = 512, batch_size: int = 16) -> None:
+        if not str(model_path).strip() or not isinstance(revision, str) or not revision.strip():
+            raise ValueError("本地模型路径和不可变 revision 必须显式提供")
+        for name, value, maximum in (("dim", dim, 65536), ("max_seq_length", max_seq_length, 32768),
+                                     ("batch_size", batch_size, 1024)):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+                raise ValueError(f"{name} 超出有效范围")
+        if any(not isinstance(prefix, str) or len(prefix) > 2000 for prefix in (query_prefix, document_prefix)):
+            raise ValueError("嵌入前缀必须为不超过 2000 字符的字符串")
+        self.dim = dim
+        self._path = Path(model_path).expanduser().resolve()
+        self._revision = revision
+        self._query_prefix = query_prefix
+        self._document_prefix = document_prefix
+        self._max_seq_length = max_seq_length
+        self._batch_size = batch_size
+        self._model = None
+        self._lock = RLock()
+
+    @property
+    def cache_signature(self) -> dict:
+        return {"adapter": "sentence-transformers-local-v1", "revision": self._revision,
+                "location_sha256": hashlib.sha256(str(self._path).encode("utf-8")).hexdigest(),
+                "query_prefix": self._query_prefix, "document_prefix": self._document_prefix,
+                "max_seq_length": self._max_seq_length, "normalization": "l2-v1", "device": "cpu"}
+
+    def _load(self):
+        if self._model is None:
+            if not self._path.is_dir():
+                raise EmbeddingError()
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer(str(self._path), device="cpu", local_files_only=True,
+                                        trust_remote_code=False)
+            if model.get_sentence_embedding_dimension() != self.dim:
+                raise EmbeddingError("INVALID_EMBEDDING")
+            if model.max_seq_length < self._max_seq_length:
+                # 不隐式扩展模型的位置编码或截断配置。
+                raise EmbeddingError("INVALID_EMBEDDING")
+            model.max_seq_length = self._max_seq_length
+            self._model = model
+        return self._model
+
+    def _encode(self, texts: list[str], prefix: str) -> list[list[float]]:
+        if not texts:
+            return []
+        try:
+            with self._lock:
+                model = self._load()
+                rows = model.encode([prefix + text for text in texts], batch_size=self._batch_size,
+                                    normalize_embeddings=True, convert_to_numpy=True,
+                                    show_progress_bar=False, prompt="")
+                if len(rows) != len(texts):
+                    raise EmbeddingError("INVALID_EMBEDDING")
+                return [normalized_vector(row, self.dim) for row in rows]
+        except EmbeddingError:
+            raise
+        except Exception as exc:
+            raise EmbeddingError() from exc
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._encode([text], self._query_prefix)[0]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._encode(texts, self._document_prefix)
+
+    def embed(self, text: str) -> list[float]:
+        """兼容旧接口，单条正文编码；查询应使用 embed_query。"""
+        return self.embed_documents([text])[0]
+
+
+def embedder_from_settings(settings) -> Embedder:
+    if settings.embedding_provider == "hash":
+        return HashingEmbedder()
+    return SentenceTransformerEmbedder(
+        settings.embedding_model_path, revision=settings.embedding_revision, dim=settings.embedding_dim,
+        query_prefix=settings.embedding_query_prefix, document_prefix=settings.embedding_document_prefix,
+        max_seq_length=settings.embedding_max_seq_length, batch_size=settings.embedding_batch_size,
+    )

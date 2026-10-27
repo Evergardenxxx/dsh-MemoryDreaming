@@ -8,6 +8,7 @@ token 预算这种架构文档里点名的参数，一律先在这里声明，�
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -79,6 +80,16 @@ class Settings:
     vector_candidate_limit: int = 20
     vector_min_score: float = 0.10
 
+    # 真实语义嵌入为显式可选项；只能使用预先下载的本地权重。
+    embedding_provider: str = "hash"
+    embedding_model_path: str = ""
+    embedding_revision: str = ""
+    embedding_dim: int = 512
+    embedding_query_prefix: str = ""
+    embedding_document_prefix: str = ""
+    embedding_max_seq_length: int = 512
+    embedding_batch_size: int = 16
+
     # bootstrap 时附带多少条「重要经历」摘要
     bootstrap_highlight_limit: int = 5
 
@@ -95,6 +106,24 @@ class Settings:
     consolidation_batch_size: int = 4
 
     def __post_init__(self) -> None:
+        if self.embedding_provider not in ("hash", "sentence-transformers"):
+            raise ValueError("embedding_provider 必须为 hash 或 sentence-transformers")
+        if self.embedding_provider == "sentence-transformers" and (
+            not isinstance(self.embedding_model_path, str) or not self.embedding_model_path.strip()
+            or not isinstance(self.embedding_revision, str) or not self.embedding_revision.strip()
+        ):
+            raise ValueError("真实嵌入必须显式配置本地模型路径和不可变 revision")
+        for name, maximum in (("embedding_dim", 65536), ("embedding_max_seq_length", 32768),
+                              ("embedding_batch_size", 1024)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+                raise ValueError(f"{name} 超出有效范围")
+        for prefix in (self.embedding_query_prefix, self.embedding_document_prefix):
+            if not isinstance(prefix, str) or len(prefix) > 2000:
+                raise ValueError("嵌入前缀必须为不超过 2000 字符的字符串")
+        if (isinstance(self.vector_min_score, bool) or not isinstance(self.vector_min_score, (int, float))
+                or not math.isfinite(self.vector_min_score) or not -1 <= self.vector_min_score <= 1):
+            raise ValueError("vector_min_score 必须在 [-1, 1] 内")
         for name in ("job_lease_seconds", "job_max_attempts", "job_retry_base_seconds", "job_retry_max_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -121,6 +150,15 @@ class Settings:
             recent_detail_window_hours=_env_int("RECENT_WINDOW_HOURS", 48),
             max_context_items=_env_int("MAX_ITEMS", 12),
             context_token_budget=_env_int("TOKEN_BUDGET", 1800),
+            vector_min_score=float(_env_str("VECTOR_MIN_SCORE", "0.10")),
+            embedding_provider=_env_str("EMBEDDING_PROVIDER", "hash"),
+            embedding_model_path=_env_str("EMBEDDING_MODEL_PATH", ""),
+            embedding_revision=_env_str("EMBEDDING_REVISION", ""),
+            embedding_dim=_env_int("EMBEDDING_DIM", 512),
+            embedding_query_prefix=_env_str("EMBEDDING_QUERY_PREFIX", ""),
+            embedding_document_prefix=_env_str("EMBEDDING_DOCUMENT_PREFIX", ""),
+            embedding_max_seq_length=_env_int("EMBEDDING_MAX_SEQ_LENGTH", 512),
+            embedding_batch_size=_env_int("EMBEDDING_BATCH_SIZE", 16),
             job_lease_seconds=_env_int("JOB_LEASE_SECONDS", 120),
             job_max_attempts=_env_int("JOB_MAX_ATTEMPTS", 3),
             job_retry_base_seconds=_env_int("JOB_RETRY_BASE_SECONDS", 5),

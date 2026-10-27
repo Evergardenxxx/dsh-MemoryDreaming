@@ -425,11 +425,13 @@ class MemorySession:
             summary_views.append(view)
             summaries.append({"ref": self.registry.issue(view), "title": hit.summary.topic, "text": hit.summary.digest,
                               "source_refs": [self.registry.issue(source) for source in view.sources[:20]]})
-        incomplete = incomplete or any("预算" in gap for gap in result.gaps)
+        incomplete = incomplete or bool(result.degraded_reasons) or any("预算" in gap for gap in result.gaps)
         retrieval_complete = not incomplete
         data = {"kind": "search", "evidence": evidence, "summaries": summaries,
                 "retrieval_complete": retrieval_complete}
-        if cacheable:
+        if result.degraded_reasons:
+            data["degraded_reasons"] = result.degraded_reasons
+        if cacheable and not result.degraded_reasons:
             now = self.clock.now()
             epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
             expires_at = now + timedelta(seconds=self.adapter.retrieval_cache_ttl_seconds)
@@ -465,9 +467,10 @@ class MemorySession:
         args = {"query": query, "activity_ref": None, "time_range": None,
                 "detail": detail, "max_items": max_items, "max_tokens": max_tokens}
         with self.runtime.db.transaction():
-            self._search(args, self._reader())
+            data = self._search(args, self._reader())
         self._cache_metrics["prefetches"] += 1
-        return {"status": "ok", "cached": True, "query": query,
+        return {"status": "partial" if data.get("degraded_reasons") else "ok",
+                "cached": not bool(data.get("degraded_reasons")), "query": query,
                 "ttl_seconds": self.adapter.retrieval_cache_ttl_seconds}
 
     def call_tool(self, name: str, arguments: dict, *, request_id=None, deadline=None, max_tokens=None) -> dict:
@@ -496,7 +499,7 @@ class MemorySession:
                     status = "partial" if not data["retrieval_complete"] else ("not_found" if empty else "ok")
                     gaps = ([{"code": "NO_EVIDENCE", "message": "没有找到可用依据，请勿虚构共同经历"}] if empty else [])
                     if not data["retrieval_complete"]:
-                        gaps.append({"code": "INCOMPLETE_SEARCH", "message": "部分候选来源不可验证或预算受限"})
+                        gaps.append({"code": "INCOMPLETE_SEARCH", "message": "部分检索通道不可用、候选来源不可验证或预算受限"})
                 elif name == "memory_read":
                     views = self.registry.resolve(list(dict.fromkeys(args["references"])), reader)
                     data = {"kind": "read", "records": [render_record(view, self.registry) for view in views]}
@@ -508,7 +511,9 @@ class MemorySession:
                     data = CoreProposals(self).create(args)
                     status, gaps = "proposed", []
                 self._check(deadline)
-                response = envelope(rid, data, status=status, gaps=gaps)
+                warnings = [{"code": code, "message": "向量通道降级，请检查本地模型和索引重建状态"}
+                            for code in data.get("degraded_reasons", [])]
+                response = envelope(rid, data, status=status, gaps=gaps, warnings=warnings)
                 return self._fit(response, limit, prefer_summaries=name == "memory_search" and args["detail"] == "overview")
         except AdapterError as exc:
             response = envelope(rid, None, status="error", error=exc.as_dict())

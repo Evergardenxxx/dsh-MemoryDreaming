@@ -58,4 +58,4 @@ class MemorySuppressed(MemoryDreamingError):
 
 
 class SourceRevisionChanged(MemoryDreamingError):
-    """计算期间发生遗忘，旧结果必须丢弃后重新计算。"""
+    """计算期间来源、遗忘或派生投影变化，旧结果必须丢弃后重新计算。"""
