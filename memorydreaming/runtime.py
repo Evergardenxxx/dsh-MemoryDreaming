@@ -20,15 +20,17 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import asdict, replace
+from copy import deepcopy
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
+import hashlib
 import json
 from typing import Any
 
 from .clock import Clock, SystemClock, load_timezone
 from .config import Settings
 from .consolidation import ConsolidationReport, MemoryExtractor, run_pending_jobs
-from .errors import InvalidCorrection, ScopeNotFound
+from .errors import InvalidCorrection, MemorySuppressed, ScopeNotFound, SourceRevisionChanged
 from .models import (
     Activity,
     ActivityStatus,
@@ -55,12 +57,31 @@ from .models import (
 )
 from .retrieval.embedding import Embedder, embedder_from_settings
 from .retrieval.pipeline import RetrievalPipeline
-from .retrieval.vector import VectorIndex
+from .retrieval.vector import PreparedVectors, VectorIndex
 from .summarization import build_summaries
 from .storage.database import Database
 from .storage.repository import scope_sql, _scope_key
 from .portability import import_snapshot, load_snapshot, preflight_snapshot_file, write_snapshot
 from .worker import ConsolidationWorker
+
+
+@dataclass(frozen=True)
+class _PreparedCorrection:
+    """可信运行时内部的单次计算计划，不是模型参数或审批凭证。"""
+
+    owner: object
+    generation: int
+    epoch: int
+    old: MemoryItem
+    replacement: MemoryItem
+    vectors: PreparedVectors
+    digest: str
+
+
+def _correction_digest(old: MemoryItem, replacement: MemoryItem) -> str:
+    material = json.dumps([asdict(old), asdict(replacement)], ensure_ascii=False,
+                          sort_keys=True, default=str, allow_nan=False)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 class MemoryRuntime:
@@ -803,40 +824,73 @@ class MemoryRuntime:
         两者的区别决定了「历史能不能被解释」：
         fix 之后旧记录不再算数；change 之后旧记录仍然可查，只是标了截止时间。
         """
+        if correction.kind not in ("fix", "change"):
+            raise InvalidCorrection(f"未知的纠正类型：{correction.kind}")
+        if correction.kind == "change":
+            return self._apply_prepared_correction(self._prepare_correction(memory_id, correction))
+        with self._db.transaction():
+            old = self._correction_target(memory_id)
+            now = self._clock.now()
+            self._repos.memories.update_status(memory_id, MemoryStatus.RETRACTED, now)
+            self._vectors.delete(memory_id)
+            self._repos.entities.remove_memory(memory_id)
+            invalidated = self._invalidate_derived(memory_id, now, being_removed={memory_id})
+            return CorrectionResult(
+                old_memory=old, invalidated_derived=invalidated,
+                note="已撤回原记录；派生记忆已失效，需要时可重新归纳。",
+            )
+
+    def _correction_target(self, memory_id: str) -> MemoryItem:
         old = self._repos.memories.get(memory_id)
         if old is None:
             raise ScopeNotFound(f"找不到记忆 {memory_id}")
-        if correction.kind not in ("fix", "change"):
-            raise InvalidCorrection(f"未知的纠正类型：{correction.kind}")
+        if old.status is MemoryStatus.DELETED or self._repos.forgetting.is_suppressed(old):
+            raise MemorySuppressed("已遗忘的记忆不能通过纠错重新启用")
+        return old
 
-        now = self._clock.now()
-        effective = correction.effective_from or now
-        invalidated: list[str] = []
+    def _prepare_correction(self, memory_id: str, correction: Correction) -> _PreparedCorrection:
+        """快照规划后退出事务编码；外层写事务调用必须先改为分阶段。"""
+        if correction.kind != "change":
+            raise InvalidCorrection("只有结构化替换需要预计算")
+        request = deepcopy(correction)
+        with self._db.read_snapshot():
+            old = self._correction_target(memory_id)
+            if old.status is not MemoryStatus.ACTIVE or old.valid_to is not None:
+                raise InvalidCorrection("替换目标已终结，请重新读取当前事实")
+            now = self._clock.now()
+            replacement = self._build_replacement(old, request, request.effective_from or now, now)
+            self._validate_correction_sources(replacement)
+            generation = self._repos.retrieval_cache.generation()
+            epoch = self._repos.forgetting.epoch(old.scope)
+        vectors = self._vectors.prepare_memories([replacement])
+        return _PreparedCorrection(self, generation, epoch, old, replacement, vectors,
+                                   _correction_digest(old, replacement))
 
+    def _validate_correction_sources(self, replacement: MemoryItem) -> None:
+        if self._repos.forgetting.is_suppressed(replacement):
+            raise MemorySuppressed("替换事实触及遗忘标记")
+        for source_id in replacement.source_event_ids:
+            event = self._repos.events.get(source_id)
+            if (event is None or self._repos.forgetting.is_event_forgotten(source_id)
+                    or not self._scope_matches(event.scope, replacement.scope)):
+                raise InvalidCorrection("替换依据不存在、已遗忘或不属于目标作用域")
+
+    def _apply_prepared_correction(self, plan: _PreparedCorrection) -> CorrectionResult:
         with self._db.transaction():
-            if correction.kind == "fix":
-                self._repos.memories.update_status(memory_id, MemoryStatus.RETRACTED, now)
-                self._vectors.delete(memory_id)
-                self._repos.entities.remove_memory(memory_id)
-                invalidated = self._invalidate_derived(
-                    memory_id, now, being_removed={memory_id}
-                )
-                return CorrectionResult(
-                    old_memory=old,
-                    invalidated_derived=invalidated,
-                    note="已撤回原记录；派生记忆已失效，需要时可重新归纳。",
-                )
-
-            # kind == "change"
-            self._repos.memories.close_validity(memory_id, effective, now)
-            new_item = self._build_replacement(old, correction, effective, now)
+            if (plan.owner is not self or plan.digest != _correction_digest(plan.old, plan.replacement)
+                    or self._repos.retrieval_cache.generation() != plan.generation
+                    or self._repos.forgetting.epoch(plan.old.scope) != plan.epoch):
+                raise SourceRevisionChanged("纠错计算期间数据已变化，请重新读取并计算")
+            now = self._clock.now()
+            old, new_item = plan.old, replace(plan.replacement, recorded_at=now)
+            self._validate_correction_sources(new_item)
+            self._repos.memories.close_validity(old.memory_id, new_item.valid_from, now)
             inserted = self._repos.memories.insert(new_item)
             if inserted is not None:
                 self._repos.links.add(
-                    new_item.memory_id, memory_id, LinkRelation.SUPERSEDES, now
+                    new_item.memory_id, old.memory_id, LinkRelation.SUPERSEDES, now
                 )
-                # 新事实要能被语义通道立刻检索到，所以同步建索引
-                self._vectors.index_memory(new_item, now)
+                self._vectors.index_memory(new_item, now, prepared=plan.vectors)
                 self._repos.entities.index_memory(new_item, now)
 
             return CorrectionResult(
@@ -898,9 +952,11 @@ class MemoryRuntime:
                 if matches(raw):
                     affected.add(Scope(raw["user_id"], raw["character_id"], raw.get("relationship_id"),
                                        raw.get("activity_id"), raw.get("domain", "real")))
-        for row in conn.execute("SELECT user_id, character_id, relationship_id, domain FROM core_versions").fetchall():
+        core_keys: set[str] = set()
+        for row in conn.execute("SELECT scope_key,user_id,character_id,relationship_id,domain FROM core_versions").fetchall():
             raw = dict(row)
             if matches(raw):
+                core_keys.add(raw["scope_key"])
                 affected.add(Scope(raw["user_id"], raw["character_id"], raw.get("relationship_id"),
                                    None, raw.get("domain", "real")))
         key_tables = ("forgotten_events", "memory_tombstones", "session_handoffs",
@@ -968,7 +1024,12 @@ class MemoryRuntime:
                 for table in ("core_field_tombstones", "core_proposals", "change_proposals",
                               "memory_tombstones", "scope_purges"):
                     conn.execute(f"DELETE FROM {table} WHERE scope_key IN ({placeholders})", list(scope_keys))
-                conn.execute(f"DELETE FROM core_versions WHERE scope_key IN ({placeholders})", list(scope_keys))
+            # 核心键采用 user/character/domain/relationship 四元组，不能用普通
+            # scope 的五元组删除；两个命名空间必须分别处理。
+            if core_keys:
+                placeholders = ",".join("?" for _ in core_keys)
+                conn.execute(f"DELETE FROM core_field_tombstones WHERE scope_key IN ({placeholders})", list(core_keys))
+                conn.execute(f"DELETE FROM core_versions WHERE scope_key IN ({placeholders})", list(core_keys))
 
             # scope_mutations 是缓存代次的一部分：保留空元数据行并递增，
             # 让其他进程/旧 session 的缓存立即失效。
@@ -1025,6 +1086,7 @@ class MemoryRuntime:
         deleted: list[str] = []
         invalidated: list[str] = []
         core_fields: list[str] = []
+        updated: list[str] = []
 
         with self._db.transaction():
             if self._repos.forgetting.is_event_forgotten(event_id):
@@ -1059,6 +1121,7 @@ class MemoryRuntime:
                             source_event_ids=remaining_ids,
                             source_spans=remaining_spans,
                         )
+                        updated.append(item.memory_id)
                 elif self._repos.memories.delete(item.memory_id, now):
                     deleted.append(item.memory_id)
                     self._vectors.delete(item.memory_id)
@@ -1076,6 +1139,7 @@ class MemoryRuntime:
             invalidated_derived=sorted(set(invalidated)),
             core_fields_removed=core_fields,
             forgotten_event_ids=[event_id],
+            updated_memory_ids=updated,
             note="已撤销该事件的来源贡献并逻辑擦除正文；备份与供应商历史仍需单独清理。",
             erasure_level="event_redacted",
         )

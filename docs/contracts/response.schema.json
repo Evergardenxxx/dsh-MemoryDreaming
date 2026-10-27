@@ -550,7 +550,7 @@
         },
         "proposal_id": {
           "type": "string",
-          "pattern": "^proposal_[A-Za-z0-9_-]+$"
+          "pattern": "^(proposal|change)_[A-Za-z0-9_-]+$"
         },
         "state": {
           "const": "pending_validation"
@@ -853,7 +853,7 @@
           "anyOf": [
             {
               "type": "string",
-              "pattern": "^proposal_[A-Za-z0-9_-]+$"
+              "pattern": "^(proposal|change)_[A-Za-z0-9_-]+$"
             },
             {
               "type": "null"
@@ -898,6 +898,7 @@
           "enum": [
             "not_applicable",
             "logical_suppressed",
+            "event_redacted",
             "active_store_purged",
             "backup_pending",
             "incomplete"

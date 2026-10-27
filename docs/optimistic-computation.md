@@ -39,4 +39,4 @@
 
 全量 428 项 unittest、compileall、Node 插件语法及 diff 检查通过。v0.19 wheel 的 44 个源码/数据文件与仓库一致，独立临时目录安装后完成 observe → consolidate → 宿主 memory_search，创建 1 条记忆并返回 status=ok；内置向量评估也能运行。验证仍使用哈希或可控测试向量，没有运行真实语义模型。
 
-这不是所有 API 的无锁保证。可信本地同步 `correct(kind='change')` 和变更审批中的结构化替换仍在写事务内编码，后续需要单独的预计算/审批复核方案；直接调用未传 prepared 的 `index_memory()` 保留旧兼容行为。摘要构建、最终证据验证及缓存检查仍有写事务，后续要用真实规模评估其长度。长只读快照可能延缓 WAL 检查点回收；当前没有取消正在执行的本地模型。真实语义模型和 Harness 主程序验收仍未完成，`full_forgetting` 继续为 false。
+v0.20 已将可信本地同步 `correct(kind='change')` 和变更审批中的结构化替换移到事务外编码，具体复核、重试和回执协议见 [纠错与变更审批](correction-approval.md)。直接调用未传 prepared 的 `index_memory()` 保留旧兼容行为。摘要构建、最终证据验证及缓存检查仍有写事务，后续要用真实规模评估其长度。长只读快照可能延缓 WAL 检查点回收；当前没有取消正在执行的本地模型。真实语义模型和 Harness 主程序验收仍未完成，`full_forgetting` 继续为 false。

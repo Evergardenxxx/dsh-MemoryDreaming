@@ -592,18 +592,16 @@ class MemorySession:
     def approve_change_proposal(self, proposal_id: str, *, user_event_id: str,
                                 reviewer: str, reason: str) -> dict:
         self._check()
-        with self.runtime.db.transaction():
-            return ChangeProposals(self).decide(proposal_id, approve=True,
-                                                user_event_id=user_event_id,
-                                                reviewer=reviewer, reason=reason)
+        return ChangeProposals(self).decide(proposal_id, approve=True,
+                                            user_event_id=user_event_id,
+                                            reviewer=reviewer, reason=reason)
 
     def reject_change_proposal(self, proposal_id: str, *, user_event_id: str,
                                reviewer: str, reason: str) -> dict:
         self._check()
-        with self.runtime.db.transaction():
-            return ChangeProposals(self).decide(proposal_id, approve=False,
-                                                user_event_id=user_event_id,
-                                                reviewer=reviewer, reason=reason)
+        return ChangeProposals(self).decide(proposal_id, approve=False,
+                                            user_event_id=user_event_id,
+                                            reviewer=reviewer, reason=reason)
 
     def prepare_turn(self, message_id: str, content: str, *, occurred_at: datetime | None = None,
                      max_tokens=4096, deadline=None) -> PreparedTurn:

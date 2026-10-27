@@ -62,7 +62,7 @@ from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 from .proposals import CoreProposalPolicy
 from .portability import export_snapshot, import_snapshot, load_snapshot, validate_snapshot, write_snapshot
 
-__version__ = "0.19.0"
+__version__ = "0.20.0"
 
 __all__ = [
     "MemoryRuntime",

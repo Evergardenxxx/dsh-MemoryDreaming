@@ -9,12 +9,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from .clock import to_utc_iso
-from .errors import MemorySuppressed, VersionConflict
+from .errors import (InvalidCorrection, MemorySuppressed, ScopeNotFound,
+                     SourceRevisionChanged, VersionConflict)
 from .formation import MemoryFormationPolicy
 from .llm import AdapterError, dumps, integer, text
-from .models import CoreKind, Correction, ForgetSelector, MemoryType
+from .models import CoreKind, Correction, ForgetSelector, MemoryType, Scope
 from .references import ViewReader, forbidden
-from .storage.repository import _scope_key
+from .retrieval.embedding import EmbeddingError
+from .storage.repository import _scope_key, scope_sql
 
 
 @dataclass(frozen=True)
@@ -277,6 +279,8 @@ class ChangeProposals:
                     raise AdapterError("INVALID_ARGUMENT", "forget_event 必须指定一个事件引用")
                 if operation in ("correct_fact", "forget_fact") and not target_refs:
                     raise AdapterError("INVALID_ARGUMENT", "该操作至少需要一个记忆引用")
+                if operation == "correct_fact" and len(target_refs) != 1:
+                    raise AdapterError("INVALID_ARGUMENT", "correct_fact 必须指定一个记忆引用")
                 views = self.session.registry.resolve(target_refs, reader)
                 expected_kind = "event" if operation == "forget_event" else "memory"
                 if any(view.kind != expected_kind for view in views):
@@ -301,7 +305,9 @@ class ChangeProposals:
         key = hashlib.sha256(dumps(material).encode("utf-8")).hexdigest()
         previous = self.conn.execute("SELECT * FROM change_proposals WHERE dedupe_key=?", (key,)).fetchone()
         if previous is not None:
-            return self._public(previous)
+            if previous["state"] != "pending_validation" or self._check(previous):
+                raise AdapterError("STALE_REFERENCE", "该建议已终结，请由宿主查询回执")
+            return self._proposed(previous)
         pending = self.conn.execute(
             "SELECT COUNT(*) FROM change_proposals WHERE scope_key=? AND state='pending_validation' AND expires_at>?",
             (self.scope_key, to_utc_iso(self.session.clock.now())),
@@ -321,7 +327,11 @@ class ChangeProposals:
              request_view.target, operation, dumps(targets), dumps(evidence), dumps(payload),
              args.get("reason", args.get("checkpoint_note", "")), to_utc_iso(now), to_utc_iso(expires)),
         )
-        return {"kind": "proposal", "proposal_id": proposal_id, "operation": operation,
+        return self._proposed(self._load(proposal_id))
+
+    @staticmethod
+    def _proposed(row):
+        return {"kind": "proposal", "proposal_id": row["proposal_id"], "operation": row["operation"],
                 "state": "pending_validation", "applied": False}
 
     def _resolve_evidence(self, refs, reader):
@@ -340,8 +350,15 @@ class ChangeProposals:
     def _check(self, row):
         if row["expires_at"] <= to_utc_iso(self.session.clock.now()):
             return "EXPIRED"
+        policy = self.session.adapter.core_policy
+        if not (policy.checkpoint_proposals if row["operation"] == "checkpoint" else policy.change_proposals):
+            return "POLICY_CHANGED"
         reader = self._reader()
         try:
+            request = self.runtime.db.repositories.events.get(row["request_event_id"])
+            if (request is None or request.speaker != "user"
+                    or request.conversation_id != self.binding.conversation_id):
+                return "STALE_REFERENCE"
             for source in json.loads(row["target_refs_json"]) + json.loads(row["evidence_json"]):
                 view = reader.load(source["kind"], source["target"])
                 if view.revision != source["revision"]:
@@ -362,6 +379,12 @@ class ChangeProposals:
         return result
 
     def inspect(self, proposal_id):
+        purged = self._purge_receipt(proposal_id)
+        if purged is not None:
+            return {"proposal_id": proposal_id, "operation_id": purged["operation_id"],
+                    "operation": "forget_scope", "state": "applied", "applied": True,
+                    "decision_code": "APPLIED", "reviewer": None,
+                    "decided_at": purged["decided_at"], "receipt": json.loads(purged["receipt_json"])}
         row = self._load(proposal_id)
         if row["state"] == "pending_validation":
             code = self._check(row)
@@ -370,7 +393,7 @@ class ChangeProposals:
                 row = self._load(proposal_id)
         return self._public(row) | {
             "operation_id": row["operation_id"], "decision_code": row["decision_code"],
-            "reviewer": row["reviewer"], "decided_at": row["decided_at"],
+            "reviewer": row["reviewer"], "decided_at": row["decided_at"], "receipt": self._receipt(row),
         }
 
     def _finish(self, row, state, code, reviewer, reason, receipt=None):
@@ -381,79 +404,169 @@ class ChangeProposals:
         )
         return self._load(row["proposal_id"])
 
-    def decide(self, proposal_id, *, approve, user_event_id, reviewer, reason):
-        text(user_event_id, "user_event_id", 200)
-        text(reviewer, "reviewer", 200)
-        text(reason, "审批原因", 1000)
+    def _purge_receipt(self, proposal_id):
+        text(proposal_id, "proposal_id", 150)
+        return self.conn.execute(
+            "SELECT * FROM change_purge_receipts WHERE proposal_id=? AND scope_key=?",
+            (proposal_id, self.scope_key),
+        ).fetchone()
+
+    def _gate(self, proposal_id, *, approve, user_event_id, reviewer, reason):
+        """每次都重读终态、请求绑定、策略和来源，不复用计算前的 reader。"""
+        purged = self._purge_receipt(proposal_id)
+        if purged is not None:
+            fingerprint = self.runtime.db.repositories.forgetting.fingerprint(
+                dumps([user_event_id, reviewer, reason]))
+            if not approve or not secrets.compare_digest(fingerprint, purged["decision_fingerprint"]):
+                raise AdapterError("INVALID_ARGUMENT", "终态审批不可改写；重试需保持原决定与审批信息")
+            return None, json.loads(purged["receipt_json"])
         row = self._load(proposal_id)
         if row["request_event_id"] != user_event_id:
             raise forbidden()
         if row["state"] != "pending_validation":
             if row["state"] == "invalidated":
-                return self._receipt(row)
+                return row, self._receipt(row)
             if row["state"] != ("applied" if approve else "rejected") or row["reviewer"] != reviewer or row["decision_reason"] != reason:
                 raise AdapterError("INVALID_ARGUMENT", "终态审批不可改写；重试需保持原决定与审批信息")
-            return self._receipt(row)
+            return row, self._receipt(row)
         if not approve:
-            return self._receipt(self._finish(row, "rejected", "REJECTED", reviewer, reason))
+            return row, self._receipt(self._finish(row, "rejected", "REJECTED", reviewer, reason))
         code = self._check(row)
         if code:
-            return self._receipt(self._finish(row, "invalidated", code, reviewer, reason))
+            return row, self._receipt(self._finish(row, "invalidated", code, reviewer, reason))
+        return row, None
+
+    @staticmethod
+    def _retry():
+        return AdapterError("UNAVAILABLE", "审批计算未完成或数据已变化，请重试原审批",
+                            retryable=True, next_action="retry")
+
+    def decide(self, proposal_id, *, approve, user_event_id, reviewer, reason):
+        text(user_event_id, "user_event_id", 200)
+        text(reviewer, "reviewer", 200)
+        text(reason, "审批原因", 1000)
+        decision = dict(approve=approve, user_event_id=user_event_id, reviewer=reviewer, reason=reason)
+        with self.runtime.db.transaction():
+            row, receipt = self._gate(proposal_id, **decision)
+            if receipt is not None:
+                return receipt
+        payload = json.loads(row["payload_json"])
+        prepared = None
+        if row["operation"] == "correct_fact" and payload.get("replacement_body") is not None:
+            try:
+                prepared = self.runtime._prepare_correction(
+                    json.loads(row["target_refs_json"])[0]["target"],
+                    Correction(kind="change", corrected_body=payload["replacement_body"],
+                               evidence_event_ids=[row["request_event_id"]]),
+                )
+            except (InvalidCorrection, MemorySuppressed, ScopeNotFound):
+                with self.runtime.db.transaction():
+                    current, receipt = self._gate(proposal_id, **decision)
+                    if receipt is not None:
+                        return receipt
+                    return self._receipt(self._finish(current, "invalidated", "STALE_REFERENCE", reviewer, reason))
+            except EmbeddingError as exc:
+                raise self._retry() from exc
+        with self.runtime.db.transaction():
+            current, receipt = self._gate(proposal_id, **decision)
+            if receipt is not None:
+                return receipt
+            if current["dedupe_key"] != row["dedupe_key"]:
+                raise self._retry()
+            try:
+                # 动作与回执同一 savepoint；包括回执失败在内都不能留下半成品。
+                with self.runtime.db.transaction():
+                    receipt = self._execute(current, prepared)
+                    if current["operation"] == "forget_scope":
+                        # 清除已删除提议及请求事件，只保留不含正文/审批原话的最小回执。
+                        self.conn.execute(
+                            "INSERT INTO change_purge_receipts "
+                            "(proposal_id,scope_key,operation_id,decision_fingerprint,decided_at,receipt_json) "
+                            "VALUES (?,?,?,?,?,?)",
+                            (proposal_id, self.scope_key, current["operation_id"],
+                             self.runtime.db.repositories.forgetting.fingerprint(dumps([user_event_id, reviewer, reason])),
+                             to_utc_iso(self.session.clock.now()), dumps(receipt)),
+                        )
+                        return receipt
+                    return self._receipt(self._finish(current, "applied", "APPLIED", reviewer, reason, receipt))
+            except SourceRevisionChanged as exc:
+                raise self._retry() from exc
+            except (VersionConflict, MemorySuppressed) as exc:
+                code = "VERSION_CONFLICT" if isinstance(exc, VersionConflict) else "STALE_REFERENCE"
+                return self._receipt(self._finish(current, "invalidated", code, reviewer, reason))
+
+    def _execute(self, row, prepared):
         operation = row["operation"]
         targets = json.loads(row["target_refs_json"])
         payload = json.loads(row["payload_json"])
-        try:
-            if operation == "checkpoint":
-                state = {key: payload[key] for key in ("goal", "open_loops") if key in payload}
-                # checkpoint_note 保留在提议记录中，不把自由文本伪装成活动正文。
-                version = self.runtime.checkpoint(targets[0]["target"], state,
-                                                  payload["expected_version"])
-                receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
-                           "activity_version": version, "remaining_work": []}
-            elif operation == "forget_scope":
+        receipt = self._base_receipt(row, applied=True)
+        receipt["effective_at"] = to_utc_iso(self.session.clock.now())
+        affected = receipt["affected"]
+        if operation == "checkpoint":
+            state = {key: payload[key] for key in ("goal", "open_loops") if key in payload}
+            self.runtime.checkpoint(targets[0]["target"], state, payload["expected_version"])
+            affected["activities"] = 1
+        elif operation in ("forget_scope", "forget_event", "forget_fact"):
+            if operation == "forget_scope":
+                visible, params = scope_sql(self.binding.scope)
+                affected["activities"] = self.conn.execute(
+                    f"SELECT COUNT(*) FROM activities WHERE {visible}", params).fetchone()[0]
+                core_rows = self.conn.execute("SELECT * FROM core_versions").fetchall()
+                # 逻辑字段按 scope/kind/name 去重，多个历史版本只计一次。
+                affected["core_fields"] = len({
+                    (core["scope_key"], core["kind"], name) for core in core_rows
+                    if self.runtime._scope_matches(Scope(core["user_id"], core["character_id"],
+                                                         core["relationship_id"], None, core["domain"]),
+                                                   self.binding.scope)
+                    for name in json.loads(core["payload_json"])
+                })
                 result = self.runtime.forget_scope(self.binding.scope, reason=row["reason"])
-                receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
-                           "erasure_level": result.erasure_level, "affected": len(result.deleted_ids),
-                           "remaining_work": result.residuals}
             elif operation == "forget_event":
                 result = self.runtime.forget_event(targets[0]["target"], scope=self.binding.scope, reason=row["reason"])
-                receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
-                           "erasure_level": result.erasure_level, "affected": len(result.deleted_ids),
-                           "remaining_work": result.residuals}
-            elif operation == "forget_fact":
+            else:
                 result = self.runtime.forget_fact(ForgetSelector(
                     memory_ids=[target["target"] for target in targets], reason=row["reason"], scope=self.binding.scope))
-                receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
-                           "erasure_level": result.erasure_level, "affected": len(result.deleted_ids),
-                           "remaining_work": result.residuals}
-            else:  # correct_fact: structured body can atomically supersede the old fact;
-                # free text remains a safe retraction until a host supplies structure.
-                if payload.get("replacement_body") is not None:
-                    result = self.runtime.correct(
-                        targets[0]["target"], Correction(
-                            kind="change", corrected_body=payload["replacement_body"],
-                            evidence_event_ids=[row["request_event_id"]],
-                            statement=payload.get("replacement_text") or row["reason"],
-                        )
-                    )
-                    receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
-                               "erasure_level": "logical_suppressed", "affected": 1,
-                               "remaining_work": []}
-                else:
-                    result = self.runtime.correct(targets[0]["target"], Correction(
-                        kind="fix", statement=payload.get("replacement_text") or row["reason"]))
-                    receipt = {"kind": "change_receipt", "operation": operation, "applied": True,
-                               "erasure_level": "logical_suppressed", "affected": len(result.invalidated_derived),
-                               "remaining_work": ["replacement_body must be supplied for structured replacement"]}
-        except Exception as exc:
-            code = "VERSION_CONFLICT" if exc.__class__.__name__ == "VersionConflict" else "EXECUTION_FAILED"
-            return self._receipt(self._finish(row, "invalidated", code, reviewer, reason))
-        return self._receipt(self._finish(row, "applied", "APPLIED", reviewer, reason, receipt))
+            receipt["erasure_level"] = result.erasure_level
+            affected["events"] = len(set(result.forgotten_event_ids))
+            affected["memories"] = len(set(result.deleted_ids + result.invalidated_derived + result.updated_memory_ids))
+            if operation != "forget_scope":
+                affected["core_fields"] = len(set(result.core_fields_removed))
+            receipt["remaining_work"] = list(result.residuals)
+        elif operation == "correct_fact":
+            if payload.get("replacement_body") is not None:
+                if prepared is None or prepared.old.memory_id != targets[0]["target"]:
+                    raise SourceRevisionChanged("缺失匹配的审批计算计划")
+                self.runtime._apply_prepared_correction(prepared)
+                affected["memories"] = 2  # 旧事实结束有效期，新事实插入。
+            else:
+                result = self.runtime.correct(targets[0]["target"], Correction(
+                    kind="fix", statement=payload.get("replacement_text") or row["reason"]))
+                affected["memories"] = 1 + len(set(result.invalidated_derived))
+                receipt["remaining_work"] = ["replacement_body must be supplied for structured replacement"]
+                receipt["state"] = "partial"
+        else:
+            raise AdapterError("UNSUPPORTED", "不支持的审批操作")
+        return receipt
 
-    def _receipt(self, row):
-        if row["receipt_json"]:
-            return json.loads(row["receipt_json"])
+    def _base_receipt(self, row, *, applied):
         return {"kind": "change_receipt", "operation_id": row["operation_id"],
                 "proposal_id": row["proposal_id"], "operation": row["operation"],
-                "state": row["state"], "applied": row["state"] == "applied",
-                "remaining_work": [row["decision_code"] or "PENDING_APPROVAL"]}
+                "state": "applied" if applied else "not_applied", "applied": applied,
+                "effective_at": row["decided_at"] if applied else None,
+                "erasure_level": "not_applicable",
+                "affected": {"events": 0, "memories": 0, "core_fields": 0, "activities": 0},
+                "remaining_work": [] if applied else [row["decision_code"] or "PENDING_APPROVAL"]}
+
+    def _receipt(self, row):
+        base = self._base_receipt(row, applied=row["state"] == "applied")
+        if row["receipt_json"]:
+            stored = json.loads(row["receipt_json"])
+            if set(stored) == set(base) and isinstance(stored.get("affected"), dict):
+                return stored
+            # v0.19 旧回执没有分类计数，不能把不明含义的整数伪装成精确统计。
+            base["remaining_work"] = list(stored.get("remaining_work", [])) + ["LEGACY_AFFECTED_COUNTS_UNAVAILABLE"]
+            if base["applied"]:
+                base["state"] = "partial"
+            if row["operation"].startswith("forget_"):
+                base["erasure_level"] = stored.get("erasure_level", "incomplete")
+        return base

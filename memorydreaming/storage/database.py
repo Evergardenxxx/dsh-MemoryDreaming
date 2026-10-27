@@ -52,7 +52,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 17：跨进程检索缓存（只存候选 ID 与版本指纹）。
 # 版本 18：摘要派生物增加 withdrawn / rolled_back 生命周期状态。
 # 版本 19：检索内容代次与数据库触发器，旧查询原文缓存清除。
-SCHEMA_VERSION = "19"
+# 版本 20：作用域清除审批的无正文最小回执，纯新增表由初始化自动创建。
+SCHEMA_VERSION = "20"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 

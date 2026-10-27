@@ -766,6 +766,7 @@ class ForgetResult:
     forgotten_event_ids: list[str] = field(default_factory=list)
     erasure_level: str = "logical_suppressed"
     residuals: list[str] = field(default_factory=list)
+    updated_memory_ids: list[str] = field(default_factory=list)
 
 
 @dataclass

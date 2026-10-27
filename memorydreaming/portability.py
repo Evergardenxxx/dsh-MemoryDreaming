@@ -47,6 +47,7 @@ TABLES = (
     "host_deliveries",
     "core_proposals",
     "change_proposals",
+    "change_purge_receipts",
     "journal_entries",
 )
 DERIVED_TABLES = ("memory_vectors", "memories_fts", "retrieval_cache")
@@ -73,6 +74,7 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "host_deliveries": ("event_id",),
     "core_proposals": ("proposal_id",),
     "change_proposals": ("proposal_id",),
+    "change_purge_receipts": ("proposal_id",),
     "journal_entries": ("journal_id",),
 }
 
@@ -227,6 +229,9 @@ def validate_snapshot(db: Database, snapshot: dict[str, Any]) -> dict[str, Any]:
 
     for table in TABLES:
         rows = tables.get(table, [])
+        if (table == "change_purge_receipts" and source_schema < 20
+                and table not in tables and table not in manifest.get("tables", {})):
+            continue  # v19 及更早快照没有新增的最小回执表。
         if not isinstance(rows, list):
             errors.append({"code": "TABLE_INVALID", "message": f"表 {table} 不是数组"})
             continue

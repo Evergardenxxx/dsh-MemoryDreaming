@@ -538,3 +538,15 @@ CREATE TABLE IF NOT EXISTS change_proposals (
     receipt_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_change_proposals_scope ON change_proposals(scope_key,state,expires_at);
+
+-- scope purge 会删除请求事件及提议本身。独立最小回执不得引用已清除事件，
+-- 只用 HMAC 绑定相同审批重试；不保存正文、替换体或审批原话。
+CREATE TABLE IF NOT EXISTS change_purge_receipts (
+    proposal_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    operation_id TEXT NOT NULL UNIQUE,
+    decision_fingerprint TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    receipt_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_purge_receipts_scope ON change_purge_receipts(scope_key);
