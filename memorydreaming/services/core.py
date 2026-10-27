@@ -117,6 +117,10 @@ class CoreService:
             result = invalidate(self)
             if hasattr(self, "sleep"):
                 self.sleep.invalidate_stale()
+            for name in ("narrative", "intentions", "companionship", "growth"):
+                service = getattr(self, name, None)
+                if service and hasattr(service, "invalidate_stale"):
+                    service.invalidate_stale()
             return result
 
     def inspect_evidence(self, memory_id: str, scope: Scope) -> dict:

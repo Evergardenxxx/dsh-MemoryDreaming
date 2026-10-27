@@ -43,6 +43,7 @@ jobs:
           node --check integrations/deepseek-harness/lib/window-control.js
           node --check integrations/deepseek-harness/lib/sleep-coordinator.js
           node --check integrations/deepseek-harness/lib/durable-files.js
+          node --check integrations/deepseek-harness/lib/life-commands.js
       - name: Test
         run: python -m unittest discover -s tests -q
       - name: Build package

@@ -96,6 +96,18 @@ class MemoryRuntime(
         self._repos = self._db.repositories
         from .sleep import SleepService
         self.sleep = SleepService(self)
+        # 长期角色能力共享同一数据库与来源校验；对象创建本身不调用模型、
+        # 不产生主动消息，也不把未确认的推断写进人格核心。
+        from .narrative import NarrativeService
+        from .continuity import ContinuityService
+        from .intentions import IntentionsService
+        from .companionship import CompanionshipService
+        from .growth import GrowthService
+        self.narrative = NarrativeService(self)
+        self.continuity = ContinuityService(self)
+        self.intentions = IntentionsService(self)
+        self.companionship = CompanionshipService(self)
+        self.growth = GrowthService(self)
         self._host_adapters = []
         self._consolidator: ConsolidationWorker | None = None
 

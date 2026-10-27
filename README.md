@@ -2,11 +2,11 @@
 
 面向长期陪伴角色的持久记忆引擎：让同一个角色在切换窗口、重启进程后，还能想起**自己是谁、你们是什么关系、一起经历过什么、哪件事还没做完**。
 
-当前状态：**v0.28，schema 26，原生插件 v0.15**。默认按窗口关闭；独立发送 `记忆开启`、`记忆关闭`、`记忆睡眠`、`记忆苏醒` 控制当前窗口。睡眠用宿主当前模型逐批审阅全部本地已保存对话，随机重组出独立虚构梦，苏醒可讲述；巩固与遗忘只有限、可逆地调整召回强度。代码已按业务域拆分并补充架构/事务注释，见 [窗口与睡眠使用](docs/window-sleep-wake.md) 和 [系统架构](docs/system-architecture.md)。原生 Cordis/JSONL 接入保持，无 MCP 工具目录；真实模型质量与当前 V4.1 线上计量边界仍见 [剩余证据](docs/open-problems.md)。
+当前状态：**v0.29，schema 27，原生插件 v0.16**。默认按窗口关闭；独立发送 `记忆开启`、`记忆关闭`、`记忆睡眠`、`记忆苏醒` 控制当前窗口。睡眠用宿主当前模型逐批审阅本地已保存对话，生成独立虚构梦；苏醒恢复身份、关系与有界连续性状态卡。本版加入有来源的自传、未完承诺、场景偏好、受控表达成长、私密迁移档案及默认关闭的主动提醒队列，见 [长期角色使用](docs/long-term-role.md)。架构与事务边界见 [系统架构](docs/system-architecture.md)。原生 Cordis/JSONL 接入保持，无 MCP 工具目录；真实模型质量与当前 V4.1 线上计量边界仍见 [剩余证据](docs/open-problems.md)。
 
 新窗口先发送 `记忆开启` 才参与长期记忆。准备换窗口时发送 `记忆睡眠`，等确认完成，再在新窗口发送 `记忆苏醒`。未启用和已睡眠窗口的普通消息不写入记忆库，也不触发检索。既有窗口开关会持久保留；升级不会自动把所有窗口加入记忆。
 
-当前 654 项工程回归和安装版实际运行时 13 条隔离路径通过；新版睡眠链路的模型供应商仍为确定性验收适配器，当前登录模型的 UI 新指令流程需升级后实测。
+当前 734 项工程回归和安装版实际运行时 15 条隔离路径通过；模型供应商为确定性验收适配器，当前登录模型的 UI 新指令流程需升级后实测。主动性提供授权、安静时段、配额、领取及回执，实际定时推送渠道尚未接入。
 
 接入从 [宿主指南](docs/host-adapter.md) 开始，运行 [跨窗口示例](examples/host_lifecycle.py)，或安装 [`integrations/deepseek-harness`](integrations/deepseek-harness) 原生 Harness 插件。该插件直接接入用户消息、模型请求和回合结束生命周期，不注册 MCP 工具。
 
@@ -15,6 +15,18 @@
 插件使用固定的会话绑定（`u1 / c1 / r1`）和独立数据库 `.memorydreaming/deepseek-harness.db`，因此切换聊天窗口不会改变记忆引擎的身份边界。安装或更新时应通过 Harness 的插件管理器安装 `integrations/deepseek-harness` 目录；插件由本地 Python 桥接进程调用 HostAdapter，在每轮请求前注入有限预算的恢复资料，并在回合结束后保存实际显示的助手回复。
 
 当前 Harness 插件已接通逐轮用户事件、受预算限制的恢复检索和助手投递保存，默认启动后台整理器；核心候选生效仍需要可信宿主独立审批。
+
+在已开启窗口中，可以直接管理长期角色资料：
+
+```text
+记忆自传 {"title":"海边故事的开始","text":"我们约定以后继续讲灯塔故事。"}
+记忆承诺 {"text":"下次继续灯塔故事","event_trigger":"故事继续"}
+记忆偏好 {"key":"安慰方式","value":"先倾听，再询问是否需要建议"}
+记忆成长 {"field":"storytelling","value":"讲故事慢一点，句子短一些"}
+记忆自检
+```
+
+这些完整真实用户指令是显式确认；模型的推测只能成为待审候选。空参数的 `记忆自传`、`记忆承诺`、`记忆偏好`、`记忆成长` 可查看当前状态。修订版本、时间格式、档案命令及提醒边界见 [完整指南](docs/long-term-role.md)。普通回复只按整体预算补入少量已确认资料，不加载整份自传或新工具目录。
 
 ### 上下文占用
 
@@ -36,6 +48,7 @@ MemoryDreaming 不注册工具；记忆默认上限 1200，插件配置范围为
 | [DeepSeek 请求调度](docs/deepseek-scheduling.md) | 同库共享并发与冷却、请求租约、等待重排及格式修复计数 |
 | [完整请求预算](docs/request-budget.md) | 请求预览、发送前检查、原生消息替换、零预算保存及精度边界 |
 | [原生生命周期](docs/native-lifecycle.md) | 桥接进程监管、取消/超时、中断投递、热重载与故障边界 |
+| [长期角色连续性](docs/long-term-role.md) | 七项角色能力、完整用户指令、受控成长与私密档案迁移 |
 
 早期提案与已核查开源参考保留在 [v0.1](docs/memory-engine-architecture-v0.1.md)。正确性修复见 [代码审查记录](docs/review-2026-10-26.md)、[候选缓存](docs/retrieval-cache.md) 和 [摘要生命周期](docs/summary-lifecycle.md)，队列机制见 [可靠巩固任务](docs/reliable-consolidation.md)，后续顺序见 [待解决问题](docs/open-problems.md)。Python 和原生插件已实现查询与可选变更提议；仓库中独立可选的 MCP 兼容模块只读，Harness 接入不使用该模块。
 
@@ -81,6 +94,13 @@ memorydreaming/
 ├── runtime.py        对外门面：bootstrap / retrieve / observe / checkpoint / correct / forget
 ├── host.py           可信会话绑定、逐轮恢复、实际投递、只读工具
 ├── portability.py    便携快照导出、来源校验与导入 dry-run
+├── life_evidence.py  长期角色投影共用的固定版本来源与用户依据校验
+├── narrative.py      自传候选、确认、修订、撤回与历史
+├── intentions.py     未完承诺、触发条件、主动提醒策略和租约队列
+├── companionship.py  场景化相处偏好、用户确认和纠正历史
+├── growth.py         与核心分离的表达成长、审批、冷却与撤销
+├── continuity.py     苏醒自检、有界状态卡与私密迁移档案
+├── life.py / life_commands.py  少量角色资料编排与真实用户指令授权
 ├── references.py     随机会话引用、版本摘要、逐跳来源及遗忘检查
 ├── llm.py            工具参数校验、统一回应、TokenCounter
 ├── llm-tools.json    两个读工具和显式启用的核心建议工具定义

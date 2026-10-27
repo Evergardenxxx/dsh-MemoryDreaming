@@ -64,14 +64,25 @@ from .llm import AdapterError, EstimatedTokenCounter, TokenCounter, tool_catalog
 from .proposals import CoreProposalPolicy
 from .scheduling import DeepSeekRequestScheduler
 from .sleep import SleepService, SleepError
+from .narrative import NarrativeService
+from .continuity import ContinuityService
+from .companionship import CompanionshipService
+from .growth import GrowthService
+from .intentions import IntentionsService, IntentionError
 from .portability import export_snapshot, import_snapshot, load_snapshot, validate_snapshot, write_snapshot
 
-__version__ = "0.28.0"
+__version__ = "0.29.0"
 
 __all__ = [
     "MemoryRuntime",
     "SleepService",
     "SleepError",
+    "NarrativeService",
+    "ContinuityService",
+    "CompanionshipService",
+    "GrowthService",
+    "IntentionsService",
+    "IntentionError",
     "DeepSeekSchedulingPolicy",
     "DeepSeekRequestScheduler",
     "HostAdapter",

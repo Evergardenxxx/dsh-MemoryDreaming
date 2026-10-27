@@ -59,7 +59,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 24：字段级核心双时间、摘要版本日志/回滚回执、批量审批。
 # 版本 25：无正文的运维趋势与告警，纯新增表。
 # 版本 26：分批睡眠审阅、独立梦境与可逆巩固权重。
-SCHEMA_VERSION = "26"
+# 版本 27：角色自传、承诺/主动队列、相处偏好与受控成长。
+SCHEMA_VERSION = "27"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -194,7 +195,9 @@ class Database:
 
         sql = _SCHEMA_FILE.read_text(encoding="utf-8")
         # 睡眠领域保持独立 schema 文件；与主 schema 在同一迁移事务执行。
-        sql += "\n" + _SCHEMA_FILE.with_name("sleep-schema.sql").read_text(encoding="utf-8")
+        for domain_schema in ("sleep-schema.sql", "narrative-schema.sql", "intentions-schema.sql",
+                              "companionship-schema.sql", "growth-schema.sql"):
+            sql += "\n" + _SCHEMA_FILE.with_name(domain_schema).read_text(encoding="utf-8")
         has_meta = self._table_exists("schema_meta")
         raw_version = self.meta_get("schema_version") if has_meta else None
         try:
@@ -271,6 +274,8 @@ class Database:
             "fact_forgetting_barriers", "relearning_grants",
             "evidence_sets", "evidence_groups", "evidence_members",
             "core_field_revisions", "summary_revisions",
+            "narrative_entries", "narrative_versions", "intentions", "intention_revisions",
+            "companionship_preferences", "companionship_history", "growth_values", "growth_history",
         )
         for table in tables:
             for operation in ("INSERT", "UPDATE", "DELETE"):

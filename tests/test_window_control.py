@@ -210,3 +210,65 @@ assert.equal((await h.dispatch(request)).called,true);
 assert.ok(s.deriveMessages().some(m=>m.source.kind===name&&m.content.length));
 ''', {"activationMode": "command"})
         self.assertEqual(counts, (2, 0))
+
+    def test_life_commands_require_window_opt_in(self):
+        counts = self.run_plugin(r'''
+const s=h.session('disabled-life');
+const result=await h.dispatch(await h.step(s,'记忆承诺 {"text":"不应在关闭窗口写入"}','promise'));
+assert.equal(result.called,false);
+assert.ok(result.chunks.some(c=>c.text?.includes('尚未开启')));
+''', {"activationMode": "command"})
+        self.assertEqual(counts, (0, 0))
+
+    def test_explicit_life_commands_write_confirmed_records_then_normal_recall_uses_them(self):
+        def check(connection):
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM narrative_entries WHERE state='accepted'").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM intentions WHERE state='open'").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM companionship_preferences WHERE state='confirmed'").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM growth_values WHERE state='active'").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM proactive_policies WHERE enabled=1").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM proactive_deliveries WHERE state='delivered'").fetchone()[0], 0)
+
+        self.run_plugin(r'''
+const s=h.session('native-life');await h.step(s,'记忆开启','on');
+const inputs=[
+ ['记忆自传 {"title":"成为小梦","text":"用户确认我们从海边故事开始。"}','story'],
+ ['记忆承诺 {"text":"下次继续讲灯塔故事","due_at":"2026-10-28T20:00:00+08:00"}','promise'],
+ ['记忆偏好 {"key":"安慰方式","value":"先倾听，再给建议"}','preference'],
+ ['记忆成长 {"field":"storytelling","value":"慢一点，温柔讲述"}','growth'],
+ ['记忆提醒 {"enabled":true,"quiet_start":"00:00","quiet_end":"00:00"}','policy'],
+];
+for(const [text,id]of inputs){
+ const result=await h.dispatch(await h.step(s,text,id));
+ assert.equal(result.called,false);
+ assert.ok(result.chunks.some(c=>c.text?.includes('长期记忆操作回执')),JSON.stringify(result));
+}
+const check=await h.dispatch(await h.step(s,'记忆自检','check'));
+assert.ok(check.chunks.some(c=>c.text?.includes('continuity_card')));
+const request=await h.step(s,'接下来继续聊吧','next');
+const own=s.deriveMessages().find(m=>m.source.kind===name&&m.content.length);
+assert.ok(own.content[0].text.includes('role_continuity'));
+assert.ok(own.content[0].text.includes('灯塔故事'));
+assert.equal((await h.dispatch(request)).called,true);
+''', {"activationMode": "command", "maxTokens": 4096}, inspect_database=check)
+
+    def test_invalid_structured_command_does_not_guess_user_intent(self):
+        def check(connection):
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM intentions").fetchone()[0], 0)
+        self.run_plugin(r'''
+const s=h.session('bad-life-command');await h.step(s,'记忆开启','on');
+const bad=await h.dispatch(await h.step(s,'记忆承诺 {"text":"时间不带时区","due_at":"2026-10-28T20:00:00"}','bad-time'));
+assert.ok(bad.chunks.some(c=>c.text?.includes('必须带时区')));
+const malformed=await h.dispatch(await h.step(s,'记忆承诺 我明天想继续','malformed'));
+assert.ok(malformed.chunks.some(c=>c.text?.includes('完整 JSON')));
+''', {"activationMode": "command"}, inspect_database=check)
+
+    def test_queued_question_cannot_authorize_preceding_structured_command(self):
+        def check(connection):
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM intentions").fetchone()[0], 0)
+        self.run_plugin(r'''
+const s=h.session('queued-life');await h.step(s,'记忆开启','on');
+const request=await h.step(s,'记忆承诺 {"text":"前一条命令不能错绑到后面的提问"}','promise',
+ {pending:[{id:'question',role:'user',source:{kind:'user'},content:[{type:'text',text:'现在回答二加二是多少'}]}]});
+assert.equal((await h.dispatch(request)).called,true);
+''', {"activationMode": "command"}, inspect_database=check)

@@ -13,6 +13,10 @@ report = runtime.preflight_snapshot("backup/memory.snapshot.json")
 
 预检通过后，可信宿主可以显式调用 `runtime.import_snapshot(path)` 原子导入；任何表失败都会整体回滚。相同主键且内容相同的记录幂等跳过，不同内容在预检阶段拒绝。向量、FTS 和检索缓存是派生数据，导入报告会列出需要重建的残留项；摘要的 `withdrawn/rolled_back` 状态属于主投影元数据，会随快照保留。不同遗忘 HMAC 密钥仍默认拒绝直接导入，防止旧账本复活。
 
+schema27完整和范围快照携带自传、承诺、偏好、成长与对应历史/回执。导入的主动策略会禁用，claimed投递退回pending并清空租约；只处理本次导入的作用域/投递，不影响其他关系的策略。范围导出同时保留该用户/角色/领域共享的身份核心，但不授予跨关系的来源可见性。
+
+需要迁移到真正空白的新设备时，v0.29提供额外的私密连续性档案，封装快照与私密HMAC恢复材料；仅在空目标恢复原key/epoch，非空目标的删除屏障保持。普通快照不包含该私密恢复材料，不因新增档案接口而允许任意跨密钥导入。具体命令、保护方式与离线旧备份限制见[角色迁移](long-term-role.md)和[档案契约](narrative-continuity.md)。
+
 schema 20 增加 `change_purge_receipts`：作用域清除后保存无正文的最小审批回执及 HMAC，支持重启后查询和幂等重试。此表也随快照保存；预检仍接受 schema 19 及更早快照缺少该表。它像清除代次一样是保留的审计元数据，不承诺彻底擦除所有标识符，见 [纠错与变更审批](correction-approval.md)。
 
 schema 21 的 `provider_limits` / `provider_requests` 是本库实时运行状态，列在 manifest 的 `operational_tables_skipped`，不导出、不从快照恢复，也不参与内容 generation。导入不会重置目标库已有的冷却或在途名额；不同数据库之间不共享供应商配额。

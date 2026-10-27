@@ -5,6 +5,7 @@ import { DeliveryOutbox } from './delivery-outbox.js'
 import { configureLocalTokenizer } from './local-tokenizer.js'
 import { WindowControlStore, parseMemoryCommand } from './window-control.js'
 import { SleepCoordinator, controlMessages } from './sleep-coordinator.js'
+import { parseLifeCommand, lifeReceipt } from './life-commands.js'
 
 export const name = 'memorydreaming'
 // The plugin uses Cordis lifecycle events directly. It deliberately registers
@@ -179,10 +180,26 @@ export function apply(ctx, config = {}) {
     for (const user of actualUsers) {
       state.pendingSurfaceUsers.add(String(user.id))
       state.controlReply = null
-      const command = parseMemoryCommand(textOfContent(user.content))
+      const inputText = textOfContent(user.content)
+      const lifeCommand = parseLifeCommand(inputText)
+      const command = parseMemoryCommand(inputText) ?? (lifeCommand ? 'life' : null)
       if (command) {
         const wasOn = state.window.mode !== 'off'
         const requestId = `memory-control-${user.id}`
+        if (command === 'life') {
+          if (state.window.mode !== 'active') {
+            state.command = { type: 'life-disabled', id: requestId }
+            state.controlReply = '这个窗口尚未开启或正在睡眠。先发送“记忆开启”或“记忆苏醒”，再管理自传、承诺、偏好和成长。'
+            continue
+          }
+          if (lifeCommand.error) {
+            state.command = { type: 'life-invalid', id: requestId }
+            state.controlReply = lifeCommand.error
+            continue
+          }
+          state.command = { type: 'life', id: requestId, operation: lifeCommand.operation,
+            payload: lifeCommand.payload, messageId: String(user.id) }
+        }
         if (command === 'off') {
           state.window = controls.set(sessionId(session), { mode: 'off' })
           state.command = { type: 'off', id: requestId }
@@ -202,7 +219,7 @@ export function apply(ctx, config = {}) {
           state.window = controls.set(sessionId(session), { mode: 'sleeping',
             sleepId: sameRun ? state.window.sleepId : null, sleepRequestId: sameRun || requestId })
           state.command = { type: command, id: state.window.sleepRequestId }
-        } else {
+        } else if (command !== 'life') {
           state.window = controls.set(sessionId(session), { mode: 'active' })
           state.command = { type: command, id: requestId }
         }
@@ -216,9 +233,9 @@ export function apply(ctx, config = {}) {
         state.command = null
         try { installMemory(session, null) } catch {}
         continue
-      } else if (state.command?.type === 'on') {
-        // An enable command followed by a real question in the same inbox
-        // batch activates the window, then answers that question normally.
+      } else if (['on', 'life', 'wake'].includes(state.command?.type)) {
+        // Commands followed by a later real question must not execute the
+        // old payload against that question's user-event authorization.
         state.command = null
       }
       resetUser(state, { data: user })
@@ -259,6 +276,18 @@ export function apply(ctx, config = {}) {
     if (!participating(state)) return route
     state.requestSignal = payload?.signal
     if (state.controlReply) return route
+    if (state.command?.type === 'life') {
+      const command = state.command, revision = state.requestRevision
+      const selected = () => live(state) && state.command === command && state.requestRevision === revision && !payload?.signal?.aborted
+      try {
+        const result = await bridge.request('life_command', { conversation_id: sessionId(session), message_id: command.messageId,
+          operation: command.operation, payload: command.payload }, scopedSignal(state, payload?.signal))
+        if (selected()) state.controlReply = lifeReceipt(result)
+      } catch (error) {
+        if (selected()) state.controlReply = `长期记忆操作未完成（${error.code ?? 'UNAVAILABLE'}）：${String(error.message ?? '').slice(0, 240)}。没有报告未执行的修改为成功。`
+      }
+      return route
+    }
     if (state.command?.type === 'on') {
       const command = state.command, revision = state.requestRevision
       const stillSelected = () => live(state) && state.command === command && state.requestRevision === revision && !payload?.signal?.aborted
@@ -307,7 +336,7 @@ export function apply(ctx, config = {}) {
           installMemory(session, null, state.decision)
           return route
         }
-        memoryMessages = controlMessages(state.command.result, boundedMaxTokens(config.maxTokens))
+        memoryMessages = controlMessages(state.command.result, Math.max(128, boundedMaxTokens(config.maxTokens)-128))
         const candidate = measureRequest({ ...preview, messages: [nativeMemory(memoryMessages), ...preview.messages] }, config, metadata)
         if (candidate.status !== 'fits') throw new RequestBudgetError('SLEEP_REVIEW_BUDGET_UNAVAILABLE', 'Wake receipt cannot fit this window')
         installMemory(session, memoryMessages, state.decision)

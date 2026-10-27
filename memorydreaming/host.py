@@ -734,6 +734,10 @@ class MemorySession:
             working = {"goal": activity.goal, "open_loops": activity.open_loops,
                        "active_entities": activity.active_entities, "checkpoint": activity.checkpoint}
         payload = {"bootstrap": bootstrap, "search": search, "working": working, "truncated": False}
+        from .life import role_context, has_role_context
+        role = role_context(self.runtime, self.binding.scope, max_tokens=500)
+        if has_role_context(role):
+            payload["role_continuity"] = role
         if self.adapter.core_policy.enabled:
             payload["core_proposal_policy"] = {
                 "identity_fields": list(self.adapter.core_policy.identity_fields),
@@ -747,7 +751,9 @@ class MemorySession:
             count = self.adapter.counter.count(dumps(memory_messages))
             if count <= limit:
                 break
-            if search["summaries"]:
+            if payload.get("role_continuity") is not None:
+                payload.pop("role_continuity")
+            elif search["summaries"]:
                 search["summaries"].pop()
             elif search["evidence"]:
                 search["evidence"].pop()

@@ -68,6 +68,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sleep_status.add_argument("--character", required=True)
     sleep_status.add_argument("--relationship")
     sleep_status.add_argument("--domain", default="real")
+    for name, help_text in (("role-card", "检查身份、经历、承诺与恢复缺口"),
+                            ("archive-export", "保存私密角色连续性档案"),
+                            ("archive-check", "只读核对角色档案是否可恢复"),
+                            ("archive-restore", "可信本地恢复角色连续性档案")):
+        command = sub.add_parser(name, help=help_text)
+        command.add_argument("--user", required=True)
+        command.add_argument("--character", required=True)
+        command.add_argument("--relationship")
+        command.add_argument("--domain", default="real")
+        if name != "role-card":
+            command.add_argument("path", help="私密档案路径，不要上传公开仓库")
 
     reindex = sub.add_parser("reindex", help="重建某个角色的向量和实体索引")
     reindex.add_argument("--user", required=True)
@@ -268,6 +279,18 @@ def _dispatch(args: argparse.Namespace, runtime: MemoryRuntime) -> int:
         scope = Scope(args.user, args.character, args.relationship, domain=args.domain)
         print(json.dumps(runtime.sleep.status(scope, args.sleep_id), ensure_ascii=False, indent=2))
         return 0
+    if args.command in ("role-card", "archive-export", "archive-check", "archive-restore"):
+        scope = Scope(args.user, args.character, args.relationship, domain=args.domain)
+        if args.command == "role-card":
+            result = runtime.continuity.check(scope)
+        elif args.command == "archive-export":
+            result = runtime.continuity.prepare_archive(scope, args.path)
+        elif args.command == "archive-check":
+            result = runtime.continuity.verify_archive(args.path, scope)
+        else:
+            result = runtime.continuity.restore_archive(args.path, scope)
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0 if result.get("ready", True) else 2
 
     if args.command == "reindex":
         scope = Scope(user_id=args.user, character_id=args.character, relationship_id=args.relationship,

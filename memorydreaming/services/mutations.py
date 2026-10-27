@@ -184,6 +184,10 @@ class MutationService:
             "activities", "session_handoffs", "events", "memories", "memory_revisions",
             "summaries", "summary_revisions", "consolidation_jobs", "health_snapshots", "operational_metrics", "sleep_runs",
             "entities",
+            "narrative_entries", "narrative_proposals", "narrative_versions", "intentions", "intention_revisions",
+            "intention_operations", "proactive_policies", "proactive_deliveries", "proactive_ack_receipts", "intention_trigger_receipts",
+            "companionship_proposals", "companionship_preferences", "companionship_history", "companionship_receipts",
+            "growth_proposals", "growth_values", "growth_history", "growth_receipts",
         )
         for table in explicit_tables:
             rows = conn.execute(f"SELECT user_id, character_id, relationship_id, activity_id, domain FROM {table}").fetchall()
@@ -221,6 +225,14 @@ class MutationService:
             self._db.connection.execute(
                 "DELETE FROM sleep_runs WHERE " + scope_sql(scope)[0], scope_sql(scope)[1],
             )
+            # 连续性投影可能重复用户原话或承诺。范围擦除要先删子表/回执，
+            # 不能只隐藏事实表却把同一内容留在“自传”或待发提醒中。
+            for table in ("narrative_versions", "narrative_proposals", "narrative_entries", "proactive_ack_receipts",
+                          "proactive_deliveries", "intention_revisions", "intention_operations", "intention_trigger_receipts",
+                          "proactive_policies", "intentions", "companionship_receipts", "companionship_history",
+                          "companionship_preferences", "companionship_proposals", "growth_receipts", "growth_history",
+                          "growth_values", "growth_proposals"):
+                self._db.connection.execute("DELETE FROM "+table+" WHERE "+scope_sql(scope)[0], scope_sql(scope)[1])
 
             def delete_scoped(table: str, alias: str = "") -> int:
                 visible, params = scope_sql(scope, alias)

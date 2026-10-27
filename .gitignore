@@ -5,6 +5,9 @@
 
 # Local memory and databases
 /.memorydreaming/
+# Private continuity archives may contain conversation and recovery material.
+*.continuity.json
+*.continuity-archive.json
 *.db
 *.db-shm
 *.db-wal

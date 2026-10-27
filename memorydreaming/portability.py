@@ -61,6 +61,24 @@ TABLES = (
     "sleep_batches",
     "dreams",
     "sleep_weight_changes",
+    "narrative_entries",
+    "narrative_proposals",
+    "narrative_versions",
+    "intentions",
+    "intention_revisions",
+    "intention_operations",
+    "proactive_policies",
+    "proactive_deliveries",
+    "proactive_ack_receipts",
+    "intention_trigger_receipts",
+    "companionship_proposals",
+    "companionship_preferences",
+    "companionship_history",
+    "companionship_receipts",
+    "growth_proposals",
+    "growth_values",
+    "growth_history",
+    "growth_receipts",
     "change_purge_receipts",
     "journal_entries",
 )
@@ -103,6 +121,24 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "sleep_batches": ("sleep_id", "cursor"),
     "dreams": ("dream_id",),
     "sleep_weight_changes": ("sleep_id", "memory_id"),
+    "narrative_entries": ("entry_id",),
+    "narrative_proposals": ("proposal_id",),
+    "narrative_versions": ("entry_id", "version"),
+    "intentions": ("intention_id",),
+    "intention_revisions": ("intention_id", "version"),
+    "intention_operations": ("scope_key", "request_id"),
+    "proactive_policies": ("scope_key",),
+    "proactive_deliveries": ("delivery_id",),
+    "proactive_ack_receipts": ("claim_token",),
+    "intention_trigger_receipts": ("scope_key", "request_id"),
+    "companionship_proposals": ("proposal_id",),
+    "companionship_preferences": ("scope_key", "preference_key", "context"),
+    "companionship_history": ("scope_key", "preference_key", "context", "version"),
+    "companionship_receipts": ("scope_key", "receipt_id"),
+    "growth_proposals": ("proposal_id",),
+    "growth_values": ("scope_key", "field"),
+    "growth_history": ("scope_key", "field", "version"),
+    "growth_receipts": ("scope_key", "request_id"),
     "change_purge_receipts": ("proposal_id",),
     "journal_entries": ("journal_id",),
 }
@@ -166,7 +202,9 @@ def export_snapshot(db: Database, *, scope: Scope | None = None) -> dict[str, An
     for table in TABLES:
         rows = [_row_dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
         if scope is not None and table not in {"memory_links", "tombstone_sources", "entity_mentions", "evidence_groups", "evidence_members", "core_field_revisions", "sleep_sources", "sleep_batches", "sleep_weight_changes"}:
-            rows = [row for row in rows if _row_scope_matches(row, scope)]
+            rows = [row for row in rows if _row_scope_matches(row, scope) or (table == "core_versions"
+                    and row.get("kind") == "identity" and row.get("user_id") == scope.user_id
+                    and row.get("character_id") == scope.character_id and row.get("domain") == scope.domain)]
         if table == "memories":
             selected_memory_ids = {str(row["memory_id"]) for row in rows}
         elif table == "events":
@@ -283,6 +321,12 @@ def validate_snapshot(db: Database, snapshot: dict[str, Any]) -> dict[str, Any]:
             continue
         if (table in {"sleep_runs", "sleep_sources", "sleep_batches", "dreams", "sleep_weight_changes"}
                 and source_schema < 26 and table not in tables and table not in manifest.get("tables", {})):
+            continue
+        if (table in {"narrative_entries", "narrative_proposals", "narrative_versions", "intentions", "intention_revisions",
+                      "intention_operations", "proactive_policies", "proactive_deliveries", "proactive_ack_receipts",
+                      "intention_trigger_receipts", "companionship_proposals", "companionship_preferences", "companionship_history",
+                      "companionship_receipts", "growth_proposals", "growth_values", "growth_history", "growth_receipts"}
+                and source_schema < 27 and table not in tables and table not in manifest.get("tables", {})):
             continue
         if not isinstance(rows, list):
             errors.append({"code": "TABLE_INVALID", "message": f"表 {table} 不是数组"})
@@ -429,6 +473,10 @@ _IMPORT_ORDER = (
     "fact_forgetting_barriers", "relearning_grants",
     "core_proposals", "change_proposals", "proposal_batches", "summary_revisions", "summary_restore_receipts", "journal_entries",
     "sleep_runs", "sleep_sources", "sleep_batches", "dreams", "sleep_weight_changes",
+    "narrative_entries", "narrative_proposals", "narrative_versions", "intentions", "intention_revisions",
+    "intention_operations", "proactive_policies", "proactive_deliveries", "proactive_ack_receipts", "intention_trigger_receipts",
+    "companionship_proposals", "companionship_preferences", "companionship_history", "companionship_receipts",
+    "growth_proposals", "growth_values", "growth_history", "growth_receipts",
 )
 
 
@@ -478,6 +526,13 @@ def import_snapshot(db: Database, snapshot: dict[str, Any], *, allow_partial: bo
         if int(manifest.get("schema_version", 0)) < 24:
             from .temporal import seed_history
             seed_history(db)
+
+        # 迁移的是角色资料，不是原宿主的主动发言权限。恢复后先暂停，
+        # 等新宿主得到用户确认；旧领取token也不能成为跨设备发送凭证。
+        for row in tables.get("proactive_policies", []):
+            db.connection.execute("UPDATE proactive_policies SET enabled=0 WHERE scope_key=? AND enabled!=0", (row["scope_key"],))
+        for row in tables.get("proactive_deliveries", []):
+            db.connection.execute("UPDATE proactive_deliveries SET state='pending',claim_token=NULL,worker_id=NULL,lease_until=NULL WHERE delivery_id=? AND state='claimed'", (row["delivery_id"],))
 
         # 导入后重建 FTS 触发器无法覆盖历史版本的手工差异，显式重建最稳妥。
         db.connection.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")

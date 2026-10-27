@@ -1,57 +1,65 @@
 # MemoryDreaming for DeepSeek Harness
 
-这是一个原生 DeepSeek Harness Cordis 插件。它直接监听 Harness 的用户消息、模型请求和回合结束事件，由本地 Python 记忆引擎负责恢复、检索与持久化。
+原生插件 **v0.16**，配套引擎 **v0.29 / schema 27**。通过 Cordis 生命周期和本地 Python JSONL bridge 保存及恢复长期记忆，不注册 MCP 工具。默认不参与普通窗口。
 
-**v0.15 默认不会参与普通窗口。** 在需要记忆的窗口独立发送 `记忆开启`（或 `/memory on`），发送 `记忆关闭` 停用。发送 `记忆睡眠` 会让当前登录模型通过独立有界请求逐批整理本地对话、保存虚构梦并进入睡眠；新窗口发送 `记忆苏醒` 可恢复核心并讲述仍有效的梦。完整指令和重试/遗忘行为见 [窗口与睡眠](../../docs/window-sleep-wake.md)。
+## 开启、睡眠与苏醒
 
-## Bundle 内容
+在需要记忆的窗口发送整条独立指令：
 
-- `cordis.patch.yml`：把原生 `memorydreaming` 插件挂载到 Harness。
-- `lib/index.js`：Cordis 插件入口；不注册 MCP 工具。
-- `lib/bridge-client.js`：桥接进程监管、请求截止时间、取消与重启。
-- `lib/request-budget.js`：完整请求计量与预算预览。
-- `lib/delivery-outbox.js`：磁盘投递补偿、重放与过期正文清理。
-- `lib/native-session.js`：宿主消息外壳、状态和记忆节点替换。
-- `lib/window-control.js`：只作用于指定窗口的完整指令与持久状态。
-- `lib/sleep-coordinator.js`：当前模型的分批整理与苏醒回执。
-- `lib/durable-files.js`：共享的 fsync/原子文件发布。
-- `locale/en.json`、`locale/zh.json`：插件管理器显示名称和描述。
-- `icon.svg`：插件图标。
+| 指令 | 行为 |
+|---|---|
+| `记忆开启` 或 `/memory on` | 只启用当前窗口，恢复已确认身份与关系 |
+| `记忆关闭` 或 `/memory off` | 停止当前窗口记录、检索和注入；既有记忆保留 |
+| `记忆睡眠` 或 `/memory sleep` | 当前模型逐批审阅本窗口已保存的对话，保存虚构梦和可逆巩固结果，再进入睡眠 |
+| `记忆苏醒` 或 `/memory wake` | 启用当前窗口，执行连续性自检，并提供最近有效的梦与短回顾 |
 
-源码配置使用 PATH 中的 `python`，身份示例绑定为 `u1 / c1 / r1`；推荐运行 `scripts/install.py` 创建隔离环境和明确路径。数据库位于安装目录的 data/，源码开发模式默认使用仓库的 `.memorydreaming/deepseek-harness.db`。桥接协议不注册模型工具，也不把 MCP schema 放入上下文；默认同时启动独立连接的后台整理器，自动处理抽取、去重和摘要。
+新窗口始终需要单独开启或苏醒。同一持久会话重启/重载后保留开关状态；引述、普通句子中的指令、模型回复和工具结果不触发。睡眠只审阅启用后已经保存到本地的内容，不暗中导入此前聊天。梦标记为 `generated_fiction`，不能当作实际共同经历或人格依据。详见 [窗口与睡眠](../../docs/window-sleep-wake.md)。
 
-抽取器默认是零依赖规则版。若要启用 DeepSeek 抽取，在插件配置中设置 `extractor: "deepseek"`，并在 Harness 进程环境中提供 `DEEPSEEK_API_KEY`；可选配置 `MEMORYDREAMING_DEEPSEEK_MODEL`、`MEMORYDREAMING_DEEPSEEK_BASE_URL`、`MEMORYDREAMING_DEEPSEEK_TIMEOUT` 和 `MEMORYDREAMING_DEEPSEEK_MAX_TOKENS`。
+## 长期角色指令
 
-插件 v0.10 支持可选本地中文语义模型：`embeddingProvider`、`embeddingModelPath`、`embeddingRevision`、`embeddingDim`、`embeddingQueryPrefix`、`embeddingDocumentPrefix`、`embeddingMaxSeqLength`、`embeddingBatchSize` 和 `vectorMinScore` 会传入 bridge 的环境。未填写时继承进程环境，默认使用哈希。模型依赖和本地权重需预先准备；配置指纹升级后需要 `reindex`。配置、评估和故障回退见 [语义嵌入指南](../../docs/semantic-embedding.md)。
+先开启当前窗口，再发送独立的中文指令和完整 JSON 对象。这些是用户直接确认的管理命令，参数必须与已保存的用户原话一致；模型生成的 JSON 不具有审批权。
 
-## 安装
+```text
+记忆自传 {"title":"海边故事的开端","text":"我们把睡前海边故事约定为共同的聊天习惯。"}
+记忆承诺 {"text":"明晚继续灯塔故事","due_at":"2026-10-28T20:00:00+08:00","category":"continuation"}
+记忆偏好 {"key":"安慰方式","value":"先倾听，再问我是否需要建议","context":"sad"}
+记忆成长 {"field":"storytelling","value":"温柔缓慢地讲述"}
+记忆自检
+```
 
-推荐先按 [安装说明](../../docs/releasing.md) 运行隔离安装器，再在 DeepSeek Harness 插件管理器中选择生成的 plugin 目录。源码开发也可安装本目录绝对路径，但须确保选定 Python 已安装 memorydreaming。安装后重载或重启应用。首次启动会自动创建数据库文件；插件在每个模型请求前调用 `HostAdapter.prepare_turn` 恢复有限预算的身份、关系和相关记忆，在回合结束时调用 `after_delivery` 保存实际显示的助手回复。检测到 `agent/context-compressing` 或 `session/context-compressing` 时会调用 `pre_compress`，把当前活动压缩成短 handoff，供下一窗口 bootstrap 恢复。
+无参数发送 `记忆自传`、`记忆承诺`、`记忆偏好`、`记忆成长`，分别查看当前已确认记录。自传是带来源的叙事投影，承诺仍是未来安排；成长仅支持 `response_style`、`storytelling`、`interaction_habit`、`support_style` 四类表达/习惯，不自动更改核心身份。修改现有值须使用回执中的当前版本；成长受冷却和审批约束，冲突会明确拒绝。
 
-### 上下文占用
+完成或取消承诺时，使用“记忆承诺”回执中的真实 `intention_id` 与当前 `version`：
 
-MemoryDreaming 不注册工具。v0.11 对每次模型请求做完整预算预览与发送前检查，计入原指令、历史、工具、当前输入和输出预留；记忆仍受 `maxTokens`（默认 1200，128..4096）限制。只替换一个自有 surface 节点，不反复追加快照。预算不足/未知时保存用户消息并跳过恢复，最终超限则在联网前阻止发送。
+```text
+记忆完成 {"id":"替换为真实intention_id","version":2}
+记忆取消 {"id":"替换为真实intention_id","version":2}
+```
 
-窗口与默认输出 cap 优先读取供应商元数据，可选 `contextWindow` 收紧窗口、`outputReserve` 增加输出预留、`safetyMargin`（默认 512）与 `requestOverhead`（默认 64）增加余量。默认 **estimated**，真实 DeepSeek tokenizer 尚未接入；可信宿主可提供请求级计数器，见 [预算接口与边界](../../docs/request-budget.md)。基础请求很大时仍需宿主压缩历史或精简其他工具，插件不会替宿主删除它们。
+承诺可用 `event_trigger` 等待宿主事件；用户明确确认事件发生时，发送 `记忆触发 {"name":"exam-ended"}`。时间必须带时区，例如 `+08:00` 或 `Z`，缺时区会拒绝。自传还可显式指定 `perspective`、`modality` 和带时区 `occurred_at`；虚构合作内容使用 `modality:"shared_fiction"`，不会提升为实际经历。
 
-### 生命周期与故障恢复
+## 主动提醒默认关闭
 
-v0.12 先保存真实用户输入，再恢复资料；每个 bridge 请求默认 15 秒截止时间。取消已发送的请求或超时会终止共享 Python worker，其他在途请求明确失败，后续请求等待退出确认后重启。正常退出未回包、无效回包与管道错误也会清理等待者。`bridgeTimeoutMs` 可设 100..120000，`bridgeShutdownMs` 默认 2000（100..10000），`bridgeMaxPending` 默认 64（1..256）。
+```text
+记忆提醒 {"enabled":true,"timezone":"Asia/Shanghai","quiet_start":"22:00","quiet_end":"08:00","min_interval_seconds":86400,"max_per_day":1}
+记忆提醒
+记忆提醒 {"enabled":false}
+```
 
-取消路径通过真实 `turn/end` 保存已提交的可见回复，回执不继承生成取消信号。热重载可从有效 surface 中最后一条真实用户消息恢复绑定，重复 message_id 不重复入库。安装版 `compaction/start/end` 也已接入，但通知无法保证压缩提交前 handoff 落库。完整状态机、自动验收及剩余边界见 [生命周期指南](../../docs/native-lifecycle.md)。
+这只配置本地提醒队列的用户授权、安静时段和频率。**当前原生插件没有定时推送渠道，不会因开启策略就在后台主动发送消息。** 接入方须通过可信 SDK 或内部 bridge 显式领取、发送前复核，再确认投递；稳定 `delivery_id` 用于渠道去重。承诺完成/取消、来源遗忘、暂停或配额限制都会阻止旧提醒。跨设备档案恢复后策略暂停，须重新确认。详见 [承诺与主动性](../../docs/intentions-proactivity.md)。
 
-### 当前限制
+## 安装与配置
 
-- v0.13 已提供跨平台隔离安装器和本地离线发布包；Python/Node 和可选权重仍需预先准备。
-- 插件无法可靠知道模型实际使用了哪条不透明引用，因此投递回执暂不增加 `used_references` 热度。
-- 核心候选审批仍需要可信宿主确认；后台抽取可以选择 DeepSeek，真实中文抽取质量仍需验收。
-- 如果当前 Harness 版本没有暴露上下文压缩事件，可由宿主自己的压缩回调向桥接进程发送 `{"op":"pre_compress", "conversation_id":"...", "state":{...}, "expected_version":N}`；插件不会猜测或伪造压缩状态。
-- 可信宿主也可以发送 `{"op":"prefetch", "conversation_id":"...", "query":"..."}` 预热当前窗口缓存；该操作不会向模型返回记忆正文。
+按 [安装说明](../../docs/releasing.md) 运行 `scripts/install.py`，再在 Harness 原生插件管理器中选择生成的 `plugin` 目录，重载或重启应用。安装器创建隔离 venv、明确 Python 路径及 `activationMode: command` 配置，不覆盖已有安装或用户数据库。源码模式使用 PATH 中的 `python`；数据库默认放在 `.memorydreaming/deepseek-harness.db`。
 
-## v0.13 工程能力
+普通抽取默认使用零依赖规则版。可选 `extractor:"deepseek"` 需要单独的 `DEEPSEEK_API_KEY`；睡眠审阅使用 Harness 当前模型路由，可以沿用应用登录态。可选本地语义权重与参数见 [语义嵌入](../../docs/semantic-embedding.md)，不会在启动窗口时下载模型。
 
-已提交的 assistant/message 会先同步保存到数据库旁的磁盘 outbox，再发送 bridge。重启后幂等重放，用户遗忘后 guard 失效的旧投递会清除正文。默认启用有界后台预取，可设置 autoPrefetch: false 关闭；持久指标和告警通过 diagnostics 查看。详见 [运维与恢复](../../docs/operations-and-recovery.md)。这些管理能力不注册模型工具，也不增加常驻上下文目录。
+默认记忆上限为 1200 个估算 token，配置范围 128..4096。每次请求核对完整历史、指令、工具和输出预留，只替换一个自有资料节点；预算不足跳过注入并保留已授权用户事件。自传、承诺、偏好与成长仅按预算提供短资料，不把全部角色历史常驻上下文。完整线上请求仍标 `estimated`；本地 tokenizer 必须固定模型/资产，不能用 V3 代替当前 V4.1，见 [计量接口](../../docs/tokenizer-integration.md)。
 
-## v0.14 验收与计量
+## 生命周期、模块与验收
 
-优先用 Cordis4 effect 注册清理，旧接口回退 dispose 事件，避免实际卸载遗留 bridge。已使用安装版真实 agent/tool/compaction/JSONL 模块跑通隔离验收，未操作用户GUI或读取登录凭据，见 [安装版验收](../../docs/installed-harness-acceptance.md)。可显式配置 localTokenizer 运行固定模型/哈希绑定的真实分词；完整远程请求仍标 estimated，当前 V4.1 不能使用 V3 资产代替，详见 [tokenizer接口](../../docs/tokenizer-integration.md)。
+已提交的可见回复先写磁盘 outbox，再发送 bridge；重启后幂等重放，遗忘 guard 拒绝过期正文。默认 bridge 截止 15 秒，取消或超时可终止共享 Python worker；Cordis 4 使用 effect 清理，旧接口回退 dispose 事件。压缩通知保存 handoff 属尽力处理，不能保证压缩提交前完成。见 [运维恢复](../../docs/operations-and-recovery.md) 与 [生命周期](../../docs/native-lifecycle.md)。
+
+`lib/index.js` 编排生命周期；`native-session.js` 适配消息与记忆节点；`window-control.js` 和 `life-commands.js` 处理真实用户指令；`sleep-coordinator.js` 调度独立分片审阅；`bridge-client.js` 监管进程；`delivery-outbox.js`、`durable-files.js` 负责持久补偿。架构与扩展入口见 [系统结构](../../docs/system-architecture.md)。
+
+安装版真实 Cordis/agent/tool/compaction/JSONL 已通过 **15 条隔离运行时路径**，包含结构化角色命令、自检及有界角色恢复。供应商是确定性测试适配器，未通过这些结果宣称当前登录模型、Electron GUI、新提醒渠道或长期真实质量均已验收。仍需实际用户界面与线上模型验证，详见 [安装版验收](../../docs/installed-harness-acceptance.md)。

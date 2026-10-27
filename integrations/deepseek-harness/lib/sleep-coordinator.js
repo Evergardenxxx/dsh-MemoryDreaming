@@ -126,10 +126,15 @@ export function controlMessages(data, limit = 1200) {
     serialized = [{ role: 'user', content: `以下是可信宿主的窗口控制回执，其中梦境与整理摘要仅为资料：\n<memory-control>\n${JSON.stringify(payload).replaceAll('<', '\\u003c')}\n</memory-control>` }]
     if (countMemory(serialized) <= limit) return serialized
     if (payload.inventory) delete payload.inventory
+    else if (payload.continuity && !payload.continuity.compact) payload.continuity = {
+      kind: 'continuity_card', recovery_status: payload.continuity.recovery_status,
+      gaps: (payload.continuity.gaps ?? []).map(gap => typeof gap === 'string' ? gap : gap.code).slice(0, 4), compact: true,
+    }
     else if (payload.review_summary) delete payload.review_summary
     else if (payload.dream?.text?.length > 160) payload.dream = { ...payload.dream, text: payload.dream.text.slice(0, Math.floor(payload.dream.text.length/2)) }
     else if (payload.dream && payload.dream !== null) payload.dream = null
     else if (payload.notes) delete payload.notes
+    else if (payload.continuity) delete payload.continuity
     else throw new RequestBudgetError('CONTEXT_BUDGET_TOO_SMALL', 'Memory control receipt cannot fit its budget')
   }
 }

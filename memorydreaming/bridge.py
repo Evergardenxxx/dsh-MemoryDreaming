@@ -105,6 +105,23 @@ class BridgeServer:
                 scope = self._session(request["conversation_id"]).binding.scope
                 return self._ok(request_id, {"health": self.runtime.memory_health(scope),
                     "metrics": self.runtime.operational_trend(scope), "alerts": self.runtime.check_alerts(scope)})
+            if op == "life_command":
+                from .life_commands import execute_life_command
+                session = self._session(request["conversation_id"])
+                return self._ok(request_id, execute_life_command(session, request["operation"], request.get("payload", {}), request["message_id"]))
+            if op == "continuity_check":
+                scope = self._session(request["conversation_id"]).binding.scope
+                return self._ok(request_id, self.runtime.continuity.check(scope, max_tokens=request.get("max_tokens", self.max_tokens)))
+            if op in ("proactive_claim", "proactive_validate", "proactive_ack"):
+                scope = self._session(request["conversation_id"]).binding.scope
+                service = self.runtime.intentions
+                if op == "proactive_claim":
+                    result = service.claim_due(scope, worker_id=request["worker_id"], limit=request.get("limit", 1), lease_seconds=request.get("lease_seconds", 120))
+                elif op == "proactive_validate":
+                    result = service.validate_claim(scope, request["claim_token"])
+                else:
+                    result = service.ack(scope, request["claim_token"], delivered=request["delivered"], request_id=request["request_id"])
+                return self._ok(request_id, result)
             # 睡眠是可信生命周期能力，不注册为模型工具；每次请求仍使用
             # bridge 启动时的固定身份绑定，模型不能自行选择其他人的 scope。
             if op in ("sleep_prepare", "sleep_batch", "sleep_review", "sleep_complete", "wake"):
@@ -127,6 +144,7 @@ class BridgeServer:
                     data = recovered["data"]
                     result["bootstrap"] = {key: data.get(key) for key in
                         ("identity_fields", "relationship_fields", "recovery_status", "core_versions")}
+                    result["continuity"] = self.runtime.continuity.check(scope, max_tokens=600)
                 return self._ok(request_id, result)
             if op == "close_session":
                 conversation_id = text(request["conversation_id"], "conversation_id", 200)
