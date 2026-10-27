@@ -49,7 +49,7 @@ v0.8 已新增 [持久核心候选与宿主审批](core-proposals.md)：字段�
 从 cogmem-agent、Celiums-memory 和 cognitive-memory 纳入的后续待办（其中低信息检索门控、会话缓存、健康摘要和 durable journal 已实现）：
 
 - `trivial query` retrieval gate：已实现对“你好/好的”等完整短语跳过检索，但不能跳过核心恢复或事件保存；后续用中文对话集校准误判边界。
-- 会话内检索缓存和后台 prefetch：已实现受 TTL、scope mutation epoch、当前事件和引用 revision 约束的会话缓存；`session.prefetch()` / JSONL `prefetch` 只预热候选引用，不返回正文。当前又增加 SQLite 跨进程候选缓存，跨窗口命中后重新签发本地引用，并提供命中/失效计数；真正的后台调度、分布式缓存和长期指标聚合仍待加入。
+- 会话内检索缓存和后台 prefetch：已实现受 TTL、内容代次、scope mutation epoch、当前事件和来源 revision 约束的有界缓存；共享键覆盖授权活动与检索/嵌入配置，不含查询原文。独立子进程共享与独立连接新增后的空结果失效均已回归验证，细节见 [候选缓存](retrieval-cache.md)。`session.prefetch()` / JSONL `prefetch` 只预热候选，不返回正文；真正的后台调度、按作用域细化内容代次和长期指标聚合仍待加入。
 - recall reinforcement：把“被实际使用过”与事实真实性分开记录，只调整检索强度，不提高证据等级。
 - memory health / summary health / confidence / gaps：`MemoryRuntime.memory_health()` 已输出按类型/状态计数、陈旧摘要、失败任务、无来源推断、开放循环和精确绑定的检索缓存计数；健康快照可保存这些指标。置信度校准、跨窗口长期聚合与 UI 仍待加入，健康分数不能被模型当作事实概率。
 - durable journal 与 hash chain：**已实现**。`journal_entries` 使用全局 sequence、prev_hash、entry_hash 追加；`MemoryRuntime.verify_journal()` 可检测篡改或断链，记录不复制正文。哈希链不能代替作用域权限和删除账本。

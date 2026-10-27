@@ -48,6 +48,12 @@ class VectorIndex:
         """当前嵌入模型的名字，会写进 memory_vectors.model。"""
         return self._embedder.name
 
+    @property
+    def cache_signature(self) -> dict:
+        """模型名须标识版本/前缀/归一化策略；自定义模型可补充配置指纹。"""
+        return {"model": self._embedder.name, "dim": self._embedder.dim,
+                "config": getattr(self._embedder, "cache_signature", None)}
+
     def index_memory(self, memory: MemoryItem, now: datetime | None = None) -> bool:
         """为一条记忆建立/更新向量。返回 False 表示正文为空，跳过。
 

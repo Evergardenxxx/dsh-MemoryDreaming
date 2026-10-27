@@ -51,7 +51,8 @@ from .repository import Repositories, _scope_key, build_repositories
 # 版本 16：可重建实体索引。
 # 版本 17：跨进程检索缓存（只存候选 ID 与版本指纹）。
 # 版本 18：摘要派生物增加 withdrawn / rolled_back 生命周期状态。
-SCHEMA_VERSION = "18"
+# 版本 19：检索内容代次与数据库触发器，旧查询原文缓存清除。
+SCHEMA_VERSION = "19"
 
 _SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
@@ -196,6 +197,15 @@ class Database:
                     self._migrate_summary_lifecycle()
                 for statement in self._statements(sql):
                     self._conn.execute(statement)
+                if version < 19:
+                    columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(retrieval_cache)")}
+                    if "content_generation" not in columns:
+                        self._conn.execute(
+                            "ALTER TABLE retrieval_cache ADD COLUMN content_generation INTEGER NOT NULL DEFAULT 0"
+                        )
+                    # v17/v18 的 cache_key 含查询原文，升级时丢弃全部旧派生缓存。
+                    self._conn.execute("DELETE FROM retrieval_cache")
+                self._ensure_retrieval_triggers()
                 if version < 13:
                     self._migrate_memory_revisions()
                 if self.meta_get("forgetting_hmac_key") is None:
@@ -212,6 +222,26 @@ class Database:
 
         # 关键词索引依赖 memories 表存在，必须放在建表之后
         KeywordIndex(self._conn).ensure_index()
+
+    def _ensure_retrieval_triggers(self) -> None:
+        """任何连接的内容变更与代次一起提交；回滚也一起回滚。
+
+        当前采用全库代次，牺牲部分命中率换取保守失效。缓存和运维表不在
+        监听范围内，因此读取、写缓存、记录健康指标不会使缓存自行失效。
+        """
+        tables = (
+            "memories", "events", "core_versions", "activities", "memory_links",
+            "summaries", "memory_vectors", "entities", "entity_mentions",
+            "memory_tombstones", "tombstone_sources", "forgotten_events",
+            "scope_mutations", "scope_purges", "core_field_tombstones", "host_deliveries",
+        )
+        for table in tables:
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                self._conn.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS retrieval_generation_{table}_{operation.lower()} "
+                    f"AFTER {operation} ON {table} BEGIN "
+                    "UPDATE retrieval_state SET generation = generation + 1 WHERE singleton = 1; END"
+                )
 
     def _migrate_memory_revisions(self) -> None:
         """为旧库当前投影补一条 revision=1，避免历史查询误报完整历史。"""

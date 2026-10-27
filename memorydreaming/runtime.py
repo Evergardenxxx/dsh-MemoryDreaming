@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime
 import json
 from typing import Any
@@ -146,6 +146,13 @@ class MemoryRuntime:
     def vectors(self) -> VectorIndex:
         """向量索引。换嵌入模型后调 rebuild_vectors() 重建即可。"""
         return self._vectors
+
+    def retrieval_cache_signature(self) -> dict[str, Any]:
+        """持久候选缓存的算法/配置边界，不包含数据库路径或凭据。"""
+        settings = asdict(self._settings)
+        settings.pop("db_path")
+        return {"algorithm": "hybrid-retrieval-v2", "settings": settings,
+                "embedding": self._vectors.cache_signature}
 
     # -- 1. 启动恢复 -------------------------------------------------------
 

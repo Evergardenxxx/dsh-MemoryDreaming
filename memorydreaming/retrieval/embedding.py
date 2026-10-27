@@ -75,6 +75,10 @@ class HashingEmbedder:
         self._sizes = ngram_sizes
         self.name = f"hash-ngram-{dim}"
 
+    @property
+    def cache_signature(self) -> dict:
+        return {"ngram_sizes": self._sizes, "algorithm": "crc32-signed-sublinear-v1"}
+
     def embed(self, text: str) -> list[float]:
         vector = [0.0] * self.dim
 

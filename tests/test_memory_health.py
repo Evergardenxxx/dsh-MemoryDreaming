@@ -31,3 +31,13 @@ class MemoryHealthTests(RuntimeTestCase):
         self.assertEqual(health["retrieval_cache"]["active"], 1)
         self.assertNotIn("海边", str(health))
 
+    def test_content_generation_invalidated_cache_is_not_counted_as_active(self):
+        scope = self.scope.__class__("u1", "c1", "r1")
+        session = HostAdapter(self.runtime, clock=self.clock).open_session(
+            SessionBinding("u1", "c1", "r1", "health-stale-cache"))
+        self.addCleanup(session.close)
+        session.prefetch("海边")
+        self.add_memory(MemoryType.SEMANTIC, {"obj": "新内容"})
+        self.assertEqual(self.runtime.memory_health(scope)["retrieval_cache"], {
+            "total": 1, "active": 0, "expired": 0, "invalidated": 1})
+

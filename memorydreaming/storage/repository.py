@@ -2258,24 +2258,30 @@ class RetrievalCacheRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
+    def generation(self) -> int:
+        return int(self._conn.execute(
+            "SELECT generation FROM retrieval_state WHERE singleton=1"
+        ).fetchone()[0])
+
     def get(
         self,
         cache_key: str,
         scope_key: str,
         current_event_id: str | None,
         mutation_epoch: int,
+        content_generation: int,
         now: datetime,
     ) -> dict[str, Any] | None:
         row = self._conn.execute(
             "SELECT * FROM retrieval_cache WHERE cache_key=? AND scope_key=? "
-            "AND current_event_id IS ? AND mutation_epoch=? AND expires_at>?",
-            (cache_key, scope_key, current_event_id, mutation_epoch, to_utc_iso(now)),
+            "AND current_event_id IS ? AND mutation_epoch=? AND content_generation=? AND expires_at>?",
+            (cache_key, scope_key, current_event_id, mutation_epoch, content_generation, to_utc_iso(now)),
         ).fetchone()
         if row is None:
             # 过期项是派生数据，可以惰性清理，不影响主记忆。
             self._conn.execute(
-                "DELETE FROM retrieval_cache WHERE cache_key=? AND expires_at<=?",
-                (cache_key, to_utc_iso(now)),
+                "DELETE FROM retrieval_cache WHERE cache_key=? AND (expires_at<=? OR content_generation!=?)",
+                (cache_key, to_utc_iso(now), content_generation),
             )
             return None
         return {
@@ -2296,6 +2302,7 @@ class RetrievalCacheRepository:
         scope_key: str,
         current_event_id: str | None,
         mutation_epoch: int,
+        content_generation: int,
         memory_ids: Sequence[str],
         summary_ids: Sequence[str],
         memory_revisions: dict[str, str],
@@ -2303,17 +2310,19 @@ class RetrievalCacheRepository:
         retrieval_complete: bool,
         created_at: datetime,
         expires_at: datetime,
+        capacity: int = 1024,
     ) -> None:
         self._conn.execute(
             """INSERT INTO retrieval_cache (
-                cache_key,scope_key,current_event_id,mutation_epoch,
+                cache_key,scope_key,current_event_id,mutation_epoch,content_generation,
                 memory_ids_json,summary_ids_json,memory_revisions_json,summary_revisions_json,
                 retrieval_complete,created_at,expires_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(cache_key) DO UPDATE SET
                 scope_key=excluded.scope_key,
                 current_event_id=excluded.current_event_id,
                 mutation_epoch=excluded.mutation_epoch,
+                content_generation=excluded.content_generation,
                 memory_ids_json=excluded.memory_ids_json,
                 summary_ids_json=excluded.summary_ids_json,
                 memory_revisions_json=excluded.memory_revisions_json,
@@ -2322,12 +2331,22 @@ class RetrievalCacheRepository:
                 created_at=excluded.created_at,
                 expires_at=excluded.expires_at""",
             (
-                cache_key, scope_key, current_event_id, mutation_epoch,
+                cache_key, scope_key, current_event_id, mutation_epoch, content_generation,
                 _json_list(memory_ids), _json_list(summary_ids),
                 json.dumps(memory_revisions, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 json.dumps(summary_revisions, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 int(bool(retrieval_complete)), to_utc_iso(created_at), to_utc_iso(expires_at),
             ),
+        )
+        # 全局过期/旧代次清理和容量限制，避免只查询新键时无限积累。
+        self._conn.execute(
+            "DELETE FROM retrieval_cache WHERE expires_at<=? OR content_generation!=?",
+            (to_utc_iso(created_at), content_generation),
+        )
+        self._conn.execute(
+            "DELETE FROM retrieval_cache WHERE cache_key IN "
+            "(SELECT cache_key FROM retrieval_cache ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
+            (capacity,),
         )
 
     def delete(self, cache_key: str) -> None:
@@ -2345,12 +2364,15 @@ class RetrievalCacheRepository:
     def stats(self, scope: Scope, now: datetime) -> dict[str, int]:
         """返回指定精确绑定的缓存计数，不读取缓存正文。"""
         row = self._conn.execute(
-            "SELECT COUNT(*) AS total, SUM(expires_at > ?) AS active "
-            "FROM retrieval_cache WHERE scope_key=?",
-            (to_utc_iso(now), _scope_key(scope)),
+            "SELECT COUNT(*) AS total, "
+            "SUM(expires_at > ? AND content_generation=s.generation) AS active, "
+            "SUM(expires_at <= ?) AS expired, "
+            "SUM(expires_at > ? AND content_generation!=s.generation) AS invalidated "
+            "FROM retrieval_cache CROSS JOIN retrieval_state s WHERE s.singleton=1 AND scope_key=?",
+            (to_utc_iso(now), to_utc_iso(now), to_utc_iso(now), _scope_key(scope)),
         ).fetchone()
         return {"total": int(row["total"] or 0), "active": int(row["active"] or 0),
-                "expired": int((row["total"] or 0) - (row["active"] or 0))}
+                "expired": int(row["expired"] or 0), "invalidated": int(row["invalidated"] or 0)}
 
 
 # ---------------------------------------------------------------------------

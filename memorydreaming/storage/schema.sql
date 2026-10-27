@@ -390,11 +390,19 @@ CREATE INDEX IF NOT EXISTS idx_health_snapshots_scope
 
 -- 跨进程检索缓存只保存候选 ID 和版本指纹，不保存记忆正文。
 -- 命中后仍需经过当前会话的 ViewReader 逐条复核；作用域代次或任一来源变化即失效。
+-- storage-local 内容代次由数据库触发器递增，不随便携快照导出或导入。
+CREATE TABLE IF NOT EXISTS retrieval_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    generation INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO retrieval_state (singleton, generation) VALUES (1, 0);
+
 CREATE TABLE IF NOT EXISTS retrieval_cache (
     cache_key TEXT PRIMARY KEY,
     scope_key TEXT NOT NULL,
     current_event_id TEXT,
     mutation_epoch INTEGER NOT NULL DEFAULT 0,
+    content_generation INTEGER NOT NULL DEFAULT 0,
     memory_ids_json TEXT NOT NULL DEFAULT '[]',
     summary_ids_json TEXT NOT NULL DEFAULT '[]',
     memory_revisions_json TEXT NOT NULL DEFAULT '{}',
@@ -405,6 +413,7 @@ CREATE TABLE IF NOT EXISTS retrieval_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_retrieval_cache_scope_expiry
     ON retrieval_cache (scope_key, expires_at);
+CREATE INDEX IF NOT EXISTS idx_retrieval_cache_expiry ON retrieval_cache (expires_at);
 
 -- 实体索引是可重建投影，不承担事实真值。canonical_name 用于检索，
 -- display_name 保留最近一次出现的表面形式；正文仍只在 memories 中保存。

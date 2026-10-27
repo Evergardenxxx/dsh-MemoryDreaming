@@ -73,6 +73,7 @@ class _SearchCacheEntry:
 
     key: str
     epoch: int
+    generation: int
     event_id: str | None
     expires_at: datetime
     memory_refs: tuple[str, ...]
@@ -85,7 +86,7 @@ class HostAdapter:
                  tool_token_limit=4096, max_calls_per_turn=4, reference_ttl_seconds=1800,
                  core_policy: CoreProposalPolicy | None = None,
                  retrieval_cache_ttl_seconds=30, retrieval_cache_capacity=32,
-                 shared_retrieval_cache=True):
+                 shared_retrieval_cache=True, shared_retrieval_cache_capacity=1024):
         self.runtime, self.clock = runtime, clock or runtime.clock
         self.counter = token_counter or EstimatedTokenCounter()
         if self.counter.mode not in ("estimated", "exact"):
@@ -100,6 +101,9 @@ class HostAdapter:
         if not isinstance(shared_retrieval_cache, bool):
             raise ValueError("shared_retrieval_cache 必须为布尔值")
         self.shared_retrieval_cache = shared_retrieval_cache
+        self.shared_retrieval_cache_capacity = integer(
+            shared_retrieval_cache_capacity, "shared_retrieval_cache_capacity", 1, 10000,
+        )
         self.core_policy = core_policy if core_policy is not None else CoreProposalPolicy()
         if not isinstance(self.core_policy, CoreProposalPolicy):
             raise TypeError("core_policy 必须由宿主构造为 CoreProposalPolicy")
@@ -174,6 +178,19 @@ class MemorySession:
         """返回本会话缓存计数；只包含运维指标，不包含查询或记忆正文。"""
         return dict(self._cache_metrics)
 
+    def _remember_search(self, cache_key, data, epoch, generation, expires_at):
+        self._search_cache[cache_key] = _SearchCacheEntry(
+            key=cache_key, epoch=epoch, generation=generation, event_id=self.current_event_id,
+            expires_at=min(expires_at, self.clock.now() + timedelta(
+                seconds=self.adapter.retrieval_cache_ttl_seconds)),
+            memory_refs=tuple(item["ref"] for item in data["evidence"]),
+            summary_refs=tuple(item["ref"] for item in data["summaries"]),
+            retrieval_complete=data["retrieval_complete"],
+        )
+        self._search_cache.move_to_end(cache_key)
+        while len(self._search_cache) > self.adapter.retrieval_cache_capacity:
+            self._search_cache.popitem(last=False)
+
     def _render_cached_views(self, evidence_views, summary_views, retrieval_complete, activities):
         evidence = [render_record(view, self.registry) for view in evidence_views]
         summaries = []
@@ -194,12 +211,11 @@ class MemorySession:
         return {"kind": "search", "evidence": evidence, "summaries": summaries,
                 "retrieval_complete": retrieval_complete}
 
-    def _shared_cached_search(self, cache_key, reader, activities):
+    def _shared_cached_search(self, cache_key, reader, activities, epoch, generation):
         if not self.adapter.shared_retrieval_cache:
             return None
-        epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
         cached = self.runtime.db.repositories.retrieval_cache.get(
-            cache_key, _scope_key(self.binding.scope), self.current_event_id, epoch, self.clock.now(),
+            cache_key, _scope_key(self.binding.scope), self.current_event_id, epoch, generation, self.clock.now(),
         )
         if cached is None:
             return None
@@ -217,8 +233,9 @@ class MemorySession:
                     raise ValueError("summary revision changed")
                 summary_views.append(view)
             self._cache_metrics["shared_hits"] += 1
-            return self._render_cached_views(evidence_views, summary_views,
-                                             cached["retrieval_complete"], activities)
+            return (self._render_cached_views(evidence_views, summary_views,
+                                             cached["retrieval_complete"], activities),
+                    datetime.fromisoformat(cached["expires_at"]))
         except (AdapterError, KeyError, ValueError, json.JSONDecodeError, AttributeError):
             self._cache_metrics["stale"] += 1
             self.runtime.db.repositories.retrieval_cache.delete(cache_key)
@@ -333,21 +350,28 @@ class MemorySession:
             focus = self.registry.resolve([args["activity_ref"]], reader, activity=True)[0].target
         activities = (None, focus) if focus else (None,)
         interval = args["time_range"]
-        cache_key = dumps({
-            "query": args["query"], "activity_ref": args["activity_ref"],
+        # 活动引用是会话随机句柄；缓存键使用解析后的 ID 和完整授权目录。
+        # 只持久保存哈希，不能把用户查询原文复制进派生缓存。
+        cache_key = hashlib.sha256(dumps({
+            "version": 2, "scope": _scope_key(self.binding.scope),
+            "allowed_activities": sorted(self.binding.allowed_activity_ids),
+            "selected_activity": self.binding.selected_activity_id, "focus": focus,
+            "retriever": self.runtime.retrieval_cache_signature(),
+            "query": args["query"],
             "time_range": interval, "detail": args["detail"],
             "max_items": args["max_items"], "max_tokens": args["max_tokens"],
             "knowledge_at": args.get("knowledge_at"), "fact_at": args.get("fact_at"),
             "event_id": self.current_event_id,
-        })
+        }).encode("utf-8")).hexdigest()
         cacheable = not args.get("knowledge_at") and not args.get("fact_at")
         if cacheable:
+            now = self.clock.now()
+            epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
+            generation = self.runtime.db.repositories.retrieval_cache.generation()
             cached = self._search_cache.get(cache_key)
             if cached is not None:
-                now = self.clock.now()
-                epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
                 if (cached.event_id == self.current_event_id and cached.epoch == epoch
-                        and cached.expires_at > now):
+                        and cached.generation == generation and cached.expires_at > now):
                     try:
                         evidence_views = self.registry.resolve(list(cached.memory_refs), reader)
                         summary_views = self.registry.resolve(list(cached.summary_refs), reader)
@@ -357,24 +381,16 @@ class MemorySession:
                             evidence_views, summary_views, cached.retrieval_complete, activities,
                         )
                     except (AdapterError, KeyError, json.JSONDecodeError):
-                        self._cache_metrics["stale"] += 1
-                        self._search_cache.pop(cache_key, None)
+                        pass
+                self._cache_metrics["stale"] += 1
+                self._search_cache.pop(cache_key, None)
 
-            shared = self._shared_cached_search(cache_key, reader, activities)
+            shared = self._shared_cached_search(cache_key, reader, activities, epoch, generation)
             if shared is not None:
                 # 给当前窗口重新签发本地引用，跨窗口不会复用旧句柄。
-                evidence_refs = [item["ref"] for item in shared["evidence"]]
-                summary_refs = [item["ref"] for item in shared["summaries"]]
-                self._search_cache[cache_key] = _SearchCacheEntry(
-                    key=cache_key,
-                    epoch=self.runtime.db.repositories.forgetting.epoch(self.binding.scope),
-                    event_id=self.current_event_id,
-                    expires_at=self.clock.now() + timedelta(seconds=self.adapter.retrieval_cache_ttl_seconds),
-                    memory_refs=tuple(evidence_refs), summary_refs=tuple(summary_refs),
-                    retrieval_complete=shared["retrieval_complete"],
-                )
-                self._search_cache.move_to_end(cache_key)
-                return shared
+                data, expires_at = shared
+                self._remember_search(cache_key, data, epoch, generation, expires_at)
+                return data
             self._cache_metrics["misses"] += 1
 
         result = self.runtime.retrieve(
@@ -411,32 +427,27 @@ class MemorySession:
                               "source_refs": [self.registry.issue(source) for source in view.sources[:20]]})
         incomplete = incomplete or any("预算" in gap for gap in result.gaps)
         retrieval_complete = not incomplete
+        data = {"kind": "search", "evidence": evidence, "summaries": summaries,
+                "retrieval_complete": retrieval_complete}
         if cacheable:
             now = self.clock.now()
             epoch = self.runtime.db.repositories.forgetting.epoch(self.binding.scope)
             expires_at = now + timedelta(seconds=self.adapter.retrieval_cache_ttl_seconds)
-            self._search_cache[cache_key] = _SearchCacheEntry(
-                key=cache_key, epoch=epoch, event_id=self.current_event_id,
-                expires_at=expires_at,
-                memory_refs=tuple(item["ref"] for item in evidence),
-                summary_refs=tuple(item["ref"] for item in summaries),
-                retrieval_complete=retrieval_complete,
-            )
-            self._search_cache.move_to_end(cache_key)
-            while len(self._search_cache) > self.adapter.retrieval_cache_capacity:
-                self._search_cache.popitem(last=False)
+            generation = self.runtime.db.repositories.retrieval_cache.generation()
+            self._remember_search(cache_key, data, epoch, generation, expires_at)
             if self.adapter.shared_retrieval_cache:
                 self.runtime.db.repositories.retrieval_cache.put(
                     cache_key=cache_key, scope_key=_scope_key(self.binding.scope),
                     current_event_id=self.current_event_id, mutation_epoch=epoch,
+                    content_generation=generation,
                     memory_ids=[view.target for view in evidence_views],
                     summary_ids=[view.target for view in summary_views],
                     memory_revisions={view.target: view.revision for view in evidence_views},
                     summary_revisions={view.target: view.revision for view in summary_views},
                     retrieval_complete=retrieval_complete, created_at=now, expires_at=expires_at,
+                    capacity=self.adapter.shared_retrieval_cache_capacity,
                 )
-        return {"kind": "search", "evidence": evidence, "summaries": summaries,
-                "retrieval_complete": retrieval_complete}
+        return data
 
     def prefetch(self, query: str, *, detail: str = "auto", max_items: int = 12,
                  max_tokens: int = 1200) -> dict:
