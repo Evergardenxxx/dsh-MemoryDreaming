@@ -105,6 +105,14 @@ class BridgeServer:
                 scope = self._session(request["conversation_id"]).binding.scope
                 return self._ok(request_id, {"health": self.runtime.memory_health(scope),
                     "metrics": self.runtime.operational_trend(scope), "alerts": self.runtime.check_alerts(scope)})
+            if op == "desktop":
+                # Only the native owner's authenticated management channel
+                # dispatches this operation. Identity always comes from the
+                # bridge process, never from page or model arguments.
+                from .desktop import DesktopService
+                session = self._session(request["conversation_id"])
+                desktop = DesktopService(self.adapter, session.binding)
+                return self._ok(request_id, desktop.handle(request["action"], request.get("arguments", {})))
             if op == "life_command":
                 from .life_commands import execute_life_command
                 session = self._session(request["conversation_id"])

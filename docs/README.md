@@ -8,6 +8,7 @@
 |---|---|
 | [快速上手](quickstart.md) | 环境、安装、首次设定、指令和排错 |
 | [原生插件说明](../integrations/deepseek-harness/README.md) | Harness配置与真实用户管理指令 |
+| [桌面记忆管理](desktop-management.md) | 原生侧栏、记忆/候选、首次角色设置、窗口按钮及睡眠进度 |
 | [窗口、睡眠与苏醒](window-sleep-wake.md) | 按窗启用、分批审阅、梦与可逆巩固 |
 | [长期角色](long-term-role.md) | 自传、承诺、偏好、成长、自检与私密档案 |
 | [安装发布](releasing.md) / [GitHub发布准备](github-publication.md) | 隔离安装、构建、附件、远程发布步骤 |

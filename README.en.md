@@ -8,7 +8,7 @@ A local long-term memory engine and native DeepSeek Harness plugin for companion
 
 [Source repository](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issue tracker](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)
 
-**Experimental, runnable release:** engine 0.29.0, native plugin 0.16.0, database schema 27. Engineering tests cover persistence and lifecycle behavior. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
+**Experimental, runnable release:** engine 0.30.0, native plugin 0.17.0, database schema 27. The engine, native integration, and first desktop management panel are implemented. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
 
 ![MemoryDreaming architecture](docs/assets/architecture.svg)
 
@@ -19,6 +19,7 @@ A local long-term memory engine and native DeepSeek Harness plugin for companion
 - Conversation-specific opt-in. Windows are inactive until an explicit user command enables them.
 - Batched sleep review, fictional dreams, reversible recall adjustments, and wake recovery.
 - Source-backed autobiography, commitments, companionship preferences, approved expression changes, and private migration archives.
+- A native Harness sidebar panel for browsing memories and sources, reviewing proposals, confirming corrections/forgetting, first-role setup, and window/sleep status.
 - Bounded memory injection through native Cordis hooks and a local Python JSONL bridge. The Harness plugin does not register MCP tools.
 
 ## Try the engine
@@ -39,7 +40,9 @@ From the source tree or an extracted offline bundle:
 python scripts/install.py --destination "D:\Apps\MemoryDreaming" --user u1 --character c1 --relationship r1
 ```
 
-Choose a new directory outside the repository. Add the generated `plugin` directory through the Harness native plugin manager, then reload the app. Follow the [first-role setup](docs/quickstart.md) before expecting a fresh database to restore an identity.
+Choose a new directory outside the repository. Add the generated `plugin` directory through the Harness native plugin manager, then reload the app. Open **记忆管理** in the sidebar and use **绑定与诊断** to review the fixed binding and initialize an empty role. A [command-line setup example](docs/quickstart.md) remains available.
+
+The panel can browse the configured role without an active conversation. Its window selector chooses a conversation, not another role or database. Window buttons submit real user commands through Harness; an accepted command is queued, not necessarily completed. Closing the panel stops polling and does not undo submitted operations. See the [desktop guide, Chinese](docs/desktop-management.md).
 
 Send standalone user messages in the target conversation:
 
@@ -54,11 +57,13 @@ After sleep completes, send `/memory wake` in a new conversation. `/memory off` 
 
 ## Current limits
 
-The default rule extractor has limited coverage. The optional DeepSeek API extractor is implemented, but real extraction quality has not been accepted. Natural-language approval UI, automatic context selection, and a timed notification transport are not connected. Proactivity currently provides a disabled-by-default authorization and delivery queue only.
+The default rule extractor has limited coverage. The optional DeepSeek API extractor is implemented, but real extraction quality has not been accepted. The panel can approve/reject existing core, change, autobiography, growth, and companionship proposals, and confirm structured corrections or forgetting with version checks. The role tab is read-only; complete role editing forms and graphical archive import/export remain to be built.
+
+Automatic scene selection, reliable conversational candidate formation with convenient confirmation, automatic growth suggestions, and a timed notification transport remain incomplete. Proactivity currently provides a disabled-by-default authorization and delivery queue only. Roles remain fixed by plugin configuration; the panel cannot switch bindings.
 
 Request counting is estimated by default. Current V4.1 online usage and multimodal counting remain unverified. Local forgetting cannot retract text already delivered to a model or erase external backups.
 
-As of 2026-10-27, 738 engineering tests and 15 isolated paths using installed Harness runtime modules passed. The runtime acceptance provider was deterministic, not the user's live model. See [acceptance scope](docs/installed-harness-acceptance.md).
+Version 0.30 passed 773 local engineering tests, 27 isolated paths using installed Harness runtime modules, and 12 browser interaction paths. The browser uses the real Python bridge and temporary SQLite storage, with deterministic host admission and model adapters. These tests do not validate the user's current Electron window, live model, or long-term companion behavior. See [desktop boundaries](docs/desktop-management.md) and [acceptance scope](docs/installed-harness-acceptance.md).
 
 ## Data and dependencies
 

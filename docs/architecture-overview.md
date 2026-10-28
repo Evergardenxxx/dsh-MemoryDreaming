@@ -1,6 +1,6 @@
 # 架构总览
 
-本文对应引擎0.29.0 / 原生插件0.16.0 / schema27的当前实现。早期设计目标保留在[架构v0.2](architecture-v0.2.md)中，尚待验收的能力见[路线图](../ROADMAP.md)。
+本文对应引擎0.30.0 / 原生插件0.17.0 / schema27的当前实现。早期设计目标保留在[架构v0.2](architecture-v0.2.md)中，尚待验收的能力见[路线图](../ROADMAP.md)。
 
 ![MemoryDreaming系统架构](assets/architecture.svg)
 
@@ -11,6 +11,10 @@ SVG可直接用于GitHub首页、演示或导出；[Mermaid源图](diagrams/arch
 ```mermaid
 flowchart TB
   U["真实用户 / 独立聊天窗口"] --> N["原生 Cordis 插件：按窗开关、生命周期、完整请求预算"]
+  U --> UI["Harness 原生记忆管理页面"]
+  UI --> O["拥有者 RPC：来源查看、明确审批、窗口指令"]
+  O --> B
+  O --> N
   N --> B["本地 JSONL Bridge / HostAdapter：固定可信绑定"]
   B --> R["MemoryRuntime：统一资源与事务"]
   R --> C["受控核心 + 工作 / 情景 / 语义 / 程序记忆"]
@@ -34,6 +38,8 @@ flowchart TB
 ```
 
 原生插件不注册MCP工具目录。SDK保留查询/审批接口，仓库另有早期只读兼容模块；它们不参与当前Harness原生链路。user/character/relationship/activity/domain决定长期资料边界，conversation_id决定窗口来源与开关；换窗口不会创建一套新的角色记忆。
+
+管理页面使用宿主共享客户端与原生RPC，不新增监听端口。`DesktopController`核对真实拥有者身份，`DesktopService`复用同一引擎的来源和版本检查；窗口按钮通过宿主的真实用户指令通道执行。页面数据不进入模型上下文，也不会因打开页面而开启任何对话窗口。使用和剩余界面工作见[桌面管理](desktop-management.md)。
 
 ## 普通回合
 

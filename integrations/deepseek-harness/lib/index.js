@@ -6,6 +6,7 @@ import { configureLocalTokenizer } from './local-tokenizer.js'
 import { WindowControlStore, parseMemoryCommand } from './window-control.js'
 import { SleepCoordinator, controlMessages } from './sleep-coordinator.js'
 import { parseLifeCommand, lifeReceipt } from './life-commands.js'
+import { installDesktop } from './desktop-controller.js'
 
 export const name = 'memorydreaming'
 // The plugin uses Cordis lifecycle events directly. It deliberately registers
@@ -25,6 +26,16 @@ export function apply(ctx, config = {}) {
   const states = new Map()
   const disposedSessions = new WeakSet()
   const deliveryTasks = new Set()
+  // Page cancellation must not restart the conversation/sleep worker. The
+  // management connection is lazy, shares SQLite, and runs no background jobs.
+  let desktopBridge
+  const closeDesktop = installDesktop(ctx, { controls, states, bridge: {
+    request(...args) {
+      desktopBridge ??= new BridgeClient({ ...config, autoConsolidation: false, autoPrefetch: false, extractor: 'rules' }, logger)
+      return desktopBridge.request(...args)
+    },
+    close() { return desktopBridge?.close() },
+  } })
   let disposed = false
   let disposalPromise
   const getState = session => {
@@ -496,6 +507,7 @@ export function apply(ctx, config = {}) {
 
   const dispose = () => {
     if (disposalPromise) return disposalPromise
+    const desktopClosing = closeDesktop()
     outbox.close()
     for (const state of states.values()) {
       state.requestRevision++
@@ -508,7 +520,7 @@ export function apply(ctx, config = {}) {
       let timer
       try {
         await Promise.race([Promise.allSettled([...deliveryTasks]), new Promise(resolve => { timer = setTimeout(resolve, bridge.shutdownMs) })])
-      } finally { clearTimeout(timer); await bridge.close() }
+      } finally { clearTimeout(timer); await Promise.allSettled([bridge.close(), desktopClosing]) }
     })()
     return disposalPromise
   }

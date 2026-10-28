@@ -12,10 +12,11 @@ import sys
 import tempfile
 
 
-def extract_runtime(asar, destination):
+def extract_runtime(asar, destination, *, extra_seeds=()):
     seeds = ["@deepseek-ai/dsh-agent-loop", "@deepseek-ai/dsh-session-projection",
              "@deepseek-ai/dsh-session-persistence-jsonl", "@deepseek-ai/dsh-compaction-basic",
              "@deepseek-ai/dsh-token-meter"]
+    seeds.extend(extra_seeds)
     versions = {}
     with asar.open("rb") as stream:
         lengths = struct.unpack("<IIII", stream.read(16))
@@ -70,14 +71,17 @@ def extract_runtime(asar, destination):
     return versions
 
 
-def run(asar, output):
+def run(asar, output, *, desktop=False):
     root = Path(__file__).resolve().parents[1]
     node = shutil.which("node")
     if not node or not asar.is_file():
         raise ValueError("需要 Node.js 与已安装 Harness 的 app.asar 路径")
     with tempfile.TemporaryDirectory(prefix="memorydreaming-installed-host-") as folder:
         workspace = Path(folder)
-        versions = extract_runtime(asar, workspace)
+        versions = extract_runtime(asar, workspace, extra_seeds=(
+            "@deepseek-ai/dsh-api-gateway", "@deepseek-ai/dsh-typert-registry",
+            "@deepseek-ai/dsh-client-modules",
+        ) if desktop else ())
         driver = workspace/"acceptance.mjs"
         shutil.copy2(root/"scripts"/"harness_acceptance.mjs", driver)
         checks = []
@@ -88,6 +92,13 @@ def run(asar, output):
                 raise RuntimeError(result.stderr or result.stdout)
             report = json.loads(result.stdout.strip().splitlines()[-1])
             checks.extend(report["checked"])
+        if desktop:
+            result = subprocess.run([node, str(root/"scripts/harness_desktop_acceptance.mjs"), str(root), str(workspace)],
+                                    cwd=workspace, capture_output=True, text=True, encoding="utf-8", timeout=40)
+            if result.returncode:
+                raise RuntimeError(result.stderr or result.stdout)
+            report["desktop_rpc"] = json.loads(result.stdout.strip().splitlines()[-1])
+            checks.extend(report["desktop_rpc"]["checked"])
         report["checked"] = checks
         report.update(versions=versions, application_archive_sha256=hashlib.sha256(asar.read_bytes()).hexdigest(),
                       real_desktop_ui=False, live_model=False,
@@ -101,5 +112,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--asar", required=True)
     parser.add_argument("--output", default="dist/installed-harness-acceptance.json")
+    parser.add_argument("--desktop", action="store_true", help="Also verify owner-only desktop RPC against the installed Gateway")
     args = parser.parse_args()
-    print(json.dumps(run(Path(args.asar).resolve(), Path(args.output).resolve()), ensure_ascii=False, indent=2))
+    print(json.dumps(run(Path(args.asar).resolve(), Path(args.output).resolve(), desktop=args.desktop), ensure_ascii=False, indent=2))

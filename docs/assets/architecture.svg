@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="970" viewBox="0 0 1080 970" role="img" aria-labelledby="title desc">
   <title id="title">MemoryDreaming 系统架构</title>
-  <desc id="desc">DeepSeek Harness 原生插件通过本地 JSONL 桥接调用 MemoryRuntime。引擎管理核心与四类记忆、混合检索、角色投影和睡眠，使用 SQLite 持久化。模型接收预算内资料；本地嵌入和 DeepSeek API 抽取均为可选。</desc>
+  <desc id="desc">DeepSeek Harness 原生插件和拥有者桌面管理页面通过本地 JSONL 桥接调用 MemoryRuntime。引擎管理核心与四类记忆、混合检索、角色投影和睡眠，使用 SQLite 持久化。桌面资料不进入模型上下文，模型只接收预算内恢复资料。</desc>
   <defs>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#46657c"/></marker>
     <style>
@@ -15,13 +15,13 @@
   </defs>
   <rect width="1080" height="970" fill="#f8fafc"/>
   <text x="36" y="45" class="title">MemoryDreaming · 系统架构</text>
-  <text x="36" y="76" class="small">引擎 0.29.0 / 原生插件 0.16.0 · 持久资料独立于聊天上下文</text>
+  <text x="36" y="76" class="small">引擎 0.30.0 / 原生插件 0.17.0 · 持久资料独立于聊天上下文</text>
 
   <rect x="36" y="110" width="620" height="144" rx="8" fill="#eaf2fa" stroke="#9bb9d2" stroke-width="1.5"/>
-  <text x="60" y="147" class="heading">DeepSeek Harness · 原生 Cordis 插件</text>
-  <text x="60" y="181" class="body">用户窗口默认关闭，真实指令开启 / 关闭 / 睡眠 / 苏醒</text>
+  <text x="60" y="147" class="heading">DeepSeek Harness · 原生插件 / 记忆管理</text>
+  <text x="60" y="181" class="body">按窗开关 · 查看与审批 · 睡眠 / 苏醒 · 默认关闭</text>
   <text x="60" y="213" class="body">完整请求预算 · 单一记忆节点 · 已投递回复补偿</text>
-  <text x="60" y="239" class="small">index.js / window-control.js / sleep-coordinator.js</text>
+  <text x="60" y="239" class="small">拥有者 RPC / 窗口指令 / 生命周期 · 无模型工具目录</text>
 
   <rect x="736" y="110" width="308" height="144" rx="8" class="box"/>
   <text x="758" y="147" class="heading">LLM / 模型服务</text>
@@ -33,10 +33,10 @@
   <text x="670" y="217" class="small">资料</text>
 
   <path d="M346 254 V310" class="flow" marker-start="url(#arrow)"/>
-  <text x="363" y="288" class="small">真实输入 / 恢复资料 / 投递回执</text>
+  <text x="363" y="288" class="small">真实指令 / 拥有者管理 / 恢复资料 / 投递回执</text>
   <rect x="36" y="310" width="620" height="86" rx="8" class="box"/>
   <text x="60" y="343" class="heading">本地 JSONL Bridge + HostAdapter</text>
-  <text x="60" y="375" class="body">固定用户 / 角色 / 关系 / 领域 · 引用、授权与请求边界</text>
+  <text x="60" y="375" class="body">固定绑定 · DesktopService：来源 / 审批 / 版本 / 遗忘</text>
 
   <rect x="736" y="310" width="308" height="86" rx="8" fill="#eef5f0" stroke="#aec5b6" stroke-width="1.5"/>
   <text x="758" y="343" class="heading">可选本地语义编码</text>

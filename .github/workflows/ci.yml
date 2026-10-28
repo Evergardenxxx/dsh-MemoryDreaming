@@ -34,6 +34,9 @@ jobs:
       - name: Compile
         run: |
           python -m compileall -q memorydreaming examples tests
+          python scripts/build_native_client.py --check
+          node --check integrations/deepseek-harness/lib/client.js
+          node --check integrations/deepseek-harness/lib/desktop-controller.js
           node --check integrations/deepseek-harness/lib/index.js
           node --check integrations/deepseek-harness/lib/request-budget.js
           node --check integrations/deepseek-harness/lib/bridge-client.js

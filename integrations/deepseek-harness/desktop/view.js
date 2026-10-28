@@ -1,0 +1,174 @@
+const TYPES = [['working', '工作'], ['episodic', '情景'], ['semantic', '语义'], ['procedural', '程序']];
+const PROPOSALS = [['core', '核心'], ['change', '记忆变更'], ['narrative', '自传'], ['growth', '成长'], ['companionship', '相处偏好']];
+const value = v => v == null ? '未提供' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
+const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, val] of Object.entries(attrs)) {
+    if (key === 'class') node.className = val;
+    else if (key.startsWith('on')) node.addEventListener(key.slice(2).toLowerCase(), val);
+    else if (key === 'text') node.textContent = val;
+    else if (val !== false && val != null) node.setAttribute(key, val === true ? '' : val);
+  }
+  for (const child of children.flat()) if (child != null) node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  return node;
+}
+const button = (label, handler, cls = '') => el('button', {type: 'button', class: cls, onClick: handler}, label);
+const pre = data => el('pre', {class: 'md-data'}, value(data));
+const advanced = data => el('details', {class: 'md-advanced'}, el('summary', {}, '查看详细数据'), pre(data));
+function readable(data) {
+  if (data == null || (Array.isArray(data) && !data.length)) return el('p', {class: 'md-muted'}, '暂无记录。');
+  if (Array.isArray(data)) return el('div', {class: 'md-records'}, data.map(readable));
+  if (typeof data !== 'object') return el('p', {}, value(data));
+  const labels = {identity:'身份',relationship:'关系',fields:'字段',state:'状态',version:'版本',text:'内容',title:'标题',created_at:'创建时间',completed_at:'完成时间',status:'状态',review:'审阅进度',batch_count:'批次数',reviewed_batches:'已审阅批次',next_cursor:'下一位置',review_complete:'审阅完成',entries:'条目',key:'项目',value:'内容',sources:'来源',body:'内容',epistemic_status:'认识状态',modality:'内容性质',counts:'记忆数量',working:'工作',episodic:'情景',semantic:'语义',procedural:'程序'};
+  return el('dl', {class: 'md-fields'}, Object.entries(data).map(([key, val]) => el('div', {}, el('dt', {}, labels[key] || key), el('dd', {}, val && typeof val === 'object' ? readable(val) : value(val)))));
+}
+const field = (label, control) => el('label', {class: 'md-field'}, el('span', {}, label), control);
+const textInput = (placeholder = '') => el('input', {placeholder});
+const textarea = () => el('textarea', {rows: '5'});
+const bodyLabels = {subject:'主体',predicate:'关系',obj:'内容',scope_note:'范围',what_happened:'经过',goal:'目标',trigger:'触发条件',action:'行动',steps:'步骤',context:'上下文',outcome:'结果',participants:'参与者',location:'地点',time:'时间'};
+function bodyView(body) { if (!body || typeof body !== 'object') return readable(body); return readable(Object.fromEntries(Object.entries(body).map(([key, val]) => [bodyLabels[key] || key, val]))); }
+function summary(item) { const body = item.body || {}; return [body.subject, body.predicate, body.obj].filter(Boolean).join(' ') || body.what_happened || body.goal || body.trigger || item.text || item.title || item.field || item.id; }
+
+/** Mount a management view. request(action, args) must resolve to a service result or reject. */
+export function mountDesktop(root, request) {
+  let state = {tab: 'memories', type: 'semantic', proposalType: 'core', query: '', offset: 0, selected: null, overview: null, data: null, loading: false, error: '', notice: '', pending: null, windows: [], conversationId: ''};
+  let alive = true, sequence = 0, detailSequence = 0, overviewSequence = 0, draft = {};
+  root.classList.add('memorydreaming');
+  const update = patch => { const active = root.contains(document.activeElement) ? document.activeElement : null; const key = active?.dataset?.draft; const start = key ? active.selectionStart : null, end = key ? active.selectionEnd : null; state = {...state, ...patch}; render(); if (key) { const next = root.querySelector(`[data-draft="${key}"]`); if (next) { next.focus(); if (start != null) next.setSelectionRange(start, end); } } };
+  function bindDraft(control, key, initial = '') { control.dataset.draft = key; control.value = draft[key] ?? initial; control.addEventListener('input', () => { draft[key] = control.value; }); return control; }
+  async function call(action, args = {}) {
+    const result = await request(action, action === 'windows' ? args : {...args, ...(state.conversationId ? {conversation_id: state.conversationId} : {})});
+    if (result?.error) throw new Error(typeof result.error === 'string' ? result.error : value(result.error));
+    return result;
+  }
+  async function refreshWindows() {
+    try {
+      const result = await call('windows');
+      if (!alive) return;
+      const windows = result.items || [];
+      const conversationId = windows.some(item => item.id === state.conversationId) ? state.conversationId : (result.selected_conversation_id || '');
+      if (JSON.stringify(windows) !== JSON.stringify(state.windows) || conversationId !== state.conversationId) update({windows, conversationId});
+    } catch (error) { if (alive) update({error: error.message || String(error)}); }
+  }
+  async function refreshOverview() {
+    const conversationId = state.conversationId, n = ++overviewSequence;
+    try { const overview = await call('overview'); if (alive && n === overviewSequence && conversationId === state.conversationId) update({overview}); }
+    catch (error) { if (alive && n === overviewSequence && conversationId === state.conversationId) update({error: error.message || String(error)}); }
+  }
+  async function load() {
+    const n = ++sequence;
+    detailSequence++;
+    update({loading: true, error: '', selected: null, pending: null});
+    try {
+      let data;
+      if (state.tab === 'memories') data = await call('memories', {memory_type: state.type, query: state.query, offset: state.offset, limit: 20});
+      else if (state.tab === 'proposals') data = await call('proposals', {proposal_type: state.proposalType, offset: state.offset, limit: 20});
+      else if (state.tab === 'role') data = await call('role');
+      else if (state.tab === 'sleep') data = await call('sleep', {limit: 10});
+      else data = await call('overview');
+      if (alive && n === sequence) update({data, loading: false});
+    } catch (error) { if (alive && n === sequence) update({loading: false, error: error.message || String(error), data: null}); }
+  }
+  function change(patch) { draft = {}; state = {...state, ...patch, offset: 0}; load(); }
+  async function select(item) {
+    draft = {};
+    const n = ++detailSequence, conversationId = state.conversationId, tab = state.tab, type = state.type;
+    if (state.tab === 'proposals') { update({selected: item, pending: null}); return; }
+    update({selected: {loading: true}, pending: null});
+    const current = () => alive && n === detailSequence && conversationId === state.conversationId && tab === state.tab && type === state.type;
+    try { const selected = await call('record', {kind: 'memory', id: item.id}); if (current()) update({selected}); }
+    catch (error) { if (current()) update({selected: null, error: error.message || String(error)}); }
+  }
+  function prepare(action, args, label) { update({pending: {action, args: {...args, request_id: uid()}, label, busy: false, error: ''}}); }
+  async function commit() {
+    const pending = state.pending;
+    if (!pending || pending.busy) return;
+    update({pending: {...pending, busy: true, error: ''}});
+    const conversationId = state.conversationId;
+    try { await call(pending.action, pending.args); if (alive && conversationId === state.conversationId && state.pending?.args.request_id === pending.args.request_id) { draft = {}; await refreshWindows(); await refreshOverview(); await load(); if (alive && conversationId === state.conversationId && ['window_control', 'window_cancel'].includes(pending.action)) update({notice: pending.action === 'window_cancel' ? '已请求停止整理，请以后续窗口状态确认。' : '指令已入队，等待窗口处理。'}); } }
+    catch (error) { if (alive && conversationId === state.conversationId && state.pending?.args.request_id === pending.args.request_id) update({pending: {...pending, busy: false, error: error.message || String(error)}}); }
+  }
+  function pagination(data) {
+    return el('div', {class: 'md-pagination'}, button('上一页', () => { state.offset = Math.max(0, state.offset - 20); load(); }, '',), el('span', {}, `从第 ${state.offset + 1} 条开始`), button('下一页', () => { state.offset = data.next_offset; load(); }));
+  }
+  function listView() {
+    const proposals = state.tab === 'proposals', data = state.data || {}, items = data.items || [];
+    const filters = el('div', {class: 'md-filters', role: 'group', 'aria-label': proposals ? '候选类型' : '记忆类型'}, (proposals ? PROPOSALS : TYPES).map(([id, label]) => { const active = (proposals ? state.proposalType : state.type) === id; const control = button(label, () => change(proposals ? {proposalType: id} : {type: id}), active ? 'is-active' : ''); control.setAttribute('aria-pressed', String(active)); return control; }));
+    let search = null;
+    if (!proposals) {
+      const input = bindDraft(textInput('搜索记忆'), 'search', state.query); input.setAttribute('aria-label', '搜索记忆');
+      search = el('form', {class: 'md-search', onSubmit: event => { event.preventDefault(); change({query: input.value.trim()}); }}, input, el('button', {type: 'submit'}, '搜索'));
+    }
+    const list = el('div', {class: 'md-list'}, items.length ? items.map(item => button('', () => select(item), 'md-row')) : el('div', {class: 'md-empty'}, state.overview?.needs_initialization ? '记忆库尚未初始化，请在“绑定与诊断”中设置角色。' : '没有符合条件的记录。'));
+    if (items.length) [...list.children].forEach((row, index) => { const item = items[index]; row.append(el('strong', {}, value(summary(item))), el('span', {}, `${item.state ?? item.status ?? ''}  ·  ${item.id}`)); });
+    const pages = pagination(data); pages.children[0].disabled = state.offset === 0; pages.children[2].disabled = !data.has_more || data.next_offset == null;
+    return el('div', {class: 'md-split'}, el('section', {class: 'md-list-pane'}, filters, search, list, pages), detail());
+  }
+  function detail() {
+    const item = state.selected, proposals = state.tab === 'proposals';
+    if (!item) return el('aside', {class: 'md-detail md-empty'}, '选择一条记录查看详情与来源。');
+    if (item.loading) return el('aside', {class: 'md-detail md-empty'}, '正在读取详情…');
+    const panel = el('aside', {class: 'md-detail'}, el('div', {class: 'md-detail-head'}, el('h2', {}, proposals ? '候选详情' : '记忆详情'), button('关闭', () => { detailSequence++; update({selected: null, pending: null}); })), el('p', {class: 'md-muted'}, `记录 ${String(item.id).slice(0, 16)}`));
+    const content = {...item}; delete content.sources; delete content.id; delete content.kind; delete content.revision;
+    if (proposals) panel.append(readable(content));
+    else {
+      const metadata = {'类型': TYPES.find(([id]) => id === item.memory_type)?.[1] || item.memory_type, '认识状态': item.epistemic_status, '有效状态': item.valid_now, '发生时间': item.occurred};
+      panel.append(readable(Object.fromEntries(Object.entries(metadata).filter(([, val]) => val != null))), el('h3', {}, '正文'), bodyView(item.body ?? item.text));
+    }
+    if (proposals && item.sources?.length) panel.append(el('h3', {}, '来源'), readable(item.sources));
+    if (!proposals) {
+      panel.append(el('h3', {}, '来源'), item.sources?.length ? el('div', {}, item.sources.map(source => el('div', {class: 'md-source'}, el('strong', {}, `${source.kind} · ${source.id}`), el('span', {class: 'md-muted'}, `版本 ${value(source.revision)}`), el('p', {}, value(source.text))))) : el('p', {class: 'md-muted'}, '没有可显示的来源。'), advanced(item));
+      if (item.truncated) panel.append(el('p', {class: 'md-muted'}, '来源已截断。'));
+      if (!state.overview?.capabilities?.read_only) {
+        const reason = bindDraft(textInput('填写操作理由'), 'memory-reason'); const body = bindDraft(textarea(), 'memory-body', JSON.stringify(item.body ?? {}, null, 2));
+        const correct = button('准备纠正', () => { try { const parsed = JSON.parse(body.value); if (!reason.value.trim()) throw new Error('请填写理由。'); prepare('memory_correct', {id: item.id, expected_revision: item.revision, body: parsed, reason: reason.value.trim()}, '确认纠正这条记忆'); } catch (error) { update({error: error.message}); } });
+        correct.disabled = !!item.truncated;
+        panel.append(...[el('h3', {}, '纠正或遗忘'), item.truncated ? el('p', {class: 'md-error'}, '正文未完整展示，无法纠正。') : null, field('理由', reason), field('纠正后的结构化内容（JSON）', body), el('div', {class: 'md-actions'}, correct, button('准备遗忘', () => { if (!reason.value.trim()) { update({error: '请填写理由。'}); return; } prepare('memory_forget', {id: item.id, expected_revision: item.revision, reason: reason.value.trim()}, '确认遗忘这条记忆'); }))].filter(Boolean));
+      }
+    } else if (!state.overview?.capabilities?.read_only) {
+      const reason = bindDraft(textInput('填写审批理由'), 'proposal-reason');
+      panel.append(...[item.truncated ? el('p', {class: 'md-error'}, '候选内容未完整展示，无法通过。') : null, field('审批理由', reason), el('div', {class: 'md-actions'}, ...[['approve', '准备确认'], ['reject', '准备拒绝']].map(([decision, label]) => { const control = button(label, () => { if (!reason.value.trim()) { update({error: '请填写审批理由。'}); return; } prepare('proposal_decide', {proposal_type: item.proposal_type, id: item.id, decision, expected_revision: item.revision, reason: reason.value.trim(), ...(Number.isSafeInteger(item.expected_version) && item.expected_version >= 0 ? {expected_version: item.expected_version} : {})}, decision === 'approve' ? '确认通过此候选' : '确认拒绝此候选'); }); control.disabled = decision === 'approve' && !!item.truncated; return control; }))].filter(Boolean));
+    }
+    if (state.pending && ['memory_correct','memory_forget','proposal_decide'].includes(state.pending.action)) { const {request_id, expected_revision, ...preview} = state.pending.args; panel.append(el('div', {class: 'md-confirm', role: 'alert'}, el('strong', {}, state.pending.label), el('p', {}, '此操作将写入记录，并检查当前版本。'), readable(preview), state.pending.error ? el('p', {class: 'md-error'}, `操作未完成：${state.pending.error}。如版本已变化，请刷新后重新核对。`) : null, el('div', {class: 'md-actions'}, button(state.pending.busy ? '提交中…' : '确认提交', commit, 'md-primary'), button('取消', () => update({pending: null}))))); }
+    return panel;
+  }
+  function section(title, data) { return el('section', {class: 'md-section'}, el('h2', {}, title), readable(data), data != null ? advanced(data) : null); }
+  function overviewView() {
+    const o = state.data || state.overview || {}, b = o.binding || {};
+    const wrap = el('div', {class: 'md-content'}, section('当前绑定', b), section('核心身份与关系', o.cores), section('健康诊断', o.health), section('能力与权限', o.capabilities));
+    if (o.needs_initialization && !o.capabilities?.read_only) {
+      const name = bindDraft(textInput('角色名字'), 'init-name'), identity = bindDraft(textInput('角色身份'), 'init-identity'), address = bindDraft(textInput('相互称呼'), 'init-address'), relation = bindDraft(textInput('相处设定'), 'init-relation');
+      const init = el('section', {class: 'md-section'}, el('h2', {}, '初始化角色'), field('名字', name), field('身份', identity), field('称呼', address), field('相处设定', relation), button('准备初始化', () => { if (![name, identity, address, relation].every(x => x.value.trim())) { update({error: '请填写完整的角色和关系信息。'}); return; } prepare('initialize_role', {identity_fields: {名字: name.value.trim(), 身份: identity.value.trim()}, relationship_fields: {称呼: address.value.trim(), 相处设定: relation.value.trim()}, expected_version: 0}, '确认初始化角色'); }));
+      if (state.pending?.action === 'initialize_role') init.append(el('div', {class: 'md-confirm'}, el('strong', {}, state.pending.label), readable({...state.pending.args.identity_fields, ...state.pending.args.relationship_fields}), state.pending.error ? el('p', {class: 'md-error'}, state.pending.error) : null, el('div', {class: 'md-actions'}, button(state.pending.busy ? '提交中…' : '确认提交', commit, 'md-primary'), button('取消', () => update({pending: null})))));
+      wrap.prepend(init);
+    }
+    return wrap;
+  }
+  function render() {
+    if (!alive) return;
+    const tabs = [['memories', '记忆'], ['proposals', '待审候选'], ['role', '角色'], ['sleep', '睡眠与梦境'], ['overview', '绑定与诊断']];
+    const header = el('header', {class: 'md-header'}, el('div', {}, el('h1', {}, '记忆管理'), el('p', {class: 'md-muted'}, state.overview?.binding?.conversation_id ? `当前窗口 ${state.overview.binding.conversation_id}` : '当前窗口未选择或未绑定')), button('刷新', () => { refreshOverview(); load(); }));
+    const nav = el('nav', {class: 'md-nav', 'aria-label': '记忆管理'}, tabs.map(([id, label]) => { const control = button(label, () => change({tab: id}), state.tab === id ? 'is-active' : ''); if (state.tab === id) control.setAttribute('aria-current', 'page'); return control; }));
+    let content;
+    if (state.loading) content = el('div', {class: 'md-empty', role: 'status'}, '正在加载…');
+    else if (state.tab === 'memories' || state.tab === 'proposals') content = listView();
+    else if (state.tab === 'overview') content = overviewView();
+    else if (state.tab === 'role') content = el('div', {class: 'md-content'}, section('自传', state.data?.autobiography), section('承诺', state.data?.intentions), section('相处偏好', state.data?.companionship), section('成长', state.data?.growth));
+    else content = el('div', {class: 'md-content'}, section('睡眠进度', state.data?.runs), el('p', {class: 'md-muted'}, '梦境为生成的虚构内容，不作为事实。'), section('梦境', state.data?.dreams));
+    const selectWindow = el('select', {'aria-label': '选择窗口', onChange: event => { draft = {}; state.conversationId = event.target.value; state.overview = null; refreshOverview(); load(); }}, el('option', {value: ''}, '选择窗口'), state.windows.map(item => el('option', {value: item.id}, item.title || item.id)));
+    selectWindow.value = state.conversationId;
+    const current = state.windows.find(item => item.id === state.conversationId);
+    const windowBar = el('div', {class: 'md-window'}, selectWindow, current ? el('span', {class: 'md-muted'}, `状态：${value(current.mode)}${current.busy ? ' · 正在处理' : ''}`) : el('span', {class: 'md-muted'}, '选择窗口后可开启、睡眠或苏醒。'), ...[['on', '开启'], ['off', '关闭'], ['sleep', '睡眠'], ['wake', '苏醒']].map(([command, label]) => { const control = button(label, () => prepare('window_control', {conversation_id: current.id, command, expected_revision: current.revision}, `确认${label}当前窗口`)); control.disabled = !current || !!current.busy || !!state.pending?.busy; return control; }));
+    if (current?.can_cancel) windowBar.append(button('停止整理', () => prepare('window_cancel', {conversation_id: current.id, expected_revision: current.revision}, '确认请求停止整理')));
+    if (current?.sleep_progress != null) windowBar.append(el('span', {class: 'md-muted'}, `睡眠进度：${value(current.sleep_progress)}`));
+    if (current?.last_budget != null) windowBar.append(el('span', {class: 'md-muted'}, `最近预算：${value(current.last_budget)}`));
+    if (['window_control', 'window_cancel'].includes(state.pending?.action)) windowBar.append(el('div', {class: 'md-confirm'}, el('strong', {}, state.pending.label), state.pending.args.command === 'sleep' ? el('p', {}, '睡眠会调用当前模型审阅对话，可能需要一段时间。') : null, state.pending.action === 'window_cancel' ? el('p', {}, '已完成的批次会保留；请求后请查看窗口状态确认。') : null, state.pending.error ? el('p', {class: 'md-error'}, state.pending.error) : null, el('div', {class: 'md-actions'}, button(state.pending.busy ? '提交中…' : '确认提交', commit, 'md-primary'), button('取消', () => update({pending: null})))));
+    root.replaceChildren(...[header, windowBar, nav, state.notice ? el('div', {class: 'md-notice', role: 'status'}, state.notice) : null, state.error ? el('div', {class: 'md-error', role: 'alert'}, state.error) : null, content].filter(Boolean));
+    if (state.pending?.busy) root.querySelectorAll('button, select, input, textarea').forEach(control => { control.disabled = true; });
+  }
+  render(); refreshWindows().then(() => { if (alive) { refreshOverview(); load(); } });
+  const timer = setInterval(() => { if (!document.hidden && alive) { refreshWindows(); if (state.conversationId && state.tab === 'sleep') { const conversationId = state.conversationId, n = sequence; call('sleep', {limit: 10}).then(data => { if (alive && conversationId === state.conversationId && n === sequence && state.tab === 'sleep' && JSON.stringify(data) !== JSON.stringify(state.data)) update({data}); }).catch(() => {}); } } }, 3000);
+  return () => { alive = false; sequence++; clearInterval(timer); root.replaceChildren(); root.classList.remove('memorydreaming'); };
+}

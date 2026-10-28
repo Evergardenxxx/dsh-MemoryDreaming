@@ -11,6 +11,10 @@ flowchart TD
     User[用户真实输入 / 窗口指令] --> Native[原生插件：窗口开关与生命周期]
     Native --> Budget[请求预算与自有资料节点]
     Native --> Bridge[本地 JSONL bridge]
+    User --> Desktop[原生桌面管理：共享React / slots]
+    Desktop --> Owner[DesktopController：拥有者RPC]
+    Owner --> Bridge
+    Owner --> Native
     Native --> Outbox[已投递回复的磁盘补偿]
     Outbox --> Bridge
     Bridge --> Host[HostAdapter / MemorySession]
@@ -35,6 +39,8 @@ flowchart TD
 |---|---|---|
 | `integrations/deepseek-harness/lib/index.js` 与相邻模块 | Cordis hook、窗口控制、请求预算、单资料节点、进程管理、磁盘投递补偿 | 从模型文本推断审批权、直接操作 SQLite |
 | `bridge.py` | 固定可信身份绑定、多 conversation 路由、JSONL 请求边界、固定错误码 | MCP 工具目录、网络监听、自动改变模型账号 |
+| `desktop.py` | 固定绑定的管理列表、来源详情、人工审批、纠错/遗忘及首次设定 | 模型工具、任意数据库路径、代替用户确认 |
+| `lib/desktop-controller.js` / `desktop/` | 拥有者RPC、原生页面、可见期间轮询与真实窗口指令 | 新HTTP服务、自动开启窗口、向模型注入管理页 |
 | `host.py` | 会话绑定、prepare/delivery、引用、查询预算、提议与可信审批入口 | 直接复用别的窗口引用、把记忆提升为系统权限 |
 | `runtime.py` | 创建并关闭连接、时钟、编码器、后台 worker；启动恢复、检索、真实事件观察 | 集中堆放全部业务实现、隐式创建第二套服务连接 |
 | `sleep.py` / `storage/sleep-schema.sql` | 冻结本窗来源、分片租约、候选审阅、生成虚构梦、可逆权重与苏醒 | 将梦/候选笔记自动写成事实，修改人格/原话或物理遗忘 |

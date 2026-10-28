@@ -5,6 +5,7 @@
 ```bash
 python -m pip install --editable .
 python -m compileall -q memorydreaming examples tests
+python scripts/build_native_client.py --check
 python -m unittest discover -s tests -q
 git diff --check
 ```
@@ -23,6 +24,7 @@ git diff --check
 | 6 | [worker.py](../memorydreaming/worker.py)、[consolidation.py](../memorydreaming/consolidation.py) | 理解租约、事务外计算、退避与原子回执 |
 | 7 | [sleep.py](../memorydreaming/sleep.py)、[life.py](../memorydreaming/life.py)、各角色领域服务 | 理解睡眠编排、角色连续性和审批边界 |
 | 8 | [原生lib/](../integrations/deepseek-harness/lib)、[bridge.py](../memorydreaming/bridge.py) | 理解Cordis生命周期、窗口开关、请求预算和进程监管 |
+| 9 | [desktop/](../integrations/deepseek-harness/desktop)、[desktop-controller.js](../integrations/deepseek-harness/lib/desktop-controller.js)、[desktop.py](../memorydreaming/desktop.py) | 理解原生页面、拥有者RPC与固定绑定的管理服务；管理数据不进入模型上下文 |
 
 `examples/host_lifecycle.py`是跨窗口最小示例；`examples/core_proposal.py`演示重启后的审批；`examples/initialize_role.py`演示由本地操作者明确初始化空角色。它们不把模型生成内容当作授权。
 
@@ -44,6 +46,8 @@ git diff --check
 修复优先写能复现行为的最小回归；纯文档、注释和机械移动不需要镜像实现的测试。运行改动相关测试和必要全量回归，记录真实模型/GUI未覆盖的部分。完整职责与入口见[系统架构](system-architecture.md)。
 
 ## 版本与构建
+
+桌面页面源文件位于`integrations/deepseek-harness/desktop/`。编辑后执行`python scripts/build_native_client.py`，同步生成随插件发布的`lib/client.js`；CI和发布脚本使用`--check`拒绝陈旧产物。构建仅依赖Python标准库，Harness提供共享React运行时。桌面浏览器与安装版验收命令见[桌面管理](desktop-management.md#可复跑的验证)。
 
 引擎版本在`memorydreaming/__init__.py`和`pyproject.toml`；原生版本在`integrations/deepseek-harness/package.json`；数据库版本在`storage/database.py`。纯文档/示例改动不必提高引擎或schema版本。
 

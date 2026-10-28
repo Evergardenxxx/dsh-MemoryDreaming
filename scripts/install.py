@@ -35,7 +35,7 @@ def install(destination, *, wheel=None, user="u1", character="c1", relationship=
     plugin = target / "plugin"
     plugin.mkdir(exist_ok=True)
     source = repo / "integrations" / "deepseek-harness"
-    for name in ("lib", "locale"):
+    for name in ("lib", "locale", "desktop"):
         shutil.copytree(source/name, plugin/name, dirs_exist_ok=True)
     for name in ("package.json", "icon.svg", "README.md", "LICENSE"):
         shutil.copy2(source/name, plugin/name)

@@ -1,6 +1,6 @@
 {
   "name": "@local/memorydreaming",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "private": true,
   "license": "MIT",
   "description": "Native Cordis plugin for persistent role memory and sleep/wake continuity in DeepSeek Harness",
@@ -17,16 +17,29 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "cordis.patch.yml",
     "lib/*.js",
+    "desktop/*.js",
+    "desktop/*.css",
     "locale/*.json",
     "icon.svg"
   ],
   "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "external": ["react"]
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     }

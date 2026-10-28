@@ -14,7 +14,7 @@ python scripts/install.py --destination "D:\Apps\MemoryDreaming" --user u1 --cha
 
 安装目录必须为空且位于源码目录之外。安装器创建独立 venv、Python 包、插件副本、数据目录和原生 Cordis 配置；已存在的配置与用户数据不会被覆盖。随后在 Harness 原生插件管理器中选择生成的 `plugin` 绝对路径。安装器不修改现有 Harness profile，也不重启应用。
 
-有 wheel 时可显式传入 `--wheel path/to/memorydreaming-0.29.0-py3-none-any.whl`，使用 `--no-index --no-deps` 安装。离线 ZIP 自带 wheels/，安装器会自动发现。离线包不含 Python、Node、可选模型依赖和模型权重，需预先安装；从纯源码构建 Python 包可能需要联网准备构建工具。
+有 wheel 时可显式传入 `--wheel path/to/memorydreaming-0.30.0-py3-none-any.whl`，使用 `--no-index --no-deps` 安装。离线 ZIP 自带 wheels/，安装器会自动发现。离线包不含 Python、Node、可选模型依赖和模型权重，需预先安装；从纯源码构建 Python 包可能需要联网准备构建工具。
 
 v0.29 的新安装配置默认 `activationMode: command`。安装后在目标窗口发送“记忆开启”；其他窗口不参与。睡眠/苏醒指令详见 [使用说明](window-sleep-wake.md)，长期角色指令和私密迁移见 [角色指南](long-term-role.md)。已有安装目录不可由安装器覆盖，升级可创建新目录并显式选择既有数据库路径，先备份后迁移；旧版程序不能继续写已升级的 schema27 数据库。迁移档案包含原话与私密恢复密钥，应放在忽略目录或仓库之外，不能随开源包发布。
 
@@ -31,7 +31,7 @@ python scripts/release.py --output dist/release
 
 构建脚本拒绝带有未提交已跟踪修改的源码，创建 Python wheel、原生插件 tgz、含已提交源码/安装器/上述包的离线 ZIP、`SHA256SUMS` 和 `release-manifest.json`。它不推送代码、打 tag、上传 PyPI/npm 或发布 GitHub Release。
 
-`.github/workflows/ci.yml` 覆盖 Python 3.10..3.13 的 Linux 和 Python 3.12 的 Windows；`.github/workflows/release.yml` 在显式调度或版本 tag 时执行回归与构建，仅上传工作流 artifact，权限为 contents:read。远程尚未运行，不能据本地验证声称两个平台全部通过。
+`.github/workflows/ci.yml` 覆盖 Python 3.10..3.13 的 Linux 和 Python 3.12 的 Windows，并检查桌面客户端构建是否与源码一致；`.github/workflows/release.yml` 在显式调度或版本 tag 时执行回归与构建，仅上传工作流 artifact，权限为 contents:read。先前提交`3adf422`的五项远程CI已通过，每次新提交仍需分别核对远程结果。
 
 ## 发布前验收
 

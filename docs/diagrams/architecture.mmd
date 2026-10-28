@@ -1,5 +1,9 @@
 flowchart TB
   U["真实用户 / 独立聊天窗口"] --> N["原生 Cordis 插件：按窗开关、生命周期、完整请求预算"]
+  U --> UI["Harness 原生记忆管理页面"]
+  UI --> O["拥有者 RPC：来源查看、明确审批、窗口指令"]
+  O --> B
+  O --> N
   N --> B["本地 JSONL Bridge / HostAdapter：固定可信绑定"]
   B --> R["MemoryRuntime：统一资源与事务"]
   R --> C["受控核心 + 工作 / 情景 / 语义 / 程序记忆"]
