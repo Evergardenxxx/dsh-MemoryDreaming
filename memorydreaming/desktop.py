@@ -322,8 +322,11 @@ class DesktopService:
                 raise AdapterError("IDEMPOTENCY_CONFLICT", "同一操作编号不能用于不同的管理操作")
             self._reader().load("event", old["event_id"])
             return old["event_id"], True
+        # This event is explicit user authorization, not conversational input.
+        # Preserve its evidence chain without extracting facts from form JSON
+        # (which can contain shared fiction or changes still awaiting review).
         event = self.runtime.observe(Turn(speaker="user", content=content, occurred_at=self.runtime.clock.now(),
-            conversation_id="desktop-management"), self.scope, key).event
+            conversation_id="desktop-management"), self.scope, key, enqueue_extraction=False).event
         return event.event_id, False
 
     def _proposal_decide(self, args):

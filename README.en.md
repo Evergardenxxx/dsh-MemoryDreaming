@@ -63,7 +63,7 @@ Automatic scene selection, reliable conversational candidate formation with conv
 
 Request counting is estimated by default. Current V4.1 online usage and multimodal counting remain unverified. Local forgetting cannot retract text already delivered to a model or erase external backups.
 
-Version 0.31 passed 790 local engineering tests, 27 isolated paths using installed Harness runtime modules, and 21 browser interaction paths. The browser uses the real Python bridge and temporary SQLite storage, with deterministic host admission and model adapters. These tests do not validate the user's current Electron window, live model, or long-term companion behavior. See [desktop boundaries](docs/desktop-management.md) and [acceptance scope](docs/installed-harness-acceptance.md).
+Version 0.31 passed 795 local engineering tests, 27 isolated paths using installed Harness runtime modules, and 21 browser interaction paths. The browser uses the real Python bridge and temporary SQLite storage, with deterministic host admission and model adapters. These tests do not validate the user's current Electron window, live model, or long-term companion behavior. See [desktop boundaries](docs/desktop-management.md) and [acceptance scope](docs/installed-harness-acceptance.md).
 
 ## Data and dependencies
 

@@ -188,14 +188,14 @@ try {
   sessions.push(session); states.set(session.id, { session, command: null }); agents.set(session.id, { status: 'idle' })
   await page.getByRole('combobox', { name: '选择窗口' }).getByRole('option', { name: '合成演示窗口', exact: true }).waitFor({ state: 'attached' })
   await page.getByRole('combobox', { name: '选择窗口' }).selectOption(session.id)
-  await waitText('.md-window', 'off')
+  await waitText('.md-window', '状态：未开启')
   await button('开启').click(); await confirm()
   assert.equal(admissions.length, 1)
   assert.equal(admissions[0].content[0].text, '记忆开启')
   assert.equal(controls.get(session.id).mode, 'off', 'Accepted is not a completed control command')
-  assert.ok((await page.locator('.md-window').innerText()).includes('off'))
+  assert.ok((await page.locator('.md-window').innerText()).includes('状态：未开启'))
   allowCommands(); await commandTail
-  await waitText('.md-window', 'active')
+  await waitText('.md-window', '状态：已开启')
   checked.push('window selection and fixed native command admission update only after the lifecycle completes')
 
   await nav('记忆').click()
@@ -310,7 +310,8 @@ try {
 
   await selectRoleType('narrative'); await button('新建').click()
   await form('标题').fill('合成自传：月亮茶馆')
-  await form('内容').fill('我们在共同虚构的月亮茶馆里听了一场雨。')
+  // A user's literal text must stay verbatim even when it spells an enum.
+  await form('内容').fill('shared_fiction')
   await form('视角').selectOption('shared'); await form('性质').selectOption('shared_fiction')
   await form('操作理由').fill('演示用户明确建立共同虚构自传')
   await preserveDraftAcrossPoll(form('内容'), () => { session.header.title = '合成演示窗口：自传新建草稿' })
@@ -318,6 +319,8 @@ try {
   assert.equal(narrative.payload.modality, 'shared_fiction')
   await openRole('narrative', narrative)
   assert.equal(await form('性质').inputValue(), 'shared_fiction')
+  await page.locator('.md-detail').getByText('shared_fiction', { exact: true }).waitFor()
+  await page.locator('.md-detail').getByText('共同虚构', { exact: true }).last().waitFor()
   await form('标题').fill('合成自传：月亮茶馆续篇')
   await form('内容').fill('共同虚构的月亮茶馆挂起了一盏纸灯。')
   await form('操作理由').fill('演示用户修订虚构自传')
@@ -463,11 +466,13 @@ try {
   await button('睡眠').click(); await confirm(); await commandTail
   assert.deepEqual(commandErrors, [])
   assert.ok(reviewedBatches > 0)
-  await nav('睡眠与梦境').click(); await waitText('.md-content', 'generated_fiction')
-  await waitText('.md-content', 'completed')
+  await nav('睡眠与梦境').click(); await waitText('.md-content', '梦境虚构')
+  await waitText('.md-content', '已完成')
+  await waitText('.md-window', `已审阅 ${reviewedBatches}/${reviewedBatches} 批`)
+  assert.ok(!(await page.locator('.md-window').innerText()).includes('sleep_id'))
   await button('苏醒').click(); await confirm(); await commandTail
   assert.equal(controls.get(session.id).mode, 'active')
-  await waitText('.md-window', 'active')
+  await waitText('.md-window', '状态：已开启')
   assert.deepEqual(commandErrors, [])
   checked.push('sleep coordinator reviews every actual inventory batch, saves a fiction-marked dream, and wakes')
   await page.screenshot({ path: join(output, '03-sleep-dream-light.png'), fullPage: true })

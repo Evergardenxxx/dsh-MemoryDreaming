@@ -77,7 +77,7 @@ python scripts/install.py --destination "D:\Apps\MemoryDreaming" --user u1 --cha
 | 主动提醒 | 默认关闭的授权/频率/安静时段/租约队列已实现，实际定时推送渠道未接入 |
 | 精确计量与质量 | 默认estimated；当前V4.1线上usage、独立人工质量和长期陪伴验收尚未完成 |
 
-v0.31本地通过**790项工程回归、27条安装版运行时隔离路径、21条浏览器操作路径**。浏览器验收连接真实Python桥接与临时SQLite，宿主指令接纳及模型输出使用确定性适配器；这些结果不等于当前用户Electron窗口、登录模型或长期真实质量已验收。证据范围与复跑方法见[桌面管理](docs/desktop-management.md)、[安装版验收](docs/installed-harness-acceptance.md)和[质量验收](docs/quality-acceptance.md)。
+v0.31本地通过**795项工程回归、27条安装版运行时隔离路径、21条浏览器操作路径**。浏览器验收连接真实Python桥接与临时SQLite，宿主指令接纳及模型输出使用确定性适配器；这些结果不等于当前用户Electron窗口、登录模型或长期真实质量已验收。证据范围与复跑方法见[桌面管理](docs/desktop-management.md)、[安装版验收](docs/installed-harness-acceptance.md)和[质量验收](docs/quality-acceptance.md)。
 
 ## 数据、模型与安装包体积
 

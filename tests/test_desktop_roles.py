@@ -1,13 +1,17 @@
 """Role forms exercise real domain persistence and the trusted page boundary."""
 
 from dataclasses import replace
+import time
 from unittest.mock import patch
 
 from memorydreaming import HostAdapter, SessionBinding
 from memorydreaming.desktop import DesktopService
+from memorydreaming.extractors import RuleBasedExtractor
+from memorydreaming.life_evidence import LifeEvidence
 from memorydreaming.llm import AdapterError
 from memorydreaming.llm import dumps
 from memorydreaming.models import Scope, new_id
+from memorydreaming.worker import ConsolidationWorker
 from tests.helpers import RuntimeTestCase
 
 
@@ -285,3 +289,104 @@ class DesktopRolesTest(RuntimeTestCase):
         self.assertLess(len(dumps(history).encode("utf-8")), 262144)
         self.assertLess(len(history["items"]), 50)
         self.assertTrue(all(len(item["snapshot"]["text"]) == 2000 for item in history["items"]))
+
+    def test_management_confirmations_remain_evidence_without_extraction_jobs(self):
+        for kind in ("narrative", "intention", "companionship", "growth"):
+            with self.subTest(kind=kind):
+                saved = self.save(kind)
+                event_id = saved["confirmation_event_id"]
+                refs = LifeEvidence(self.runtime).capture(self.scope, [event_id], require_user=True)
+                self.assertEqual(refs[0]["target"], event_id)
+                self.assertEqual(self.repos.events.get(event_id).conversation_id, "desktop-management")
+                self.assertTrue(self.history(saved["receipt"])["items"])
+        self.assertEqual(self.count_rows("events"), 4)
+        self.assertEqual(self.count_rows("consolidation_jobs"), 0)
+        recorded = self.runtime.db.connection.execute("SELECT COUNT(*) FROM journal_entries WHERE event_type='event.recorded'").fetchone()[0]
+        self.assertEqual(recorded, 4)
+        enqueued = self.runtime.db.connection.execute("SELECT COUNT(*) FROM journal_entries WHERE event_type='consolidation.enqueued'").fetchone()[0]
+        self.assertEqual(enqueued, 0)
+
+    def test_real_background_worker_extracts_chat_but_not_four_management_forms(self):
+        seen = []
+        delegate = RuleBasedExtractor()
+
+        class RecordingExtractor:
+            version = delegate.version
+
+            def extract(self, event):
+                seen.append(event.event_id)
+                return delegate.extract(event)
+
+        # Each form deliberately contains a phrase an extractor could mistake
+        # for a fact if its management JSON were treated as normal conversation.
+        saved = []
+        for kind in ("narrative", "intention", "companionship", "growth"):
+            args = self.args(kind)
+            field = "text" if kind in ("narrative", "intention") else "value"
+            args["payload"][field] = "我喜欢会飞的海龟"
+            saved.append(self.desktop.handle("role_save", args))
+        for item, state in zip(saved, ("withdrawn", "cancelled", "revoked", "revoked")):
+            self.transition(item, state)
+        self.assertEqual(self.count_rows("events"), 8)
+        self.assertEqual(self.runtime.pending_jobs(), 0)
+
+        # Use a real thread and its own connection against the same file, just
+        # as a foreground bridge's background consolidator shares this store.
+        worker = ConsolidationWorker(self.db_path, self.clock, RecordingExtractor(), interval_seconds=0.02)
+        worker.start()
+        try:
+            normal = self.runtime.observe(self.make_turn("我喜欢海边故事"), self.scope, "real-chat")
+            self.assertIsNotNone(normal.job_id)
+            worker.wake()
+            deadline = time.monotonic()+3
+            while time.monotonic() < deadline:
+                items = self.repos.memories.list_by_scope(self.scope)
+                if items:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("真实后台线程没有抽取普通用户对话")
+            self.assertIsNone(worker.last_error)
+        finally:
+            worker.stop()
+        self.assertFalse(worker.running)
+        self.assertEqual(seen, [normal.event.event_id])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].body["obj"], "海边故事")
+        self.assertEqual(items[0].source_event_ids, [normal.event.event_id])
+
+    def test_extraction_switch_is_boolean_and_does_not_mutate_on_invalid_input(self):
+        for value in (None, 0, 1, "false", [], {}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.runtime.observe(self.make_turn("我喜欢海边"), self.scope, "invalid-flag", enqueue_extraction=value)
+        for table in ("events", "consolidation_jobs", "journal_entries"):
+            self.assertEqual(self.count_rows(table), 0)
+
+    def test_extraction_switch_controls_wakeup_and_retry_never_backfills_jobs(self):
+        with patch.object(self.runtime, "_consolidator") as worker:
+            first = self.runtime.observe(self.make_turn("管理证据"), self.scope, "no-extraction", enqueue_extraction=False)
+            self.assertIsNone(first.job_id)
+            self.assertFalse(first.duplicate)
+            worker.wake.assert_not_called()
+            repeated = self.runtime.observe(self.make_turn("管理证据"), self.scope, "no-extraction")
+            self.assertTrue(repeated.duplicate)
+            self.assertEqual(repeated.event.event_id, first.event.event_id)
+            self.assertIsNone(repeated.job_id)
+            self.assertEqual(self.runtime.pending_jobs(), 0)
+            worker.wake.assert_not_called()
+            normal = self.runtime.observe(self.make_turn("我喜欢海边"), self.scope, "default-extraction")
+            self.assertIsNotNone(normal.job_id)
+            worker.wake.assert_called_once_with()
+
+    def test_observation_event_journal_and_optional_job_share_outer_rollback(self):
+        for enqueue in (True, False):
+            with self.subTest(enqueue=enqueue):
+                with self.assertRaisesRegex(ValueError, "rollback"):
+                    with self.runtime.db.transaction():
+                        observed = self.runtime.observe(self.make_turn("事务内的来源"), self.scope,
+                            "rolled-back", enqueue_extraction=enqueue)
+                        self.assertIsNotNone(self.repos.events.get(observed.event.event_id))
+                        self.assertEqual(self.runtime.pending_jobs(), int(enqueue))
+                        raise ValueError("rollback")
+                for table in ("events", "consolidation_jobs", "journal_entries"):
+                    self.assertEqual(self.count_rows(table), 0)

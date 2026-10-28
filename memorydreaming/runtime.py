@@ -358,11 +358,18 @@ class MemoryRuntime(
         turn: Turn,
         scope: Scope,
         idempotency_key: str,
+        *,
+        enqueue_extraction: bool = True,
     ) -> ObserveResult:
-        """保存一轮实际对话，并把抽取任务写进同一个事务。
+        """保存来源事件，并默认在同一事务中排入对话抽取任务。
 
         幂等键命中时不会重复写入，也不会重复入队——宿主可以放心重试。
+        可信管理入口可用 ``enqueue_extraction=False`` 保存授权证据而不
+        把表单 JSON、审批说明或虚构叙事当作普通对话抽取。该选项不是
+        模型工具参数；事件和审计日志照常保留，已有事件重试不会补入队。
         """
+        if not isinstance(enqueue_extraction, bool):
+            raise ValueError("enqueue_extraction 必须为布尔值")
         activity_id = turn.activity_id or scope.activity_id
         if turn.activity_id and scope.activity_id and turn.activity_id != scope.activity_id:
             raise ValueError("消息与作用域指定了不同的活动")
@@ -412,22 +419,23 @@ class MemoryRuntime(
                 )
                 if activity_id:
                     self._repos.activities.touch_last_event(activity_id, event.occurred_at)
-                job_id = self._repos.jobs.enqueue(
-                    job_type="extract",
-                    scope=event_scope,
-                    payload={"event_id": stored.event_id, "conversation_id": turn.conversation_id},
-                    now=now,
-                    activity_id=activity_id,
-                    max_attempts=self.settings.job_max_attempts,
-                )
-                self._repos.journal.append(
-                    "consolidation.enqueued",
-                    scope=event_scope,
-                    entity_id=job_id,
-                    payload={"job_type": "extract", "event_id": stored.event_id},
-                    now=now,
-                    idempotency_key=f"job:{job_id}:enqueued",
-                )
+                if enqueue_extraction:
+                    job_id = self._repos.jobs.enqueue(
+                        job_type="extract",
+                        scope=event_scope,
+                        payload={"event_id": stored.event_id, "conversation_id": turn.conversation_id},
+                        now=now,
+                        activity_id=activity_id,
+                        max_attempts=self.settings.job_max_attempts,
+                    )
+                    self._repos.journal.append(
+                        "consolidation.enqueued",
+                        scope=event_scope,
+                        entity_id=job_id,
+                        payload={"job_type": "extract", "event_id": stored.event_id},
+                        now=now,
+                        idempotency_key=f"job:{job_id}:enqueued",
+                    )
 
         version = None
         if activity_id:
