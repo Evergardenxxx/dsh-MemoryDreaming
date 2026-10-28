@@ -1,5 +1,6 @@
 const TYPES = [['working', '工作'], ['episodic', '情景'], ['semantic', '语义'], ['procedural', '程序']];
 const PROPOSALS = [['core', '核心'], ['change', '记忆变更'], ['narrative', '自传'], ['growth', '成长'], ['companionship', '相处偏好']];
+const ROLES = [['narrative','自传'],['intention','承诺'],['companionship','相处偏好'],['growth','成长']];
 const value = v => v == null ? '未提供' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
 const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -24,7 +25,11 @@ function readable(data) {
   const labels = {identity:'身份',relationship:'关系',fields:'字段',state:'状态',version:'版本',text:'内容',title:'标题',created_at:'创建时间',completed_at:'完成时间',status:'状态',review:'审阅进度',batch_count:'批次数',reviewed_batches:'已审阅批次',next_cursor:'下一位置',review_complete:'审阅完成',entries:'条目',key:'项目',value:'内容',sources:'来源',body:'内容',epistemic_status:'认识状态',modality:'内容性质',counts:'记忆数量',working:'工作',episodic:'情景',semantic:'语义',procedural:'程序'};
   return el('dl', {class: 'md-fields'}, Object.entries(data).map(([key, val]) => el('div', {}, el('dt', {}, labels[key] || key), el('dd', {}, val && typeof val === 'object' ? readable(val) : value(val)))));
 }
-const field = (label, control) => el('label', {class: 'md-field'}, el('span', {}, label), control);
+const field = (label, control) => {
+  // A wrapping select's option text must not become part of its accessible name.
+  control.setAttribute('aria-label', label);
+  return el('label', {class: 'md-field'}, el('span', {}, label), control);
+};
 const textInput = (placeholder = '') => el('input', {placeholder});
 const textarea = () => el('textarea', {rows: '5'});
 const bodyLabels = {subject:'主体',predicate:'关系',obj:'内容',scope_note:'范围',what_happened:'经过',goal:'目标',trigger:'触发条件',action:'行动',steps:'步骤',context:'上下文',outcome:'结果',participants:'参与者',location:'地点',time:'时间'};
@@ -33,7 +38,7 @@ function summary(item) { const body = item.body || {}; return [body.subject, bod
 
 /** Mount a management view. request(action, args) must resolve to a service result or reject. */
 export function mountDesktop(root, request) {
-  let state = {tab: 'memories', type: 'semantic', proposalType: 'core', query: '', offset: 0, selected: null, overview: null, data: null, loading: false, error: '', notice: '', pending: null, windows: [], conversationId: ''};
+  let state = {tab: 'memories', type: 'semantic', proposalType: 'core', roleType: 'narrative', roleSelected: null, roleHistory: null, query: '', offset: 0, selected: null, overview: null, data: null, loading: false, error: '', notice: '', pending: null, windows: [], conversationId: ''};
   let alive = true, sequence = 0, detailSequence = 0, overviewSequence = 0, draft = {};
   root.classList.add('memorydreaming');
   const update = patch => { const active = root.contains(document.activeElement) ? document.activeElement : null; const key = active?.dataset?.draft; const start = key ? active.selectionStart : null, end = key ? active.selectionEnd : null; state = {...state, ...patch}; render(); if (key) { const next = root.querySelector(`[data-draft="${key}"]`); if (next) { next.focus(); if (start != null) next.setSelectionRange(start, end); } } };
@@ -60,12 +65,12 @@ export function mountDesktop(root, request) {
   async function load() {
     const n = ++sequence;
     detailSequence++;
-    update({loading: true, error: '', selected: null, pending: null});
+    update({loading: true, error: '', notice: '', selected: null, roleSelected: null, roleHistory: null, pending: null});
     try {
       let data;
       if (state.tab === 'memories') data = await call('memories', {memory_type: state.type, query: state.query, offset: state.offset, limit: 20});
       else if (state.tab === 'proposals') data = await call('proposals', {proposal_type: state.proposalType, offset: state.offset, limit: 20});
-      else if (state.tab === 'role') data = await call('role');
+      else if (state.tab === 'role') { const [catalog, overview] = await Promise.all([call('role_catalog', {role_type: state.roleType, offset: state.offset, limit: 20}), call('role')]); data = {...catalog, overview}; }
       else if (state.tab === 'sleep') data = await call('sleep', {limit: 10});
       else data = await call('overview');
       if (alive && n === sequence) update({data, loading: false});
@@ -135,6 +140,54 @@ export function mountDesktop(root, request) {
     return panel;
   }
   function section(title, data) { return el('section', {class: 'md-section'}, el('h2', {}, title), readable(data), data != null ? advanced(data) : null); }
+  async function selectRole(item) {
+    draft = {}; const n = ++detailSequence, conversationId = state.conversationId, roleType = state.roleType;
+    update({roleSelected: item, roleHistory: null, pending: null});
+    if (!item.id) return;
+    try { const history = await call('role_history', {role_type: roleType, id: item.id, ...(item.context ? {context: item.context} : {}), limit: 50}); if (alive && n === detailSequence && state.tab === 'role' && state.roleType === roleType && state.conversationId === conversationId) update({roleHistory: history}); }
+    catch (error) { if (alive && n === detailSequence && state.tab === 'role' && state.roleType === roleType && state.conversationId === conversationId) update({roleHistory: {error: error.message || String(error)}}); }
+  }
+  function roleView() {
+    const data = state.data || {}, item = state.roleSelected, type = state.roleType;
+    const filters = el('div', {class: 'md-filters', role: 'group', 'aria-label': '角色资料类型'}, ROLES.map(([id, label]) => { const control = button(label, () => { state.roleSelected = null; state.roleHistory = null; change({roleType: id}); }, type === id ? 'is-active' : ''); control.setAttribute('aria-pressed', String(type === id)); return control; }));
+    const list = el('div', {class: 'md-list'}, (data.items || []).map(entry => button(`${entry.payload?.title || entry.payload?.text || entry.payload?.value || entry.id} · ${entry.state} · 版本 ${entry.version}`, () => selectRole(entry), 'md-row')));
+    if (!data.items?.length) list.append(el('p', {class: 'md-muted'}, '暂无记录。'));
+    const pages = pagination(data); pages.children[0].disabled = state.offset === 0; pages.children[2].disabled = !data.has_more || data.next_offset == null;
+    const pane = el('section', {class: 'md-list-pane'}, filters, button('新建', () => selectRole({role_type: type, version: 0, payload: {}})), list, pages);
+    const panel = el('aside', {class: 'md-detail'});
+    if (!item) panel.append(el('p', {class: 'md-muted'}, '选择记录或新建角色资料。'));
+    else {
+      panel.append(el('h2', {}, item.id ? '编辑角色资料' : '新建角色资料'));
+      const terminal = ['withdrawn','completed','cancelled','revoked','invalidated'].includes(item.state);
+      const saveTerminal = (type === 'intention' && ['completed','cancelled','invalidated'].includes(item.state)) || (type === 'narrative' && item.state === 'withdrawn');
+      if (item.truncated || item.redacted) panel.append(el('p', {class: 'md-error'}, '内容未完整展示，无法编辑。'));
+      if (saveTerminal) panel.append(el('p', {class: 'md-muted'}, '此记录已结束，请新建记录。'));
+      const payload = item.payload || {}, controls = {};
+      const input = (key, label, initial = '', multi = false) => { const control = bindDraft(multi ? textarea() : textInput(), `role-${key}`, initial); controls[key] = control; panel.append(field(label, control)); return control; };
+      const choice = (key, label, options, initial, locked = false) => { const control = el('select', {}, options.map(([id, name]) => el('option', {value: id}, name))); bindDraft(control, `role-${key}`, initial); control.disabled = locked; controls[key] = control; panel.append(field(label, control)); };
+      if (type === 'narrative') { input('title','标题',payload.title); input('text','内容',payload.text,true); choice('perspective','视角',[['user','用户'],['character','角色'],['shared','共同']],payload.perspective || 'shared'); choice('modality','性质',[['occurred','真实叙述'],['shared_fiction','共同虚构']],payload.modality || 'occurred'); input('occurred_at','发生时间（含时区，可留空）',payload.occurred_at); }
+      if (type === 'intention') { input('text','承诺内容',payload.text,true); choice('owner','承担方',[['user','用户'],['character','角色'],['shared','共同']],payload.owner || 'shared',!!item.id); choice('category','类别',[['promise','承诺'],['continuation','继续事项'],['creative','创作']],payload.category || 'promise',!!item.id); input('due_at','到期时间（含时区，可留空）',payload.due_at); input('event_trigger','触发事件（可留空）',payload.event_trigger); }
+      if (type === 'companionship') { input('id','偏好名称',item.id || ''); input('context','场景',item.context || 'default'); input('value','偏好内容',payload.value,true); if (item.id) { controls.id.disabled = true; controls.context.disabled = true; } }
+      if (type === 'growth') { choice('id','成长字段',[['response_style','回应风格'],['storytelling','讲故事'],['interaction_habit','互动习惯'],['support_style','支持方式']],item.id || 'response_style',!!item.id); input('value','内容',payload.value,true); }
+      input('reason','操作理由');
+      let allowRecent;
+      if (type === 'growth') { allowRecent = el('input', {type:'checkbox'}); allowRecent.checked = draft['role-allow-recent'] === true; allowRecent.addEventListener('change', () => { draft['role-allow-recent'] = allowRecent.checked; }); panel.append(field('允许近期明确纠正', allowRecent)); }
+      const save = button('准备保存', () => {
+        const reason = controls.reason.value.trim(); if (!reason) { update({error: '请填写操作理由。'}); return; }
+        const fields = {}; for (const [key, control] of Object.entries(controls)) if (!['reason','id','context'].includes(key) && control.value.trim()) fields[key] = control.value.trim();
+        if ((type === 'narrative' && (!fields.title || !fields.text)) || (type === 'intention' && !fields.text) || (['growth','companionship'].includes(type) && (!fields.value || !controls.id.value.trim()))) { update({error: '请填写必填内容。'}); return; }
+        const args = {role_type: type, expected_version: item.version || 0, payload: fields, reason};
+        if (item.id || controls.id) args.id = item.id || controls.id.value.trim();
+        if (type === 'companionship') args.context = controls.context.value.trim() || 'default';
+        if (allowRecent?.checked) args.allow_recent = true;
+        prepare('role_save', args, '确认保存角色资料');
+      }); save.disabled = saveTerminal || !!item.truncated || !!item.redacted || !!state.overview?.capabilities?.read_only; panel.append(save);
+      if (item.id && !state.overview?.capabilities?.read_only) { const transitions = type === 'narrative' ? [['withdrawn','撤回']] : type === 'intention' ? [['completed','完成'],['cancelled','取消']] : [['revoked','撤销']]; panel.append(el('div', {class: 'md-actions'}, transitions.map(([target, label]) => { const control = button(`准备${label}`, () => { if (!controls.reason.value.trim()) { update({error:'请填写操作理由。'}); return; } prepare('role_transition', {role_type:type,id:item.id,...(item.context ? {context:item.context} : {}),expected_version:item.version,state:target,reason:controls.reason.value.trim()}, `确认${label}`); }); control.disabled = terminal; return control; })) ); }
+      if (state.pending && ['role_save','role_transition'].includes(state.pending.action)) { const {request_id, ...preview} = state.pending.args; panel.append(el('div', {class:'md-confirm'}, el('strong',{},state.pending.label), readable(preview), state.pending.error ? el('p',{class:'md-error'},`操作未完成：${state.pending.error}。请核对版本后重试。`) : null, el('div',{class:'md-actions'},button(state.pending.busy?'提交中…':'确认提交',commit,'md-primary'),button('取消',()=>update({pending:null}))))); }
+      if (item.id) panel.append(el('h3',{},'版本历史查看与对照'), state.roleHistory?.error ? el('p',{class:'md-error'},`历史读取失败：${state.roleHistory.error}`) : state.roleHistory ? el('div',{},(state.roleHistory.items || []).map(version => el('section',{class:'md-section'},el('strong',{},`版本 ${value(version.version)} · ${value(version.state || version.operation)}`),version.redacted || version.available === false || ('snapshot' in version && version.snapshot == null) || ('value' in version && version.value == null) || version.snapshot?.redacted ? el('p',{class:'md-muted'},'来源已失效，内容已隐藏。') : readable(version.snapshot ?? version.value ?? version)))) : el('p',{class:'md-muted'},'正在读取历史…'), state.roleHistory?.truncated || state.roleHistory?.has_more ? el('p',{class:'md-muted'},'历史未全部显示。') : el('span'));
+    }
+    return el('div',{},el('div',{class:'md-split'},pane,panel),el('details',{class:'md-content'},el('summary',{},'角色概览'),section('自传',data.overview?.autobiography),section('承诺',data.overview?.intentions),section('相处偏好',data.overview?.companionship),section('成长',data.overview?.growth)));
+  }
   function overviewView() {
     const o = state.data || state.overview || {}, b = o.binding || {};
     const wrap = el('div', {class: 'md-content'}, section('当前绑定', b), section('核心身份与关系', o.cores), section('健康诊断', o.health), section('能力与权限', o.capabilities));
@@ -155,7 +208,7 @@ export function mountDesktop(root, request) {
     if (state.loading) content = el('div', {class: 'md-empty', role: 'status'}, '正在加载…');
     else if (state.tab === 'memories' || state.tab === 'proposals') content = listView();
     else if (state.tab === 'overview') content = overviewView();
-    else if (state.tab === 'role') content = el('div', {class: 'md-content'}, section('自传', state.data?.autobiography), section('承诺', state.data?.intentions), section('相处偏好', state.data?.companionship), section('成长', state.data?.growth));
+    else if (state.tab === 'role') content = roleView();
     else content = el('div', {class: 'md-content'}, section('睡眠进度', state.data?.runs), el('p', {class: 'md-muted'}, '梦境为生成的虚构内容，不作为事实。'), section('梦境', state.data?.dreams));
     const selectWindow = el('select', {'aria-label': '选择窗口', onChange: event => { draft = {}; state.conversationId = event.target.value; state.overview = null; refreshOverview(); load(); }}, el('option', {value: ''}, '选择窗口'), state.windows.map(item => el('option', {value: item.id}, item.title || item.id)));
     selectWindow.value = state.conversationId;

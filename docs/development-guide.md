@@ -24,7 +24,7 @@ git diff --check
 | 6 | [worker.py](../memorydreaming/worker.py)、[consolidation.py](../memorydreaming/consolidation.py) | 理解租约、事务外计算、退避与原子回执 |
 | 7 | [sleep.py](../memorydreaming/sleep.py)、[life.py](../memorydreaming/life.py)、各角色领域服务 | 理解睡眠编排、角色连续性和审批边界 |
 | 8 | [原生lib/](../integrations/deepseek-harness/lib)、[bridge.py](../memorydreaming/bridge.py) | 理解Cordis生命周期、窗口开关、请求预算和进程监管 |
-| 9 | [desktop/](../integrations/deepseek-harness/desktop)、[desktop-controller.js](../integrations/deepseek-harness/lib/desktop-controller.js)、[desktop.py](../memorydreaming/desktop.py) | 理解原生页面、拥有者RPC与固定绑定的管理服务；管理数据不进入模型上下文 |
+| 9 | [desktop/](../integrations/deepseek-harness/desktop)、[desktop-controller.js](../integrations/deepseek-harness/lib/desktop-controller.js)、[desktop.py](../memorydreaming/desktop.py)、[desktop_roles.py](../memorydreaming/desktop_roles.py) | 理解原生页面、拥有者RPC、固定绑定及角色表单事务；管理数据不进入模型上下文 |
 
 `examples/host_lifecycle.py`是跨窗口最小示例；`examples/core_proposal.py`演示重启后的审批；`examples/initialize_role.py`演示由本地操作者明确初始化空角色。它们不把模型生成内容当作授权。
 

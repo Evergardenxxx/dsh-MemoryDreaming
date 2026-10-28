@@ -1,4 +1,4 @@
-# 安装版 Harness 运行时验收（引擎 v0.30 / 原生 v0.17 / schema 27）
+# 安装版 Harness 运行时验收（引擎 v0.31 / 原生 v0.18 / schema 27）
 
 使用本机已安装 Harness 的真实 Cordis、agent loop、Session、工具、压缩、token meter 与 JSONL 持久化模块，在临时目录验收插件。没有复制用户 profile、读取登录凭据或替换正在运行的应用。模型供应商是确定性本地测试适配器。
 
@@ -62,6 +62,8 @@ python scripts/accept_installed_harness.py --asar "C:\Users\YOUR_USER\AppData\Lo
 12. 客户端注册表服务实际lazy bundle，加载阶段不提前调用页面RPC。
 
 这12条使用确定性的窗口指令接纳和bridge替身；真实Python桥接、SQLite、睡眠编排与页面交互由独立的12条浏览器路径验证，详见[桌面管理](desktop-management.md)。两组结果不能合并宣称已经运行用户Electron窗口或登录模型。
+
+v0.31再次通过上述27条运行时路径；浏览器验收已扩展为21条，增加四类角色表单、版本冲突、回执中断和撤销后重新确认流程，使用真实Python桥接和临时SQLite。原v0.30的12条是历史基线，当前结果与复跑范围见[桌面管理](desktop-management.md)。
 
 ## 尚需桌面与线上验证
 

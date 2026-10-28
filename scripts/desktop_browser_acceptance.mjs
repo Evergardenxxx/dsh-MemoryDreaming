@@ -2,6 +2,7 @@
 // Session admission and model output are deterministic test adapters. This is
 // intentionally separate from Electron, live-model, and installed-app tests.
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
@@ -35,8 +36,9 @@ if (!chromium) throw new Error('The supplied module does not export Playwright c
 const workspace = mkdtempSync(join(tmpdir(), 'memorydreaming-desktop-browser-'))
 const dbPath = join(workspace, 'synthetic.db')
 mkdirSync(output, { recursive: true })
-const checked = [], requests = [], admissions = [], commandErrors = [], browserErrors = []
+const checked = [], requests = [], auxiliaryRequests = [], admissions = [], commandErrors = [], browserErrors = []
 let browser, server, bridge, releaseDesktop, seed, page, commandTail = Promise.resolve(), releaseCommandGate = () => {}
+let loseRoleReceiptOnce = false
 const report = (status, extra = {}) => ({ status, checked, synthetic_data: true,
   real_browser: Boolean(browser), real_desktop_controller: Boolean(releaseDesktop), real_python_bridge: Boolean(bridge), real_sqlite: Boolean(seed),
   real_sleep_coordinator: checked.some(item => item.startsWith('sleep coordinator')), real_electron: false, real_cordis_gateway: false, live_model: false,
@@ -126,6 +128,12 @@ try {
   await page.exposeFunction('desktopRequest', async (action, args) => {
     const result = await controller.request(action, args)
     requests.push({ action, args, result })
+    // Model an interrupted UI transport after SQLite committed the request.
+    // The browser must retain its original confirmation/request ID for retry.
+    if (loseRoleReceiptOnce && action === 'role_save' && !result.error) {
+      loseRoleReceiptOnce = false
+      throw new Error('合成验收：保存成功后回执中断，请原样重试')
+    }
     return result
   })
   const address = `http://127.0.0.1:${server.address().port}`
@@ -217,7 +225,9 @@ try {
   await page.getByLabel('审批理由', { exact: true }).fill('合成用户在浏览器确认成长风格')
   await preserveDraftAcrossPoll(page.getByLabel('审批理由', { exact: true }), () => { session.header.title = '合成演示窗口：审批草稿' })
   await button('准备确认').click(); assert.equal(requestCount('proposal_decide'), 0)
-  await confirm(); await nav('角色').click(); await waitText('.md-content', '演示成长：讲故事慢一点')
+  await confirm(); await nav('角色').click()
+  await page.getByRole('group', { name: '角色资料类型' }).getByRole('button', { name: '成长', exact: true }).click()
+  await waitText('.md-list', '演示成长：讲故事慢一点')
   checked.push('pending growth is explicitly approved and appears in the role view through the domain service')
 
   await nav('记忆').click(); await search('热茶纠错目标')
@@ -242,6 +252,213 @@ try {
   assert.equal(await page.locator('#root img').count(), 0)
   assert.equal(await page.evaluate(() => window.__memorydreamingInjected), undefined)
   checked.push('HTML-like memory and source payloads stay text and never create executable markup')
+
+  // The following role forms exercise the same fixed owner channel and real
+  // domain services as the ordinary memory paths. Direct reads only inspect
+  // committed state; one explicit second-client write creates a real CAS race.
+  async function inspectRole(action, args) {
+    const result = await controller.request(action, { ...args, conversation_id: session.id })
+    auxiliaryRequests.push({ action, result_error: result.error })
+    assert.equal(result.error, undefined, JSON.stringify(result))
+    return result
+  }
+  const roleCatalog = async type => inspectRole('role_catalog', { role_type: type, offset: 0, limit: 50 })
+  const roleHead = async (type, id) => (await roleCatalog(type)).items.find(item => item.id === id)
+  const roleHistory = async (type, item) => inspectRole('role_history', {
+    role_type: type, id: item.id, ...(item.context ? { context: item.context } : {}), limit: 50,
+  })
+  const roleLabels = { narrative: '自传', intention: '承诺', companionship: '相处偏好', growth: '成长' }
+  async function selectRoleType(type) {
+    await nav('角色').click()
+    await page.getByRole('group', { name: '角色资料类型' }).getByRole('button', { name: roleLabels[type], exact: true }).click()
+    await page.locator('.md-list').waitFor()
+  }
+  const form = name => page.locator('.md-detail').getByLabel(name, { exact: true })
+  async function openRole(type, item) {
+    await selectRoleType(type)
+    const title = item.payload?.title || item.payload?.text || item.payload?.value || item.id
+    await page.locator('.md-list .md-row').filter({ hasText: title }).first().click()
+    await page.getByRole('heading', { name: '编辑角色资料', exact: true }).waitFor()
+    await page.locator('.md-detail').getByText('版本历史查看与对照', { exact: true }).waitFor()
+  }
+  async function saveRole(type, matcher) {
+    if (type === 'growth') await form('允许近期明确纠正').check()
+    const catalogBefore = (await roleCatalog(type)).items
+    const before = requestCount('role_save')
+    await button('准备保存').click()
+    assert.equal(requestCount('role_save'), before, 'Preparing a role form must not send a write')
+    assert.deepEqual((await roleCatalog(type)).items, catalogBefore, 'Preparing a role form must not change SQLite')
+    await confirm()
+    const item = (await roleCatalog(type)).items.find(matcher)
+    assert.ok(item, `Saved ${type} must appear in its actual catalogue`)
+    return item
+  }
+  async function transitionRole(type, item, label, target) {
+    await openRole(type, item)
+    await form('操作理由').fill(`合成角色状态：${target}`)
+    const before = requestCount('role_transition')
+    await button(`准备${label}`).click()
+    assert.equal(requestCount('role_transition'), before)
+    assert.deepEqual(await roleHead(type, item.id), item, 'Transition confirmation must precede the write')
+    await confirm()
+    const changed = await roleHead(type, item.id)
+    assert.ok(changed, 'A terminal record must retain a catalogue header')
+    assert.equal(changed.state, target)
+    assert.ok(changed.version > item.version)
+    return changed
+  }
+
+  await selectRoleType('narrative'); await button('新建').click()
+  await form('标题').fill('合成自传：月亮茶馆')
+  await form('内容').fill('我们在共同虚构的月亮茶馆里听了一场雨。')
+  await form('视角').selectOption('shared'); await form('性质').selectOption('shared_fiction')
+  await form('操作理由').fill('演示用户明确建立共同虚构自传')
+  await preserveDraftAcrossPoll(form('内容'), () => { session.header.title = '合成演示窗口：自传新建草稿' })
+  let narrative = await saveRole('narrative', item => item.payload?.title === '合成自传：月亮茶馆')
+  assert.equal(narrative.payload.modality, 'shared_fiction')
+  await openRole('narrative', narrative)
+  assert.equal(await form('性质').inputValue(), 'shared_fiction')
+  await form('标题').fill('合成自传：月亮茶馆续篇')
+  await form('内容').fill('共同虚构的月亮茶馆挂起了一盏纸灯。')
+  await form('操作理由').fill('演示用户修订虚构自传')
+  const narrativeVersion = narrative.version
+  narrative = await saveRole('narrative', item => item.id === narrative.id)
+  assert.ok(narrative.version > narrativeVersion)
+  assert.equal(narrative.payload.modality, 'shared_fiction')
+  await openRole('narrative', narrative)
+  assert.equal(await form('性质').inputValue(), 'shared_fiction')
+  const narrativeHistory = await roleHistory('narrative', narrative)
+  assert.ok(narrativeHistory.items.length >= 2)
+  assert.ok(JSON.stringify(narrativeHistory).includes('shared_fiction'))
+  checked.push('narrative form creates and edits a versioned shared-fiction entry without converting it into a fact')
+  await page.screenshot({ path: join(output, '05-role-fiction-history.png'), fullPage: true })
+
+  await selectRoleType('intention'); await button('新建').click()
+  await form('承诺内容').fill('合成承诺：一起整理茶具')
+  await form('承担方').selectOption('shared'); await form('类别').selectOption('promise')
+  await form('操作理由').fill('演示用户确认承诺')
+  let intention = await saveRole('intention', item => item.payload?.text === '合成承诺：一起整理茶具')
+  await openRole('intention', intention)
+  assert.equal(await form('承担方').isDisabled(), true)
+  assert.equal(await form('类别').isDisabled(), true)
+  await form('承诺内容').fill('合成承诺：先清洗再整理茶具')
+  await form('操作理由').fill('演示用户修订承诺内容')
+  const intentionVersion = intention.version
+  intention = await saveRole('intention', item => item.id === intention.id)
+  assert.ok(intention.version > intentionVersion)
+  intention = await transitionRole('intention', intention, '完成', 'completed')
+  await selectRoleType('intention'); await button('新建').click()
+  await form('承诺内容').fill('合成承诺：取消备用茶会')
+  await form('操作理由').fill('演示用户确认待取消承诺')
+  let cancelledIntention = await saveRole('intention', item => item.payload?.text === '合成承诺：取消备用茶会')
+  cancelledIntention = await transitionRole('intention', cancelledIntention, '取消', 'cancelled')
+  assert.ok((await roleHistory('intention', intention)).items.length >= 3)
+  assert.ok((await roleHistory('intention', cancelledIntention)).items.length >= 2)
+  checked.push('intention form creates and edits a promise and records explicit completion and cancellation separately')
+
+  await selectRoleType('companionship'); await button('新建').click()
+  await form('偏好名称').fill('合成泡茶偏好'); await form('场景').fill('验收茶会')
+  await form('偏好内容').fill('演示相处偏好：先询问茶的温度')
+  await form('操作理由').fill('演示用户确认场景偏好')
+  let companionship = await saveRole('companionship', item => item.id === '合成泡茶偏好' && item.context === '验收茶会')
+  await openRole('companionship', companionship)
+  assert.equal(await form('偏好名称').isDisabled(), true)
+  assert.equal(await form('场景').isDisabled(), true)
+  await form('偏好内容').fill('演示相处偏好：先询问温度，再慢慢倒茶')
+  await form('操作理由').fill('演示用户更新相处偏好')
+  const companionshipVersion = companionship.version
+  companionship = await saveRole('companionship', item => item.id === companionship.id && item.context === companionship.context)
+  assert.ok(companionship.version > companionshipVersion)
+  assert.ok((await roleHistory('companionship', companionship)).items.length >= 2)
+  checked.push('companionship form creates and edits an explicitly scoped preference while locking its identity and context')
+
+  await selectRoleType('growth'); await button('新建').click()
+  await form('成长字段').selectOption('support_style')
+  await form('内容').fill('演示成长：先倾听再回应')
+  await form('操作理由').fill('演示用户确认支持方式')
+  let growth = await saveRole('growth', item => item.id === 'support_style')
+  await openRole('growth', growth)
+  assert.equal(await form('成长字段').isDisabled(), true)
+  await form('内容').fill('演示成长：先倾听，再简短而温和地回应')
+  await form('操作理由').fill('演示用户更新支持方式')
+  await preserveDraftAcrossPoll(form('内容'), () => { session.header.title = '合成演示窗口：角色编辑草稿' })
+  const growthVersion = growth.version
+  growth = await saveRole('growth', item => item.id === growth.id)
+  assert.ok(growth.version > growthVersion)
+  checked.push('growth form creates and edits an allowed expression field and retains drafts during window polling')
+
+  // A second management client commits between the UI's read and confirmation.
+  await openRole('growth', growth)
+  await form('内容').fill('演示成长：过期编辑应被拒绝')
+  await form('操作理由').fill('合成旧版本并发验证')
+  await form('允许近期明确纠正').check()
+  await button('准备保存').click()
+  const concurrent = await inspectRole('role_save', { role_type: 'growth', id: growth.id,
+    expected_version: growth.version, payload: { value: '演示成长：另一窗口已更新' },
+    reason: '合成第二管理窗口并发写入', request_id: randomUUID(), allow_recent: true })
+  assert.ok(concurrent)
+  growth = await roleHead('growth', growth.id)
+  const afterConcurrent = await roleHistory('growth', growth)
+  await button('确认提交').click()
+  await waitText('.md-confirm .md-error', 'STALE_REFERENCE')
+  assert.equal(await form('内容').inputValue(), '演示成长：过期编辑应被拒绝')
+  assert.equal((await roleHead('growth', growth.id)).version, growth.version)
+  await button('确认提交').click()
+  await waitText('.md-confirm .md-error', 'STALE_REFERENCE')
+  assert.equal((await roleHead('growth', growth.id)).version, growth.version)
+  assert.equal((await roleHistory('growth', growth)).items.length, afterConcurrent.items.length)
+  await page.screenshot({ path: join(output, '06-role-stale-conflict.png'), fullPage: true })
+  await page.locator('.md-confirm').getByRole('button', { name: '取消', exact: true }).click()
+  await button('刷新').click()
+  await openRole('growth', growth)
+  assert.equal(await form('内容').inputValue(), '演示成长：另一窗口已更新')
+  checked.push('a real concurrent role edit shows a stale-version error, preserves the draft, and cannot duplicate writes on retry')
+
+  // Commit once, lose only the response, then click the same confirmation again.
+  await form('内容').fill('演示成长：合成回执恢复后只保存一次')
+  await form('操作理由').fill('合成回执中断恢复')
+  await form('允许近期明确纠正').check()
+  await button('准备保存').click()
+  loseRoleReceiptOnce = true
+  await button('确认提交').click()
+  await waitText('.md-confirm .md-error', '回执中断')
+  const committed = await roleHead('growth', growth.id)
+  assert.ok(committed.version > growth.version)
+  const committedHistory = await roleHistory('growth', committed)
+  const firstAttempt = requests.filter(item => item.action === 'role_save').at(-1)
+  await confirm()
+  const replayAttempt = requests.filter(item => item.action === 'role_save').at(-1)
+  assert.equal(replayAttempt.args.request_id, firstAttempt.args.request_id)
+  assert.equal((await roleHead('growth', growth.id)).version, committed.version)
+  assert.equal((await roleHistory('growth', committed)).items.length, committedHistory.items.length)
+  growth = committed
+  checked.push('a lost committed role receipt retries the original request ID and returns without another version or history row')
+
+  narrative = await transitionRole('narrative', narrative, '撤回', 'withdrawn')
+  await openRole('narrative', narrative)
+  const withdrawnHistory = await roleHistory('narrative', narrative)
+  assert.ok(withdrawnHistory.items.length >= 3)
+  assert.ok(JSON.stringify(withdrawnHistory).includes('withdrawn'))
+  assert.ok(JSON.stringify(withdrawnHistory).includes('shared_fiction'))
+  checked.push('withdrawing a fictional narrative keeps its catalogue header and a readable version history')
+  await page.screenshot({ path: join(output, '07-role-withdrawn-history.png'), fullPage: true })
+
+  // Reconfirmation starts with an empty value and the tombstone's version;
+  // neither the form nor the domain may silently restore the previous body.
+  for (const [type, current, label] of [['companionship', companionship, '偏好内容'], ['growth', growth, '内容']]) {
+    const revoked = await transitionRole(type, current, '撤销', 'revoked')
+    await openRole(type, revoked)
+    assert.equal(await form(label).inputValue(), '')
+    assert.equal(await button('准备撤销').isDisabled(), true)
+    await form(label).fill('演示重新确认：这是用户本次明确填写的新内容')
+    await form('操作理由').fill('演示撤销后按当前版本重新确认')
+    const restored = await saveRole(type, item => item.id === revoked.id)
+    assert.ok(restored.version > revoked.version)
+    assert.equal(restored.state, type === 'growth' ? 'active' : 'confirmed')
+    if (type === 'growth') growth = restored
+    else companionship = restored
+  }
+  checked.push('revoked preferences and growth retain tombstones and require newly entered values at the current version for reconfirmation')
 
   await button('睡眠').click(); await confirm(); await commandTail
   assert.deepEqual(commandErrors, [])
@@ -268,6 +485,14 @@ try {
   assert.ok(colors.background !== 'rgb(248, 251, 250)' && colors.color !== 'rgb(32, 43, 41)', JSON.stringify(colors))
   await page.screenshot({ path: join(output, '04-narrow-dark.png'), fullPage: true })
   checked.push('all five pages fit a 390px viewport and dark mode changes readable foreground and surfaces')
+  for (const [type, item] of [['narrative', narrative], ['intention', intention], ['companionship', companionship], ['growth', growth]]) {
+    await openRole(type, item)
+    const width = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, viewport: innerWidth }))
+    assert.ok(width.scroll <= width.viewport, `${type} editor overflows ${width.scroll} > ${width.viewport}`)
+    await page.locator('.md-detail').getByRole('heading', { name: '编辑角色资料', exact: true }).waitFor()
+  }
+  await page.screenshot({ path: join(output, '08-role-editor-narrow-dark.png'), fullPage: true })
+  checked.push('all four role editors including terminal records and version histories fit the narrow dark host view')
 
   const beforePoll = requestCount('windows')
   await waitFor(() => requestCount('windows') > beforePoll, 'Mounted visible view should poll bounded window snapshots', 4500)
@@ -283,8 +508,9 @@ try {
   assert.deepEqual(browserErrors, [])
   rmSync(join(output, 'failure.png'), { force: true })
   writeFileSync(join(output, 'acceptance.json'), JSON.stringify(report('passed', {
-    paths: checked.length, requests: requests.length, reviewed_batches: reviewedBatches,
-    browser_version: browser.version(), screenshots: ['01-role-light.png', '02-memory-source-light.png', '03-sleep-dream-light.png', '04-narrow-dark.png'],
+    paths: checked.length, requests: requests.length, auxiliary_role_requests: auxiliaryRequests.length, reviewed_batches: reviewedBatches,
+    browser_version: browser.version(), screenshots: ['01-role-light.png', '02-memory-source-light.png', '03-sleep-dream-light.png', '04-narrow-dark.png',
+      '05-role-fiction-history.png', '06-role-stale-conflict.png', '07-role-withdrawn-history.png', '08-role-editor-narrow-dark.png'],
   }), null, 2) + '\n')
   console.log(JSON.stringify(report('passed', { paths: checked.length, requests: requests.length, reviewed_batches: reviewedBatches, output })))
 } catch (error) {

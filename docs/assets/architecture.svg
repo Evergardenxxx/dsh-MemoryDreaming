@@ -15,7 +15,7 @@
   </defs>
   <rect width="1080" height="970" fill="#f8fafc"/>
   <text x="36" y="45" class="title">MemoryDreaming · 系统架构</text>
-  <text x="36" y="76" class="small">引擎 0.30.0 / 原生插件 0.17.0 · 持久资料独立于聊天上下文</text>
+  <text x="36" y="76" class="small">引擎 0.31.0 / 原生插件 0.18.0 · 持久资料独立于聊天上下文</text>
 
   <rect x="36" y="110" width="620" height="144" rx="8" fill="#eaf2fa" stroke="#9bb9d2" stroke-width="1.5"/>
   <text x="60" y="147" class="heading">DeepSeek Harness · 原生插件 / 记忆管理</text>

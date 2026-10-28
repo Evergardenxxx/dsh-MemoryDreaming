@@ -1,6 +1,6 @@
 # 架构总览
 
-本文对应引擎0.30.0 / 原生插件0.17.0 / schema27的当前实现。早期设计目标保留在[架构v0.2](architecture-v0.2.md)中，尚待验收的能力见[路线图](../ROADMAP.md)。
+本文对应引擎0.31.0 / 原生插件0.18.0 / schema27的当前实现。早期设计目标保留在[架构v0.2](architecture-v0.2.md)中，尚待验收的能力见[路线图](../ROADMAP.md)。
 
 ![MemoryDreaming系统架构](assets/architecture.svg)
 

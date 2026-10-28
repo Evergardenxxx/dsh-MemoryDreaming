@@ -8,7 +8,7 @@ A local long-term memory engine and native DeepSeek Harness plugin for companion
 
 [Source repository](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issue tracker](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)
 
-**Experimental, runnable release:** engine 0.30.0, native plugin 0.17.0, database schema 27. The engine, native integration, and first desktop management panel are implemented. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
+**Experimental, runnable release:** engine 0.31.0, native plugin 0.18.0, database schema 27. The engine, native integration, and first desktop management panel are implemented. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
 
 ![MemoryDreaming architecture](docs/assets/architecture.svg)
 
@@ -57,13 +57,13 @@ After sleep completes, send `/memory wake` in a new conversation. `/memory off` 
 
 ## Current limits
 
-The default rule extractor has limited coverage. The optional DeepSeek API extractor is implemented, but real extraction quality has not been accepted. The panel can approve/reject existing core, change, autobiography, growth, and companionship proposals, and confirm structured corrections or forgetting with version checks. The role tab is read-only; complete role editing forms and graphical archive import/export remain to be built.
+The default rule extractor has limited coverage. The optional DeepSeek API extractor is implemented, but real extraction quality has not been accepted. The panel can approve/reject existing core, change, autobiography, growth, and companionship proposals, and confirm structured corrections or forgetting with version checks. The role tab provides forms for autobiography, commitments, companionship preferences and expression growth, including version history and explicit confirmation. Core-field editing and graphical archive import/export remain to be built.
 
 Automatic scene selection, reliable conversational candidate formation with convenient confirmation, automatic growth suggestions, and a timed notification transport remain incomplete. Proactivity currently provides a disabled-by-default authorization and delivery queue only. Roles remain fixed by plugin configuration; the panel cannot switch bindings.
 
 Request counting is estimated by default. Current V4.1 online usage and multimodal counting remain unverified. Local forgetting cannot retract text already delivered to a model or erase external backups.
 
-Version 0.30 passed 773 local engineering tests, 27 isolated paths using installed Harness runtime modules, and 12 browser interaction paths. The browser uses the real Python bridge and temporary SQLite storage, with deterministic host admission and model adapters. These tests do not validate the user's current Electron window, live model, or long-term companion behavior. See [desktop boundaries](docs/desktop-management.md) and [acceptance scope](docs/installed-harness-acceptance.md).
+Version 0.31 passed 790 local engineering tests, 27 isolated paths using installed Harness runtime modules, and 21 browser interaction paths. The browser uses the real Python bridge and temporary SQLite storage, with deterministic host admission and model adapters. These tests do not validate the user's current Electron window, live model, or long-term companion behavior. See [desktop boundaries](docs/desktop-management.md) and [acceptance scope](docs/installed-harness-acceptance.md).
 
 ## Data and dependencies
 

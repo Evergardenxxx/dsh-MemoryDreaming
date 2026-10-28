@@ -82,6 +82,9 @@ assert.equal(record.child.exitCode !== null || record.child.signalCode !== null,
 const client = fakeClient('hang', { bridgeTimeoutMs: 150 });
 await assert.rejects(client.request('prepare_turn', {}), { code: 'BRIDGE_TIMEOUT' });
 assert.equal(client.pending.size, 0);
+// Only the hung request uses the short deadline. A fresh worker's cold start
+// is not a 150ms performance assertion, especially on loaded Windows runners.
+client.timeoutMs = 2000;
 assert.equal((await client.request('bootstrap', {})).op, 'bootstrap');
 ''')
 

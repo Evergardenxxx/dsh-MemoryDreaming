@@ -71,7 +71,7 @@ from .growth import GrowthService
 from .intentions import IntentionsService, IntentionError
 from .portability import export_snapshot, import_snapshot, load_snapshot, validate_snapshot, write_snapshot
 
-__version__ = "0.30.0"
+__version__ = "0.31.0"
 
 __all__ = [
     "MemoryRuntime",

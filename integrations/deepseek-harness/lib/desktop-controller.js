@@ -6,7 +6,8 @@ import { isSubagent, sessionId } from './native-session.js'
 const SERVICE = 'memorydreamingDesktop'
 const COMMANDS = Object.freeze({ on: '记忆开启', off: '记忆关闭', sleep: '记忆睡眠', wake: '记忆苏醒' })
 const ACTIONS = new Set(['overview', 'memories', 'record', 'proposals', 'proposal_decide',
-  'memory_forget', 'memory_correct', 'initialize_role', 'role', 'sleep'])
+  'memory_forget', 'memory_correct', 'initialize_role', 'role', 'sleep',
+  'role_catalog', 'role_history', 'role_save', 'role_transition'])
 const fail = (code, message) => Object.assign(new Error(message), { code, isDSHRemoteError: true, details: {} })
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const validId = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value)

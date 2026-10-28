@@ -25,12 +25,16 @@ _READ_ACTIONS = {
     "overview": set(), "memories": {"memory_type", "query", "offset", "limit"},
     "record": {"kind", "id"}, "proposals": {"proposal_type", "offset", "limit"},
     "role": set(), "sleep": {"limit"},
+    "role_catalog": {"role_type", "offset", "limit"},
+    "role_history": {"role_type", "id", "context", "limit"},
 }
 _WRITE_ACTIONS = {
     "initialize_role": {"identity_fields", "relationship_fields", "expected_version", "request_id"},
     "proposal_decide": {"proposal_type", "id", "decision", "expected_revision", "request_id", "reason", "expected_version"},
     "memory_forget": {"id", "expected_revision", "request_id", "reason"},
     "memory_correct": {"id", "expected_revision", "request_id", "reason", "body"},
+    "role_save": {"role_type", "id", "context", "expected_version", "payload", "reason", "request_id", "allow_recent"},
+    "role_transition": {"role_type", "id", "context", "expected_version", "state", "reason", "request_id"},
 }
 _PROPOSALS = {
     "core": ("core_proposals", "pending_validation"),
@@ -99,6 +103,22 @@ class DesktopService:
 
     def _reader(self):
         return ViewReader(self.runtime, self.binding, self.runtime.clock)
+
+    def _role_catalog(self, args):
+        from .desktop_roles import DesktopRoles
+        return DesktopRoles(self).catalog(args)
+
+    def _role_history(self, args):
+        from .desktop_roles import DesktopRoles
+        return DesktopRoles(self).history(args)
+
+    def _role_save(self, args):
+        from .desktop_roles import DesktopRoles
+        return DesktopRoles(self).save(args)
+
+    def _role_transition(self, args):
+        from .desktop_roles import DesktopRoles
+        return DesktopRoles(self).transition(args)
 
     @staticmethod
     def _page(args):

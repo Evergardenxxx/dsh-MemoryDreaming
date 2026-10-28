@@ -1,6 +1,6 @@
 {
   "name": "@local/memorydreaming",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "private": true,
   "license": "MIT",
   "description": "Native Cordis plugin for persistent role memory and sleep/wake continuity in DeepSeek Harness",

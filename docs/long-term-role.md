@@ -98,4 +98,4 @@ python -m memorydreaming --db .memorydreaming/new-device.db archive-restore --us
 
 738项工程回归与15条安装版实际运行时隔离路径已通过，覆盖默认关闭、完整用户命令、来源/版本、并发、遗忘传播、角色资料预算、苏醒以及新设备档案恢复。新版wheel已在带空格路径的独立venv安装，使用安装后的原生插件验证上述指令、常规回合角色恢复和新设备档案核验，恢复策略保持暂停。本轮参考机制和固定来源分别列在[自传](narrative-continuity.md)、[偏好](companionship-preferences.md)、[承诺](intentions-proactivity.md)文档中，没有复制第三方实现。
 
-当前仍待产品接入的是定时推送渠道、图形化审批/档案管理、自动场景选择；真实登录模型与Electron GUI的新指令流程仍需独立验收。既有DeepSeek真实抽取质量、独立中文语义验收及当前V4.1线上计量也继续保留在[待办](open-problems.md)，工程回归不替代这些证据。
+v0.30已接入已有候选的图形审批，v0.31已接入自传、承诺、偏好和成长四类表单、状态操作与历史查看，详见[桌面管理](desktop-management.md)。仍待产品接入的是核心字段完整编辑、图形档案管理、定时推送渠道与自动场景选择；真实登录模型与Electron GUI仍需独立验收。既有DeepSeek真实抽取质量、独立中文语义验收及当前V4.1线上计量也继续保留在[待办](open-problems.md)，工程回归不替代这些证据。

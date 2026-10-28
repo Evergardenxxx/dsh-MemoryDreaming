@@ -39,7 +39,7 @@ def build(destination):
         cwd=root, capture_output=True, text=True, check=True).stdout)
     wheel = output/f"memorydreaming-{package_version}-py3-none-any.whl"
     with zipfile.ZipFile(wheel) as archive:
-        if not {"memorydreaming/storage/schema.sql", "memorydreaming/desktop.py"}.issubset(archive.namelist()) or not any(name.endswith("LICENSE") for name in archive.namelist()):
+        if not {"memorydreaming/storage/schema.sql", "memorydreaming/desktop.py", "memorydreaming/desktop_roles.py"}.issubset(archive.namelist()) or not any(name.endswith("LICENSE") for name in archive.namelist()):
             raise RuntimeError("Wheel missing schema, desktop service or license")
     packed_files = {entry["path"] for entry in pack["files"]}
     if not {"lib/client.js", "lib/desktop-controller.js", "desktop/view.js", "desktop/view.css"}.issubset(packed_files):

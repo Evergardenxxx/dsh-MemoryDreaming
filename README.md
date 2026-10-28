@@ -8,7 +8,7 @@
 
 代码与问题反馈：[GitHub仓库](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issues](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)。
 
-**当前为可运行试用版：引擎 v0.30.0 / 原生插件 v0.17.0 / 数据库 schema 27。** 引擎、原生接入与首版桌面管理已实现；真实 DeepSeek 抽取质量、长期角色稳定性和当前登录模型的完整桌面流程仍待验收。详见[能力与证据](docs/open-problems.md)。
+**当前为可运行试用版：引擎 v0.31.0 / 原生插件 v0.18.0 / 数据库 schema 27。** 引擎、原生接入与首版桌面管理已实现；真实 DeepSeek 抽取质量、长期角色稳定性和当前登录模型的完整桌面流程仍待验收。详见[能力与证据](docs/open-problems.md)。
 
 ## 为什么做这个项目
 
@@ -70,14 +70,14 @@ python scripts/install.py --destination "D:\Apps\MemoryDreaming" --user u1 --cha
 | 持久存储、核心与四类记忆、跨窗口恢复 | 已实现；来源、作用域、版本和预算受工程回归覆盖 |
 | 原生窗口开关、睡眠审阅、虚构梦、苏醒 | 已实现；安装版运行时已使用确定性模型适配器验收 |
 | 自传、承诺、偏好、成长 | 已实现SDK与显式JSON指令；推测不会自动获得审批权 |
-| 桌面记忆与候选管理 | 首版原生页面已实现筛选/来源、五类候选审批、纠错/遗忘及初始化；角色完整编辑与图形档案迁移待开发 |
+| 桌面记忆与候选管理 | 原生页面支持四类角色资料表单、状态操作和历史查看，以及记忆/候选管理；核心字段编辑与图形档案迁移待开发 |
 | 纠错、遗忘与迁移 | 本地传播及私密新设备恢复已实现；已发送上下文和外部旧备份不能自动撤回 |
 | 自动抽取 | 默认规则覆盖有限；可选DeepSeek API抽取器已接入，真实质量尚待验收 |
 | 场景偏好 | SDK支持显式场景；普通原生回合目前读取default，自动场景选择未接入 |
 | 主动提醒 | 默认关闭的授权/频率/安静时段/租约队列已实现，实际定时推送渠道未接入 |
 | 精确计量与质量 | 默认estimated；当前V4.1线上usage、独立人工质量和长期陪伴验收尚未完成 |
 
-v0.30本地通过**773项工程回归、27条安装版运行时隔离路径、12条浏览器操作路径**。浏览器验收连接真实Python桥接与临时SQLite，宿主指令接纳及模型输出使用确定性适配器；这些结果不等于当前用户Electron窗口、登录模型或长期真实质量已验收。证据范围与复跑方法见[桌面管理](docs/desktop-management.md)、[安装版验收](docs/installed-harness-acceptance.md)和[质量验收](docs/quality-acceptance.md)。
+v0.31本地通过**790项工程回归、27条安装版运行时隔离路径、21条浏览器操作路径**。浏览器验收连接真实Python桥接与临时SQLite，宿主指令接纳及模型输出使用确定性适配器；这些结果不等于当前用户Electron窗口、登录模型或长期真实质量已验收。证据范围与复跑方法见[桌面管理](docs/desktop-management.md)、[安装版验收](docs/installed-harness-acceptance.md)和[质量验收](docs/quality-acceptance.md)。
 
 ## 数据、模型与安装包体积
 

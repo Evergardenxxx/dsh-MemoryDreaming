@@ -9,3 +9,4 @@
 .memorydreaming-host{min-height:0;overflow:auto;height:100%}
 .memorydreaming .md-search input{flex:1;min-width:0}.memorydreaming .md-search button{flex:none;white-space:nowrap}
 :is(.dark,[data-theme="dark"],body[data-ds-dark-theme]) .memorydreaming .md-primary,.memorydreaming:is(.dark,[data-theme="dark"]) .md-primary{color:#102b24}
+.memorydreaming .md-field input[type="checkbox"]{width:auto;margin:0 6px 0 0}.memorydreaming .md-field select{max-width:100%;padding:8px;border:1px solid var(--md-line);border-radius:4px;background:var(--md-surface);color:var(--md-ink)}
