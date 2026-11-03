@@ -1,8 +1,10 @@
 # 本地中文语义嵌入与索引一致性
 
-v0.18 增加可选 `SentenceTransformerEmbedder`，v0.32 增加 [Qwen3 profile 与 Matryoshka 降维](qwen-retrieval.md)。默认仍为零依赖字符哈希；启用语义模型需要预先安装依赖并准备本地权重。DeepSeek Harness 继续使用原生 Cordis 插件和 JSONL bridge，记忆注入预算仍为默认 1200、硬上限 4096 token。
+v0.18 增加可选 `SentenceTransformerEmbedder`，v0.32 增加 Qwen3 profile 与 Matryoshka 降维。默认仍为零依赖字符哈希，普通使用无需部署本地模型；本页的依赖安装和权重配置仅面向主动选择实验语义后端的部署者。千问对项目的主要启发是查询/正文分工、有限候选排序、派生索引隔离和独立评测，见[检索设计决策](qwen-retrieval.md)。DeepSeek Harness 继续使用原生 Cordis 插件和 JSONL bridge，记忆注入预算仍为默认 1200、硬上限 4096 token。
 
-## 选择与配置
+身份、关系与长期记忆持久化不以额外嵌入模型为前提。可选后端的兼容代码已保留，部署及比较官方 Qwen 权重不在当前产品必做队列中；默认哈希仍只有字面匹配能力，不能据此宣称已有完整语义理解。
+
+## 可选后端的选择与配置
 
 可以使用兼容 Sentence Transformers 的中文检索模型，例如 [BAAI/bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5)。v0.27 已运行固定 BGE 真实权重、同义改写诊断和一万条投影，独立人工质量验收仍未完成，具体环境与数据边界见[质量证据](quality-acceptance.md)。依赖接口见 [Sentence Transformers API](https://www.sbert.net/docs/package_reference/sentence_transformer/SentenceTransformer.html)。
 
@@ -88,7 +90,7 @@ python -m memorydreaming --db .memorydreaming/deepseek-harness.db reindex --user
 
 所有候选仍经过作用域、活动授权、来源、状态和事实抑制复核。双时间历史查询不使用当前向量，继续只读修订快照。新适配器没有改变核心审批或遗忘权限。
 
-尚未完成：独立人工语义质量验收、官方 Qwen 权重的质量/延迟/内存比较及更大规模 ANN。BGE 真实依赖与一万条规模基线已运行；精确扫描仍为 O(ND)。v0.19 将后台抽取/去重编码移出写事务，宿主查询改为只读快照并在发布时复核代次，见 [事务外计算](optimistic-computation.md)。v0.20 已将同步纠错及结构化审批替换的编码移出事务，加入提交前复核和原子回执，见 [纠错与变更审批](correction-approval.md)。v0.26 起 Runtime 使用独立模型进程提供硬截止时间；直接注入的自定义适配器仍由调用者管理生命周期。
+独立人工语义质量验收仍未完成；若选择 Qwen 后端，再进行对应官方权重的质量、延迟及内存比较。更大规模 ANN 按实际规模需求评估。这些可选后端和规模研究不阻塞桌面管理与长期连续性流程的开发。BGE 真实依赖与一万条规模基线已运行；精确扫描仍为 O(ND)。v0.19 将后台抽取/去重编码移出写事务，宿主查询改为只读快照并在发布时复核代次，见 [事务外计算](optimistic-computation.md)。v0.20 已将同步纠错及结构化审批替换的编码移出事务，加入提交前复核和原子回执，见 [纠错与变更审批](correction-approval.md)。v0.26 起 Runtime 使用独立模型进程提供硬截止时间；直接注入的自定义适配器仍由调用者管理生命周期。
 
 ## v0.18 工程验证
 

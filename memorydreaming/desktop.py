@@ -27,6 +27,7 @@ _READ_ACTIONS = {
     "role": set(), "sleep": {"limit"},
     "role_catalog": {"role_type", "offset", "limit"},
     "role_history": {"role_type", "id", "context", "limit"},
+    "core_editor": {"core_kind", "limit"},
 }
 _WRITE_ACTIONS = {
     "initialize_role": {"identity_fields", "relationship_fields", "expected_version", "request_id"},
@@ -35,6 +36,7 @@ _WRITE_ACTIONS = {
     "memory_correct": {"id", "expected_revision", "request_id", "reason", "body"},
     "role_save": {"role_type", "id", "context", "expected_version", "payload", "reason", "request_id", "allow_recent"},
     "role_transition": {"role_type", "id", "context", "expected_version", "state", "reason", "request_id"},
+    "core_save": {"core_kind", "patch", "remove_fields", "expected_version", "expected_revision", "reason", "request_id"},
 }
 _PROPOSALS = {
     "core": ("core_proposals", "pending_validation"),
@@ -86,7 +88,9 @@ class DesktopService:
             raise AdapterError("READ_ONLY", "当前管理连接只允许查看")
         try:
             result = getattr(self, "_"+action)(args)
-            clipped = _bounded(result, chars=16000)
+            # 核心编辑器已按值类型、深度和总字节限制完整投影；通用裁剪
+            # 会因 history.items.fields 的包装层数把合法JSON值变成None。
+            clipped = result if action == "core_editor" else _bounded(result, chars=16000)
             if clipped != result:
                 clipped["truncated"] = True
             if len(dumps(clipped).encode("utf-8")) > 262144:
@@ -103,6 +107,14 @@ class DesktopService:
 
     def _reader(self):
         return ViewReader(self.runtime, self.binding, self.runtime.clock)
+
+    def _core_editor(self, args):
+        from .desktop_core import DesktopCore
+        return DesktopCore(self).editor(args)
+
+    def _core_save(self, args):
+        from .desktop_core import DesktopCore
+        return DesktopCore(self).save(args)
 
     def _role_catalog(self, args):
         from .desktop_roles import DesktopRoles

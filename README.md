@@ -8,9 +8,9 @@
 
 代码与问题反馈：[GitHub仓库](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issues](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)。
 
-**当前为可运行试用版：引擎 v0.32.0 / 原生插件 v0.19.0 / 数据库 schema 27。** 引擎、原生接入与首版桌面管理已实现；真实 DeepSeek 抽取质量、长期角色稳定性和当前登录模型的完整桌面流程仍待验收。详见[能力与证据](docs/open-problems.md)。
+**当前为可运行试用版：引擎 v0.33.0 / 原生插件 v0.20.0 / 数据库 schema 27。** 引擎、原生接入与桌面角色资料及核心编辑已实现；真实 DeepSeek 抽取质量、长期角色稳定性和当前登录模型的完整桌面流程仍待验收。详见[能力与证据](docs/open-problems.md)。
 
-本地语义检索可选 [Qwen3 Embedding](docs/qwen-retrieval.md)，支持查询指令、模型结构校验和 Matryoshka 降维；默认安装不含权重。官方 Qwen 权重与独立中文质量评测尚未完成，DeepSeek 继续是唯一生产 LLM 抽取目标。
+检索设计吸收了千问在查询指令、有限候选排序和派生索引方面的思路，普通使用无需额外部署模型。已有可选本地实验后端，详见 [Qwen 设计参考](docs/qwen-retrieval.md)；DeepSeek 继续是唯一生产 LLM 抽取目标。
 
 ## 为什么做这个项目
 
@@ -50,7 +50,7 @@ python scripts/install.py --destination "D:\Apps\MemoryDreaming" --user u1 --cha
 
 安装器创建独立 Python 环境、插件、数据目录和配置。随后在 Harness 原生插件管理器中选择生成的 `plugin` 目录并重载应用。离线包自带 wheel；Python、可选语义权重和宿主应用需另行准备。
 
-重载后点击侧栏“记忆管理”。首次设置角色可在“绑定与诊断”中填写并确认，也可使用[初始化示例](docs/quickstart.md#首次设置角色)。新库不会自动编造身份；修改已有角色应走可信宿主审批。
+重载后点击侧栏“记忆管理”。首次设置角色可在“绑定与诊断”中填写并确认，也可使用[初始化示例](docs/quickstart.md#首次设置角色)。已有身份与关系可在“角色”页修改，检查逐项差异后确认；新库不会自动编造身份。
 
 管理页面始终使用插件配置的固定角色绑定，没有运行中窗口也能浏览。窗口选择器只选择对话；开启、关闭、睡眠和苏醒按钮会提交对应真实用户指令，“已接收”不等于处理完成。详细用法与限制见[桌面管理指南](docs/desktop-management.md)。
 
@@ -72,14 +72,14 @@ python scripts/install.py --destination "D:\Apps\MemoryDreaming" --user u1 --cha
 | 持久存储、核心与四类记忆、跨窗口恢复 | 已实现；来源、作用域、版本和预算受工程回归覆盖 |
 | 原生窗口开关、睡眠审阅、虚构梦、苏醒 | 已实现；安装版运行时已使用确定性模型适配器验收 |
 | 自传、承诺、偏好、成长 | 已实现SDK与显式JSON指令；推测不会自动获得审批权 |
-| 桌面记忆与候选管理 | 原生页面支持四类角色资料表单、状态操作和历史查看，以及记忆/候选管理；核心字段编辑与图形档案迁移待开发 |
+| 桌面记忆与候选管理 | 原生页面支持核心身份/关系编辑与来源历史、四类角色资料表单、状态操作及记忆/候选管理；图形档案迁移待开发 |
 | 纠错、遗忘与迁移 | 本地传播及私密新设备恢复已实现；已发送上下文和外部旧备份不能自动撤回 |
 | 自动抽取 | 默认规则覆盖有限；可选DeepSeek API抽取器已接入，真实质量尚待验收 |
 | 场景偏好 | SDK支持显式场景；普通原生回合目前读取default，自动场景选择未接入 |
 | 主动提醒 | 默认关闭的授权/频率/安静时段/租约队列已实现，实际定时推送渠道未接入 |
 | 精确计量与质量 | 默认estimated；当前V4.1线上usage、独立人工质量和长期陪伴验收尚未完成 |
 
-v0.31本地通过**795项工程回归、27条安装版运行时隔离路径、21条浏览器操作路径**。浏览器验收连接真实Python桥接与临时SQLite，宿主指令接纳及模型输出使用确定性适配器；这些结果不等于当前用户Electron窗口、登录模型或长期真实质量已验收。证据范围与复跑方法见[桌面管理](docs/desktop-management.md)、[安装版验收](docs/installed-harness-acceptance.md)和[质量验收](docs/quality-acceptance.md)。
+v0.33本地通过**850项工程回归、27条安装版运行时隔离路径、27条浏览器操作路径**。浏览器验收连接真实Python桥接与临时SQLite，宿主指令接纳及模型输出使用确定性适配器；这些结果不等于当前用户Electron窗口、登录模型或长期真实质量已验收。证据范围与复跑方法见[桌面管理](docs/desktop-management.md)、[安装版验收](docs/installed-harness-acceptance.md)和[质量验收](docs/quality-acceptance.md)。
 
 ## 数据、模型与安装包体积
 

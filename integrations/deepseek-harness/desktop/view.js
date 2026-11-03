@@ -6,6 +6,20 @@ const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.ran
 const displayValues = {accepted:'已确认',active:'已生效',off:'关闭',sleeping:'睡眠中',withdrawn:'已撤回',cancelled:'已取消',completed:'已完成',invalidated:'已失效',revoked:'已撤销',confirmed:'已确认',proposed:'待确认',open:'进行中',shared_fiction:'共同虚构',generated_fiction:'梦境虚构',occurred:'真实叙述',shared:'共同',user:'用户',character:'角色',assistant:'角色',promise:'承诺',continuation:'继续事项',creative:'创作'};
 const display = v => typeof v === 'string' ? (displayValues[v] || v) : value(v);
 const enumFields = new Set(['state','status','modality','perspective','owner','category','operation','epistemic_status']);
+const CORE_KINDS = [['identity', '身份核心'], ['relationship', '关系核心']];
+const canonicalJSON = data => JSON.stringify(data, function (key, item) {
+  return item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(name => [name, item[name]])) : item;
+});
+function validCoreJSON(data, depth = 0) {
+  if (depth > 8) return false;
+  if (typeof data === 'number') return Number.isFinite(data) && (!Number.isInteger(data) || Number.isSafeInteger(data));
+  if (typeof data === 'string') return data.length <= 4000;
+  if (data === null || typeof data === 'boolean') return true;
+  return typeof data === 'object' && Object.keys(data).length <= 32
+    && (Array.isArray(data) || Object.keys(data).every(name => name.trim() && name.length <= 100))
+    && Object.values(data).every(item => validCoreJSON(item, depth + 1));
+}
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -41,8 +55,8 @@ function summary(item) { const body = item.body || {}; return [body.subject, bod
 
 /** Mount a management view. request(action, args) must resolve to a service result or reject. */
 export function mountDesktop(root, request) {
-  let state = {tab: 'memories', type: 'semantic', proposalType: 'core', roleType: 'narrative', roleSelected: null, roleHistory: null, query: '', offset: 0, selected: null, overview: null, data: null, loading: false, error: '', notice: '', pending: null, windows: [], conversationId: ''};
-  let alive = true, sequence = 0, detailSequence = 0, overviewSequence = 0, draft = {};
+  let state = {tab: 'memories', type: 'semantic', proposalType: 'core', roleType: 'narrative', roleSelected: null, roleHistory: null, coreKind: 'identity', coreData: null, coreLoading: false, coreEditing: false, coreError: '', query: '', offset: 0, selected: null, overview: null, data: null, loading: false, error: '', notice: '', pending: null, windows: [], conversationId: ''};
+  let alive = true, sequence = 0, detailSequence = 0, overviewSequence = 0, coreSequence = 0, draft = {}, coreDraft = null, coreOpenSections = {};
   root.classList.add('memorydreaming');
   const update = patch => { const active = root.contains(document.activeElement) ? document.activeElement : null; const key = active?.dataset?.draft; const start = key ? active.selectionStart : null, end = key ? active.selectionEnd : null; state = {...state, ...patch}; render(); if (key) { const next = root.querySelector(`[data-draft="${key}"]`); if (next) { next.focus(); if (start != null) next.setSelectionRange(start, end); } } };
   function bindDraft(control, key, initial = '') { control.dataset.draft = key; control.value = draft[key] ?? initial; control.addEventListener('input', () => { draft[key] = control.value; }); return control; }
@@ -68,7 +82,8 @@ export function mountDesktop(root, request) {
   async function load() {
     const n = ++sequence;
     detailSequence++;
-    update({loading: true, error: '', notice: '', selected: null, roleSelected: null, roleHistory: null, pending: null});
+    coreSequence++; coreDraft = null; coreOpenSections = {};
+    update({loading: true, error: '', notice: '', selected: null, roleSelected: null, roleHistory: null, coreData: null, coreEditing: false, coreLoading: false, coreError: '', pending: null});
     try {
       let data;
       if (state.tab === 'memories') data = await call('memories', {memory_type: state.type, query: state.query, offset: state.offset, limit: 20});
@@ -89,13 +104,13 @@ export function mountDesktop(root, request) {
     try { const selected = await call('record', {kind: 'memory', id: item.id}); if (current()) update({selected}); }
     catch (error) { if (current()) update({selected: null, error: error.message || String(error)}); }
   }
-  function prepare(action, args, label) { update({pending: {action, args: {...args, request_id: uid()}, label, busy: false, error: ''}}); }
+  function prepare(action, args, label, extra = {}) { update({pending: {action, args: {...args, request_id: uid()}, label, busy: false, error: '', ...extra}}); }
   async function commit() {
     const pending = state.pending;
     if (!pending || pending.busy) return;
     update({pending: {...pending, busy: true, error: ''}});
     const conversationId = state.conversationId;
-    try { await call(pending.action, pending.args); if (alive && conversationId === state.conversationId && state.pending?.args.request_id === pending.args.request_id) { draft = {}; await refreshWindows(); await refreshOverview(); await load(); if (alive && conversationId === state.conversationId && ['window_control', 'window_cancel'].includes(pending.action)) update({notice: pending.action === 'window_cancel' ? '已请求停止整理，请以后续窗口状态确认。' : '指令已入队，等待窗口处理。'}); } }
+    try { await call(pending.action, pending.args); if (alive && conversationId === state.conversationId && state.pending?.args.request_id === pending.args.request_id) { draft = {}; await refreshWindows(); await refreshOverview(); await load(); if (alive && conversationId === state.conversationId && ['window_control', 'window_cancel'].includes(pending.action)) update({notice: pending.action === 'window_cancel' ? '已请求停止整理，请以后续窗口状态确认。' : '指令已入队，等待窗口处理。'}); if (alive && conversationId === state.conversationId && pending.action === 'core_save' && state.tab === 'role') { await loadCore(pending.args.core_kind, false); if (alive && conversationId === state.conversationId && state.tab === 'role') update({notice: '核心已保存，当前版本与历史已更新。'}); } } }
     catch (error) { if (alive && conversationId === state.conversationId && state.pending?.args.request_id === pending.args.request_id) update({pending: {...pending, busy: false, error: error.message || String(error)}}); }
   }
   function pagination(data) {
@@ -143,6 +158,187 @@ export function mountDesktop(root, request) {
     return panel;
   }
   function section(title, data) { return el('section', {class: 'md-section'}, el('h2', {}, title), readable(data), data != null ? advanced(data) : null); }
+  function coreValue(data) {
+    return typeof data === 'string' ? el('p', {class: 'md-core-text'}, data) : pre(data === null ? 'null' : data);
+  }
+  function coreFields(fields) {
+    return Object.keys(fields || {}).length ? el('dl', {class: 'md-fields md-core-fields'}, Object.entries(fields).map(([name, item]) =>
+      el('div', {}, el('dt', {}, name), el('dd', {}, coreValue(item))))) : el('p', {class: 'md-muted'}, '没有可显示的核心字段。');
+  }
+  function coreDetails(label, key, ...children) {
+    const control = el('details', {class: 'md-core-details'}, el('summary', {}, label), ...children);
+    control.open = coreOpenSections[key] === true;
+    control.addEventListener('toggle', () => { if (alive && control.isConnected) coreOpenSections[key] = control.open; });
+    return control;
+  }
+  function resetCore(kind) {
+    coreSequence++; coreDraft = null; coreOpenSections = {};
+    update({coreKind: kind, coreData: null, coreLoading: false, coreEditing: false, coreError: '',
+      ...(state.pending?.action === 'core_save' ? {pending: null} : {})});
+  }
+  async function loadCore(kind = state.coreKind, edit = false) {
+    const n = ++coreSequence, pageSequence = sequence, conversationId = state.conversationId;
+    coreDraft = null; coreOpenSections = {};
+    update({coreKind: kind, coreLoading: true, coreEditing: false, coreError: '', coreData: null,
+      ...(edit || state.pending?.action === 'core_save' ? {pending: null} : {})});
+    const current = () => alive && n === coreSequence && pageSequence === sequence && state.tab === 'role'
+      && conversationId === state.conversationId && state.coreKind === kind;
+    try {
+      const data = await call('core_editor', {core_kind: kind, limit: 20});
+      if (!current()) return;
+      const allowed = data.exists && data.editable === true && !data.truncated && !data.redacted_fields && !state.overview?.capabilities?.read_only;
+      if (edit && allowed) coreDraft = {rows: Object.entries(data.fields || {}).map(([name, item], index) => ({
+        id: index, name, existing: true, type: typeof item === 'string' ? 'string' : 'json',
+        content: typeof item === 'string' ? item : JSON.stringify(item, null, 2), removed: false,
+      })), next: Object.keys(data.fields || {}).length, reason: ''};
+      update({coreData: data, coreLoading: false, coreEditing: edit && allowed});
+    } catch (error) { if (current()) update({coreLoading: false, coreError: error.message || String(error)}); }
+  }
+  function prepareCore() {
+    const data = state.coreData;
+    if (!coreDraft || !data?.editable || data.truncated || data.redacted_fields || state.overview?.capabilities?.read_only) return;
+    try {
+      const reason = coreDraft.reason.trim();
+      if (!reason || reason.length > 500) throw new Error('请填写不超过500字的核心修改理由。');
+      const patch = [], removed = [], names = new Set(), changes = [];
+      for (const row of coreDraft.rows) {
+        const name = row.existing ? row.name : row.name.trim();
+        if (!name || name.length > 100) throw new Error('字段名须为1至100个字符。');
+        if (names.has(name)) throw new Error(`字段名重复：${name}`);
+        names.add(name);
+        if (row.removed) {
+          removed.push(name); changes.push({operation: '移除', name, before: data.fields[name]}); continue;
+        }
+        let item;
+        if (row.type === 'string') {
+          item = row.content;
+          if (item.length > 4000) throw new Error(`字段“${name}”的文本最多4000个字符。`);
+        }
+        else {
+          try { item = JSON.parse(row.content); } catch { throw new Error(`字段“${name}”的JSON格式无效。`); }
+          if (!validCoreJSON(item)) throw new Error(`字段“${name}”超出JSON大小或层数上限，或包含无法精确保存的数字。`);
+        }
+        if (!row.existing || canonicalJSON(item) !== canonicalJSON(data.fields[name])) {
+          patch.push([name, item]);
+          changes.push({operation: row.existing ? '修改' : '新增', name,
+            ...(row.existing ? {before: data.fields[name]} : {}), after: item});
+        }
+      }
+      if (patch.length > 32 || removed.length > 32) throw new Error('单次最多修改32个字段、移除32个字段。');
+      if (coreDraft.rows.filter(row => !row.removed).length > 32) throw new Error('当前核心最多保留32个字段。');
+      if (!patch.length && !removed.length) throw new Error('尚未修改核心字段。');
+      const payload = Object.fromEntries(patch);
+      if (new TextEncoder().encode(JSON.stringify(payload)).length > 12000) throw new Error('本次核心修改内容过长，请减少字段或缩短内容。');
+      prepare('core_save', {core_kind: state.coreKind, patch: payload, remove_fields: removed,
+        expected_version: data.version, expected_revision: data.revision, reason}, '确认保存核心', {coreChanges: changes});
+    } catch (error) { update({coreError: error.message || String(error)}); }
+  }
+  function coreView() {
+    const kind = state.coreKind, data = state.coreData, pending = state.pending?.action === 'core_save' ? state.pending : null;
+    const readonly = !!state.overview?.capabilities?.read_only;
+    const overview = state.overview?.cores?.[kind];
+    const wrap = el('section', {class: 'md-core', 'aria-label': '核心身份与关系'},
+      el('div', {class: 'md-core-heading'}, el('div', {}, el('h2', {}, '核心身份与关系'),
+        el('p', {class: 'md-muted'}, kind === 'identity' ? '身份核心由此角色的各关系共用。' : '关系核心仅用于当前绑定的关系。')),
+        el('div', {class: 'md-filters', role: 'group', 'aria-label': '核心类型'}, CORE_KINDS.map(([id, label]) => {
+          const control = button(label, () => resetCore(id), kind === id ? 'is-active' : '');
+          control.setAttribute('aria-pressed', String(kind === id)); return control;
+        }))));
+    if (state.coreLoading) wrap.append(el('p', {class: 'md-muted', role: 'status'}, '正在读取核心、来源与版本历史…'));
+    else {
+      const exists = data ? data.exists : overview?.state === 'recovered';
+      if (!exists) wrap.append(el('p', {class: 'md-muted'}, '此核心尚未建立。空角色请在“绑定与诊断”中初始化；已有角色缺失的核心需通过受控设定建立。'));
+      else {
+        wrap.append(el('p', {class: 'md-core-version'}, `当前版本 ${value(data?.version ?? overview?.version)}`));
+        if (!state.coreEditing) wrap.append(coreFields(data?.fields ?? overview?.fields ?? {}));
+      }
+      if (data?.redacted_fields) wrap.append(el('p', {class: 'md-muted'}, '部分字段的来源已失效或当前范围无权查看，不能通过编辑恢复。'));
+      if (data?.truncated) wrap.append(el('p', {class: 'md-muted'}, '核心内容未完整展示，当前不能编辑。'));
+      if (exists && data && data.editable !== true && !data.redacted_fields && !data.truncated && !readonly)
+        wrap.append(el('p', {class: 'md-muted'}, '当前核心不满足完整编辑条件，请核对来源与字段格式。'));
+      if (state.coreEditing && coreDraft && !readonly) {
+        const locked = !!pending;
+        const rows = el('div', {class: 'md-core-editor'});
+        for (const row of coreDraft.rows) {
+          const title = row.existing ? row.name : `新增字段${coreDraft.rows.filter(item => !item.existing).indexOf(row) + 1}`;
+          const entry = el('fieldset', {class: `md-core-row${row.removed ? ' is-removed' : ''}`},
+            el('legend', {}, row.existing ? row.name : '新增核心字段'));
+          const name = textInput('字段名称'); name.value = row.name; name.dataset.draft = `core-name-${row.id}`;
+          name.disabled = row.existing || locked;
+          name.addEventListener('input', () => { row.name = name.value; });
+          const type = el('select', {}, el('option', {value: 'string'}, '文本'), el('option', {value: 'json'}, 'JSON结构'));
+          type.value = row.type; type.disabled = row.removed || locked; type.dataset.draft = `core-type-${row.id}`;
+          type.addEventListener('change', () => {
+            if (type.value === 'json' && row.type === 'string') row.content = JSON.stringify(row.content);
+            if (type.value === 'string' && row.type === 'json') { try { const parsed = JSON.parse(row.content); if (typeof parsed === 'string') row.content = parsed; } catch {} }
+            row.type = type.value; update({coreError: ''});
+          });
+          const content = textarea(); content.rows = row.type === 'json' ? 5 : 3; content.value = row.content;
+          content.disabled = row.removed || locked; content.dataset.draft = `core-value-${row.id}`;
+          content.addEventListener('input', () => { row.content = content.value; });
+          entry.append(field(`字段名：${title}`, name), field(`字段类型：${title}`, type),
+            field(`字段值：${title}`, content));
+          if (row.type === 'json') entry.append(el('p', {class: 'md-muted'}, '数组、对象、数字、布尔或null使用JSON保存；文本不会自动转换为数字。'));
+          const remove = button(row.existing ? (row.removed ? '保留此字段' : '移除此字段') : '取消新增字段', () => {
+            if (row.existing) row.removed = !row.removed;
+            else coreDraft.rows = coreDraft.rows.filter(item => item !== row);
+            update({coreError: ''});
+          }); remove.disabled = locked;
+          entry.append(remove);
+          if (row.removed) entry.append(el('p', {class: 'md-muted'}, '此字段将从当前设定移除，版本历史仍会保留。此操作不等同于遗忘。'));
+          rows.append(entry);
+        }
+        const add = button('添加核心字段', () => {
+          coreDraft.rows.push({id: coreDraft.next++, name: '', type: 'string', content: '', existing: false, removed: false}); update({coreError: ''});
+        }); add.disabled = locked || coreDraft.rows.filter(row => !row.removed).length >= 32;
+        const reason = textInput('说明这次明确设定或纠正的原因'); reason.value = coreDraft.reason;
+        reason.disabled = locked; reason.dataset.draft = 'core-reason';
+        reason.addEventListener('input', () => { coreDraft.reason = reason.value; });
+        const save = button('准备保存核心', prepareCore, 'md-primary'); save.disabled = locked;
+        const cancel = button('取消编辑核心', () => { coreDraft = null; update({coreEditing: false, coreError: '', pending: null}); }); cancel.disabled = !!pending?.busy;
+        wrap.append(rows, add, field('核心修改理由', reason), el('div', {class: 'md-actions'}, save, cancel));
+      } else {
+        const actions = el('div', {class: 'md-actions'}, button('查看核心来源与历史', () => loadCore(kind, false)));
+        if (!readonly && exists) {
+          const edit = button('编辑核心', () => loadCore(kind, true));
+          edit.disabled = data?.editable === false || !!data?.truncated || !!data?.redacted_fields;
+          actions.append(edit);
+        }
+        wrap.append(actions);
+      }
+      if (data) {
+        const sources = el('div', {class: 'md-core-provenance'}, Object.entries(data.field_sources || {}).map(([name, refs]) =>
+          el('section', {class: 'md-source'}, el('strong', {}, name), refs.length ? refs.map(source => el('div', {},
+            el('p', {class: 'md-muted'}, `${source.kind} · ${source.id} · 版本 ${source.revision}`),
+            el('p', {class: 'md-core-text'}, source.text ?? ''), source.truncated ? el('p', {class: 'md-muted'}, '来源预览已截断。') : null))
+            : el('p', {class: 'md-muted'}, '没有可显示的来源预览。'))));
+        wrap.append(coreDetails('核心字段来源', 'sources', sources));
+        const history = data.history || {};
+        wrap.append(coreDetails('核心版本历史', 'history', el('div', {class: 'md-core-history'}, (history.items || []).map(item =>
+          el('section', {class: 'md-section'}, el('strong', {}, `版本 ${value(item.version)}`),
+            el('p', {class: 'md-muted'}, `记录时间：${value(item.created_at)} · 生效时间：${value(item.effective_from)}`),
+            item.redacted ? el('p', {class: 'md-muted'}, '来源已失效，部分历史内容已隐藏。') : null,
+            item.truncated ? el('p', {class: 'md-muted'}, '此版本超出完整显示上限，字段内容未展示。') : null,
+            coreFields(item.fields), item.reason ? el('p', {class: 'md-core-text'}, `理由：${item.reason}`) : null))),
+          history.has_more || history.truncated ? el('p', {class: 'md-muted'}, '历史未全部显示。') : null));
+      }
+    }
+    if (state.coreError) wrap.append(el('p', {class: 'md-core-error', role: 'alert'}, state.coreError));
+    if (pending && !readonly) {
+      const confirmation = el('div', {class: 'md-confirm', role: 'alert'}, el('strong', {}, pending.label),
+        el('p', {}, `${kind === 'identity' ? '身份核心由各关系共用。' : '修改当前关系核心。'}基于版本 ${pending.args.expected_version}，保存前再次校验来源与版本。`),
+        el('div', {class: 'md-core-changes'}, (pending.coreChanges || []).map(change => el('section', {class: 'md-source'},
+          el('strong', {}, `${change.operation}：${change.name}`),
+          Object.hasOwn(change, 'before') ? el('div', {}, el('p', {class: 'md-muted'}, '当前值'), coreValue(change.before)) : null,
+          Object.hasOwn(change, 'after') ? el('div', {}, el('p', {class: 'md-muted'}, '保存后的值'), coreValue(change.after)) : el('p', {class: 'md-muted'}, '移出当前设定；版本历史仍会保留。')))),
+        el('p', {class: 'md-core-text'}, `修改理由：${pending.args.reason}`),
+        pending.error ? el('p', {class: 'md-error'}, `操作未完成：${pending.error}。草稿和原确认已保留；版本变化时请核对最新内容。`) : null,
+        el('div', {class: 'md-actions'}, button(pending.busy ? '提交中…' : '确认提交', commit, 'md-primary'),
+          button('返回编辑', () => update({pending: null}))));
+      wrap.append(confirmation);
+    }
+    return wrap;
+  }
   async function selectRole(item) {
     draft = {}; const n = ++detailSequence, conversationId = state.conversationId, roleType = state.roleType;
     update({roleSelected: item, roleHistory: null, pending: null});
@@ -189,7 +385,7 @@ export function mountDesktop(root, request) {
       if (state.pending && ['role_save','role_transition'].includes(state.pending.action)) { const {request_id, ...preview} = state.pending.args; panel.append(el('div', {class:'md-confirm'}, el('strong',{},state.pending.label), readable(preview), state.pending.error ? el('p',{class:'md-error'},`操作未完成：${state.pending.error}。请核对版本后重试。`) : null, el('div',{class:'md-actions'},button(state.pending.busy?'提交中…':'确认提交',commit,'md-primary'),button('取消',()=>update({pending:null}))))); }
       if (item.id) panel.append(el('h3',{},'版本历史查看与对照'), state.roleHistory?.error ? el('p',{class:'md-error'},`历史读取失败：${state.roleHistory.error}`) : state.roleHistory ? el('div',{},(state.roleHistory.items || []).map(version => el('section',{class:'md-section'},el('strong',{},`版本 ${value(version.version)} · ${display(version.state || version.operation)}`),version.redacted || version.available === false || ('snapshot' in version && version.snapshot == null) || ('value' in version && version.value == null) || version.snapshot?.redacted ? el('p',{class:'md-muted'},'来源已失效，内容已隐藏。') : readable(version.snapshot ?? version.value ?? version)))) : el('p',{class:'md-muted'},'正在读取历史…'), state.roleHistory?.truncated || state.roleHistory?.has_more ? el('p',{class:'md-muted'},'历史未全部显示。') : el('span'));
     }
-    return el('div',{},el('div',{class:'md-split'},pane,panel),el('details',{class:'md-content'},el('summary',{},'角色概览'),section('自传',data.overview?.autobiography),section('承诺',data.overview?.intentions),section('相处偏好',data.overview?.companionship),section('成长',data.overview?.growth)));
+    return el('div',{},coreView(),el('div',{class:'md-split'},pane,panel),el('details',{class:'md-content'},el('summary',{},'角色概览'),section('自传',data.overview?.autobiography),section('承诺',data.overview?.intentions),section('相处偏好',data.overview?.companionship),section('成长',data.overview?.growth)));
   }
   function overviewView() {
     const o = state.data || state.overview || {}, b = o.binding || {};

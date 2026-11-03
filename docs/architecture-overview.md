@@ -1,6 +1,6 @@
 # 架构总览
 
-本文对应引擎0.31.0 / 原生插件0.18.0 / schema27的当前实现。早期设计目标保留在[架构v0.2](architecture-v0.2.md)中，尚待验收的能力见[路线图](../ROADMAP.md)。
+本文对应引擎0.33.0 / 原生插件0.20.0 / schema27的当前实现。早期设计目标保留在[架构v0.2](architecture-v0.2.md)中，尚待验收的能力见[路线图](../ROADMAP.md)。
 
 ![MemoryDreaming系统架构](assets/architecture.svg)
 
@@ -40,6 +40,8 @@ flowchart TB
 原生插件不注册MCP工具目录。SDK保留查询/审批接口，仓库另有早期只读兼容模块；它们不参与当前Harness原生链路。user/character/relationship/activity/domain决定长期资料边界，conversation_id决定窗口来源与开关；换窗口不会创建一套新的角色记忆。
 
 管理页面使用宿主共享客户端与原生RPC，不新增监听端口。`DesktopController`核对真实拥有者身份，`DesktopService`复用同一引擎的来源和版本检查；窗口按钮通过宿主的真实用户指令通道执行。页面数据不进入模型上下文，也不会因打开页面而开启任何对话窗口。使用和剩余界面工作见[桌面管理](desktop-management.md)。
+
+核心身份/关系编辑由`DesktopCore`独立编排，四类角色表单由`DesktopRoles`编排，二者共用现有领域服务与事务。用户先检查逐项差异再确认；保存复核版本、来源指纹和遗忘状态，不给模型增加核心写权限。千问的查询/正文分工、索引指纹与有界检索用于[检索设计参考](qwen-retrieval.md)，普通使用无需额外部署模型。
 
 ## 普通回合
 

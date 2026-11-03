@@ -8,7 +8,7 @@
 |---|---|
 | [快速上手](quickstart.md) | 环境、安装、首次设定、指令和排错 |
 | [原生插件说明](../integrations/deepseek-harness/README.md) | Harness配置与真实用户管理指令 |
-| [桌面记忆管理](desktop-management.md) | 原生侧栏、记忆/候选、首次角色设置、窗口按钮及睡眠进度 |
+| [桌面记忆管理](desktop-management.md) | 原生侧栏、记忆/候选、核心与角色资料编辑、来源历史、窗口按钮及睡眠进度 |
 | [窗口、睡眠与苏醒](window-sleep-wake.md) | 按窗启用、分批审阅、梦与可逆巩固 |
 | [长期角色](long-term-role.md) | 自传、承诺、偏好、成长、自检与私密档案 |
 | [安装发布](releasing.md) / [GitHub发布准备](github-publication.md) | 隔离安装、构建、附件、远程发布步骤 |
@@ -43,7 +43,7 @@
 |---|---|
 | [候选缓存](retrieval-cache.md) / [摘要生命周期](summary-lifecycle.md) | 缓存代次、失效、撤回和回源 |
 | [实体索引](entity-index.md) / [语义嵌入](semantic-embedding.md) | 图/实体投影、本地模型与原子重建 |
-| [Qwen检索方案](qwen-retrieval.md) | 已实现的本地Qwen3配置/MRL，以及精排、多模态后续条件 |
+| [Qwen设计参考](qwen-retrieval.md) | 查询/正文分工、有界候选与派生索引；附可选本地配置及研究条件 |
 | [可靠任务](reliable-consolidation.md) / [事务外计算](optimistic-computation.md) | 租约、崩溃恢复、慢计算与提交复核 |
 | [DeepSeek抽取](deepseek-extraction.md) / [请求调度](deepseek-scheduling.md) | API候选契约、失败退避与配额 |
 | [请求预算](request-budget.md) / [计量接入](tokenizer-integration.md) | 完整请求、精度声明与当前模型边界 |

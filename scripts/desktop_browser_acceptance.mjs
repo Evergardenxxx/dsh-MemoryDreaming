@@ -39,6 +39,7 @@ mkdirSync(output, { recursive: true })
 const checked = [], requests = [], auxiliaryRequests = [], admissions = [], commandErrors = [], browserErrors = []
 let browser, server, bridge, releaseDesktop, seed, page, commandTail = Promise.resolve(), releaseCommandGate = () => {}
 let loseRoleReceiptOnce = false
+let loseCoreReceiptOnce = false
 const report = (status, extra = {}) => ({ status, checked, synthetic_data: true,
   real_browser: Boolean(browser), real_desktop_controller: Boolean(releaseDesktop), real_python_bridge: Boolean(bridge), real_sqlite: Boolean(seed),
   real_sleep_coordinator: checked.some(item => item.startsWith('sleep coordinator')), real_electron: false, real_cordis_gateway: false, live_model: false,
@@ -133,6 +134,10 @@ try {
     if (loseRoleReceiptOnce && action === 'role_save' && !result.error) {
       loseRoleReceiptOnce = false
       throw new Error('合成验收：保存成功后回执中断，请原样重试')
+    }
+    if (loseCoreReceiptOnce && action === 'core_save' && !result.error) {
+      loseCoreReceiptOnce = false
+      throw new Error('合成验收：核心保存后回执中断，请原样重试')
     }
     return result
   })
@@ -463,6 +468,99 @@ try {
   }
   checked.push('revoked preferences and growth retain tombstones and require newly entered values at the current version for reconfirmation')
 
+  // Existing cores can be edited without using the model's proposal tools.
+  // The second client below creates a real version race in SQLite.
+  const corePane = () => page.getByRole('region', { name: '核心身份与关系', exact: true })
+  const coreButton = name => corePane().getByRole('button', { name, exact: true })
+  const coreField = name => corePane().getByLabel(name, { exact: true })
+  const coreHead = kind => inspectRole('core_editor', { core_kind: kind, limit: 20 })
+  async function editCore(kind) {
+    await nav('角色').click()
+    await page.getByRole('group', { name: '核心类型' }).getByRole('button', {
+      name: kind === 'identity' ? '身份核心' : '关系核心', exact: true,
+    }).click()
+    await coreButton('编辑核心').click()
+    await corePane().locator('.md-core-editor').waitFor()
+  }
+  async function prepareCore(reason) {
+    await coreField('核心修改理由').fill(reason)
+    const before = requestCount('core_save')
+    await coreButton('准备保存核心').click()
+    await corePane().locator('.md-confirm').waitFor()
+    assert.equal(requestCount('core_save'), before, 'Core preview must not send a write')
+  }
+
+  let identityCore = await coreHead('identity')
+  await editCore('identity')
+  await coreField('字段值：名字').fill('演示小梦修订')
+  await coreButton('添加核心字段').click()
+  await coreField('字段名：新增字段1').fill('结构化设定')
+  await coreField('字段类型：新增字段1').selectOption('json')
+  await coreField('字段值：新增字段1').fill(JSON.stringify({ motifs: ['海边', '灯塔'], count: 2, enabled: true, note: null }))
+  await preserveDraftAcrossPoll(coreField('字段值：名字'), () => { session.header.title = '合成演示窗口：核心编辑草稿' })
+  await prepareCore('合成用户明确修订名字并添加结构化设定')
+  assert.equal((await coreHead('identity')).version, identityCore.version)
+  await waitText('.md-core-changes', '演示小梦修订')
+  assert.equal(await coreField('字段值：名字').isDisabled(), true, 'Preview freezes the values it will confirm')
+  await confirm()
+  identityCore = await coreHead('identity')
+  assert.equal(identityCore.fields.名字, '演示小梦修订')
+  assert.deepEqual(identityCore.fields.结构化设定, { motifs: ['海边', '灯塔'], count: 2, enabled: true, note: null })
+  assert.equal(identityCore.fields.身份, '演示陪伴角色')
+  assert.ok(identityCore.field_sources.名字.some(source => source.text.includes('桌面用户明确操作')))
+  await corePane().getByText('核心字段来源', { exact: true }).click()
+  await waitText('.md-core-provenance', '桌面用户明确操作')
+  await corePane().getByText('核心版本历史', { exact: true }).click()
+  await waitText('.md-core-history', '演示小梦')
+  checked.push('core editor confirms typed field patches, preserves other fields and exposes source-backed history without a model call')
+  checked.push('core editor polling preserves the entered value, focus and selection and preview freezes its exact patch')
+  await page.screenshot({ path: join(output, '09-core-fields-sources.png'), fullPage: true })
+
+  const relationBefore = await coreHead('relationship')
+  await editCore('relationship')
+  await coreField('字段值：称呼').fill('演示老朋友')
+  await corePane().locator('.md-core-row').filter({ has: page.locator('legend').getByText('相处设定', { exact: true }) })
+    .getByRole('button', { name: '移除此字段', exact: true }).click()
+  await prepareCore('合成用户明确更改称呼并移出旧关系设定')
+  await waitText('.md-core-changes', '版本历史仍会保留')
+  await confirm()
+  let relationshipCore = await coreHead('relationship')
+  assert.ok(relationshipCore.version > relationBefore.version)
+  assert.equal(relationshipCore.fields.称呼, '演示老朋友')
+  assert.equal(Object.hasOwn(relationshipCore.fields, '相处设定'), false)
+  assert.ok(relationshipCore.history.items.some(item => item.fields?.相处设定 === '合成验收关系'))
+  assert.deepEqual((await coreHead('identity')).fields, identityCore.fields)
+  checked.push('relationship core removal changes the current projection while keeping readable history and the separate identity core')
+
+  await editCore('identity')
+  await coreField('字段值：名字').fill('合成旧版本核心草稿')
+  await prepareCore('合成核心并发版本检查')
+  await inspectRole('core_save', { core_kind: 'identity', patch: { 名字: '另一管理窗口已更新' }, remove_fields: [],
+    expected_version: identityCore.version, expected_revision: identityCore.revision,
+    reason: '合成第二客户端更新核心', request_id: randomUUID() })
+  identityCore = await coreHead('identity')
+  await button('确认提交').click()
+  await waitText('.md-confirm .md-error', 'STALE_REFERENCE')
+  assert.equal(await coreField('字段值：名字').inputValue(), '合成旧版本核心草稿')
+  assert.equal((await coreHead('identity')).version, identityCore.version)
+  await corePane().locator('.md-confirm').getByRole('button', { name: '返回编辑', exact: true }).click()
+  checked.push('a competing core update rejects a stale confirmation while retaining the draft and does not overwrite the new version')
+
+  await editCore('identity')
+  await coreField('字段值：名字').fill('演示小梦最终确认')
+  await prepareCore('合成核心回执中断验证')
+  loseCoreReceiptOnce = true
+  await button('确认提交').click()
+  await waitText('.md-confirm .md-error', '回执中断')
+  const coreCommitted = await coreHead('identity')
+  const coreAttempt = requests.filter(item => item.action === 'core_save').at(-1)
+  await confirm()
+  const coreReplay = requests.filter(item => item.action === 'core_save').at(-1)
+  assert.equal(coreReplay.args.request_id, coreAttempt.args.request_id)
+  assert.equal((await coreHead('identity')).version, coreCommitted.version)
+  assert.equal((await coreHead('identity')).history.items.length, coreCommitted.history.items.length)
+  checked.push('a lost core receipt retries the original request without another core version or confirmation')
+
   await button('睡眠').click(); await confirm(); await commandTail
   assert.deepEqual(commandErrors, [])
   assert.ok(reviewedBatches > 0)
@@ -499,6 +597,13 @@ try {
   await page.screenshot({ path: join(output, '08-role-editor-narrow-dark.png'), fullPage: true })
   checked.push('all four role editors including terminal records and version histories fit the narrow dark host view')
 
+  await editCore('identity')
+  await coreField('字段值：结构化设定').waitFor()
+  const coreWidth = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, viewport: innerWidth }))
+  assert.ok(coreWidth.scroll <= coreWidth.viewport, `core editor overflows ${coreWidth.scroll} > ${coreWidth.viewport}`)
+  await page.screenshot({ path: join(output, '10-core-editor-narrow-dark.png'), fullPage: true })
+  checked.push('the typed core editor and source/history controls fit a 390px dark host view')
+
   const beforePoll = requestCount('windows')
   await waitFor(() => requestCount('windows') > beforePoll, 'Mounted visible view should poll bounded window snapshots', 4500)
   await page.evaluate(() => window.unmount())
@@ -515,7 +620,8 @@ try {
   writeFileSync(join(output, 'acceptance.json'), JSON.stringify(report('passed', {
     paths: checked.length, requests: requests.length, auxiliary_role_requests: auxiliaryRequests.length, reviewed_batches: reviewedBatches,
     browser_version: browser.version(), screenshots: ['01-role-light.png', '02-memory-source-light.png', '03-sleep-dream-light.png', '04-narrow-dark.png',
-      '05-role-fiction-history.png', '06-role-stale-conflict.png', '07-role-withdrawn-history.png', '08-role-editor-narrow-dark.png'],
+      '05-role-fiction-history.png', '06-role-stale-conflict.png', '07-role-withdrawn-history.png', '08-role-editor-narrow-dark.png',
+      '09-core-fields-sources.png', '10-core-editor-narrow-dark.png'],
   }), null, 2) + '\n')
   console.log(JSON.stringify(report('passed', { paths: checked.length, requests: requests.length, reviewed_batches: reviewedBatches, output })))
 } catch (error) {

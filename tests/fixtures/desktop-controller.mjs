@@ -108,10 +108,11 @@ const scenarios = {
     assert.ok(h.bridges[0].signal instanceof AbortSignal)
     assert.equal(h.prompts.length, 0)
     assert.equal(h.controls.get(id).mode, 'off', 'viewing records never enables capture')
-    for (const action of ['role_catalog', 'role_history', 'role_save', 'role_transition']) {
-      await h.call(action, { conversation_id: id, role_type: 'narrative' })
+    for (const action of ['role_catalog', 'role_history', 'role_save', 'role_transition', 'core_editor', 'core_save']) {
+      const arguments_ = action.startsWith('core_') ? { core_kind: 'identity' } : { role_type: 'narrative' }
+      await h.call(action, { conversation_id: id, ...arguments_ })
       assert.deepEqual(h.bridges.at(-1).args, {
-        conversation_id: id, action, arguments: { role_type: 'narrative' },
+        conversation_id: id, action, arguments: arguments_,
       })
       assert.equal(h.controls.get(id).mode, 'off', 'role management never enables capture')
     }

@@ -37,17 +37,24 @@ class CoreService:
         self, scope: Scope, kind: CoreKind | str, patch: dict[str, Any], change_reason: str,
         expected_version: int | None = None, evidence_ids: list[str] | None = None,
         field_evidence_ids: dict[str, list[str]] | None = None,
-        *, effective_from: datetime | None = None,
+        *, effective_from: datetime | None = None, remove_fields: list[str] | None = None,
     ) -> CoreSnapshot:
         """可信本地宿主直接应用一次核心变更；模型建议应走 CoreProposals 审批。
 
         这里是「补丁合并」语义：patch 里出现的键覆盖旧值，没出现的保持不变。
+        remove_fields 显式移除当前字段并追加删除修订；这不是遗忘，旧版本
+        仍受原来源规则约束。删除字段的依据由 field_evidence_ids 或本次
+        evidence_ids 提供，不能借用未修改字段的旧依据。
         版本号由后端计算，调用方只需声明「我是基于哪个版本改的」。
 
         架构文档的要求：核心变更要可解释。所以 change_reason 是必填项，
         evidence_ids 建议填上支撑这次变更的原始事件。
         """
         core_kind = kind if isinstance(kind, CoreKind) else CoreKind(kind)
+        removed = [] if remove_fields is None else remove_fields
+        if (not isinstance(removed, list) or any(not isinstance(name, str) or not name.strip() for name in removed)
+                or len(set(removed)) != len(removed) or set(removed).intersection(patch)):
+            raise ValueError("remove_fields 必须为与 patch 不重叠的字段名列表")
         now = self._clock.now()
         from ..clock import ensure_utc
         if effective_from is not None and (not isinstance(effective_from, datetime) or ensure_utc(effective_from) > ensure_utc(now)):
@@ -55,9 +62,15 @@ class CoreService:
         with self._db.transaction():
             current = self._repos.cores.latest(scope, core_kind)
             merged = dict(current.payload) if current else {}
+            if any(name not in merged for name in removed):
+                raise ValueError("只能移除当前存在的核心字段")
+            for name in removed:
+                merged.pop(name)
             merged.update(patch)
             fields = dict(current.field_evidence_ids) if current else {}
-            for name in patch:
+            # 删除也有独立的用户依据：暂时保留删除字段的来源映射，让字段
+            # 修订日志记录它，随后当前投影会自然去掉该字段及其来源。
+            for name in (*patch, *removed):
                 fields[name] = list((field_evidence_ids or {}).get(name, evidence_ids or []))
             refs = sorted({ref for values in fields.values() for ref in values})
             result = self._repos.cores.append(
@@ -70,7 +83,7 @@ class CoreService:
                 evidence_ids=refs,
                 expected_version=expected_version,
                 field_evidence_ids=fields,
-                changed_fields=list(patch),
+                changed_fields=[*patch, *removed],
             )
             # 追记过去的字段变更不能把更晚已经生效的字段覆盖成旧状态。
             from ..temporal import core_at

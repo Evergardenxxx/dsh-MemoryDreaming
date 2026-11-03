@@ -8,9 +8,9 @@ A local long-term memory engine and native DeepSeek Harness plugin for companion
 
 [Source repository](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issue tracker](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)
 
-**Experimental, runnable release:** engine 0.32.0, native plugin 0.19.0, database schema 27. The engine, native integration, and first desktop management panel are implemented. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
+**Experimental, runnable release:** engine 0.33.0, native plugin 0.20.0, database schema 27. The engine, native integration, desktop role forms and core editor are implemented. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
 
-Optional local [Qwen3 Embedding profiles](docs/qwen-retrieval.md) add query instructions, architecture checks and Matryoshka output dimensions. Model weights are separate; official Qwen weights and independent Chinese retrieval quality have not been evaluated here. DeepSeek remains the only production LLM extraction target.
+The retrieval design draws on Qwen's query instructions, bounded candidate ranking and derived-index separation. Normal use requires no additional model deployment. Existing local backends remain optional experiments; see the [Qwen design notes](docs/qwen-retrieval.md). DeepSeek remains the only production LLM extraction target.
 
 ![MemoryDreaming architecture](docs/assets/architecture.svg)
 
@@ -59,13 +59,13 @@ After sleep completes, send `/memory wake` in a new conversation. `/memory off` 
 
 ## Current limits
 
-The default rule extractor has limited coverage. The optional DeepSeek API extractor is implemented, but real extraction quality has not been accepted. The panel can approve/reject existing core, change, autobiography, growth, and companionship proposals, and confirm structured corrections or forgetting with version checks. The role tab provides forms for autobiography, commitments, companionship preferences and expression growth, including version history and explicit confirmation. Core-field editing and graphical archive import/export remain to be built.
+The default rule extractor has limited coverage. The optional DeepSeek API extractor is implemented, but real extraction quality has not been accepted. The panel can approve/reject existing core, change, autobiography, growth, and companionship proposals, and confirm structured corrections or forgetting with version checks. The role tab provides core identity/relationship editing with typed JSON fields, source previews and version history, as well as forms for autobiography, commitments, companionship preferences and expression growth. Changes require an explicit preview and confirmation. Graphical archive import/export remains to be built.
 
 Automatic scene selection, reliable conversational candidate formation with convenient confirmation, automatic growth suggestions, and a timed notification transport remain incomplete. Proactivity currently provides a disabled-by-default authorization and delivery queue only. Roles remain fixed by plugin configuration; the panel cannot switch bindings.
 
 Request counting is estimated by default. Current V4.1 online usage and multimodal counting remain unverified. Local forgetting cannot retract text already delivered to a model or erase external backups.
 
-Version 0.31 passed 795 local engineering tests, 27 isolated paths using installed Harness runtime modules, and 21 browser interaction paths. The browser uses the real Python bridge and temporary SQLite storage, with deterministic host admission and model adapters. These tests do not validate the user's current Electron window, live model, or long-term companion behavior. See [desktop boundaries](docs/desktop-management.md) and [acceptance scope](docs/installed-harness-acceptance.md).
+Version 0.33 passed 850 local engineering tests, 27 isolated paths using installed Harness runtime modules, and 27 browser interaction paths. The browser uses the real Python bridge and temporary SQLite storage, with deterministic host admission and model adapters. These tests do not validate the user's current Electron window, live model, or long-term companion behavior. See [desktop boundaries](docs/desktop-management.md) and [acceptance scope](docs/installed-harness-acceptance.md).
 
 ## Data and dependencies
 

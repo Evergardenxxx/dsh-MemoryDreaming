@@ -24,7 +24,7 @@ git diff --check
 | 6 | [worker.py](../memorydreaming/worker.py)、[consolidation.py](../memorydreaming/consolidation.py) | 理解租约、事务外计算、退避与原子回执 |
 | 7 | [sleep.py](../memorydreaming/sleep.py)、[life.py](../memorydreaming/life.py)、各角色领域服务 | 理解睡眠编排、角色连续性和审批边界 |
 | 8 | [原生lib/](../integrations/deepseek-harness/lib)、[bridge.py](../memorydreaming/bridge.py) | 理解Cordis生命周期、窗口开关、请求预算和进程监管 |
-| 9 | [desktop/](../integrations/deepseek-harness/desktop)、[desktop-controller.js](../integrations/deepseek-harness/lib/desktop-controller.js)、[desktop.py](../memorydreaming/desktop.py)、[desktop_roles.py](../memorydreaming/desktop_roles.py) | 理解原生页面、拥有者RPC、固定绑定及角色表单事务；管理数据不进入模型上下文 |
+| 9 | [desktop/](../integrations/deepseek-harness/desktop)、[desktop-controller.js](../integrations/deepseek-harness/lib/desktop-controller.js)、[desktop.py](../memorydreaming/desktop.py)、[desktop_core.py](../memorydreaming/desktop_core.py)、[desktop_roles.py](../memorydreaming/desktop_roles.py) | 理解原生页面、拥有者RPC、固定绑定、核心字段及角色表单事务；管理数据不进入模型上下文 |
 
 `examples/host_lifecycle.py`是跨窗口最小示例；`examples/core_proposal.py`演示重启后的审批；`examples/initialize_role.py`演示由本地操作者明确初始化空角色。它们不把模型生成内容当作授权。
 
@@ -42,6 +42,8 @@ git diff --check
 ## 扩展契约
 
 新增表必须覆盖模式版本、迁移、完整/范围快照、原子导入、遗忘传播与范围清除。慢网络/编码计算退出写事务，提交时重新验证代次/来源/租约。模型提议与可信审批保持分离，窗口仍默认关闭。
+
+核心管理编辑复用`services/core.py`的字段修订，先在`desktop_core.py`校验完整JSON、当前可见来源和版本，再把管理确认、修订与回执原子保存。字段移除保留独立删除修订；移除不等于遗忘，遗忘也不能使投影回退到旧值。扩展字段格式时要同时调整页面验证和管理响应边界，不能把被裁剪的JSON当作完整值保存。
 
 修复优先写能复现行为的最小回归；纯文档、注释和机械移动不需要镜像实现的测试。运行改动相关测试和必要全量回归，记录真实模型/GUI未覆盖的部分。完整职责与入口见[系统架构](system-architecture.md)。
 
