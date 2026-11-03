@@ -1,14 +1,15 @@
 # 本地中文语义嵌入与索引一致性
 
-v0.18 增加可选 `SentenceTransformerEmbedder`。默认仍为零依赖字符哈希；启用语义模型需要预先安装依赖并准备本地权重。DeepSeek Harness 继续使用原生 Cordis 插件和 JSONL bridge，记忆注入预算仍为默认 1200、硬上限 4096 token。
+v0.18 增加可选 `SentenceTransformerEmbedder`，v0.32 增加 [Qwen3 profile 与 Matryoshka 降维](qwen-retrieval.md)。默认仍为零依赖字符哈希；启用语义模型需要预先安装依赖并准备本地权重。DeepSeek Harness 继续使用原生 Cordis 插件和 JSONL bridge，记忆注入预算仍为默认 1200、硬上限 4096 token。
 
 ## 选择与配置
 
-可以使用兼容 Sentence Transformers 的中文检索模型，例如 [BAAI/bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5)。这是待评估的候选模型，本轮未安装依赖、下载权重或运行真实模型，不能宣称已验证它的中文质量。依赖接口见 [Sentence Transformers API](https://www.sbert.net/docs/package_reference/sentence_transformer/SentenceTransformer.html)。
+可以使用兼容 Sentence Transformers 的中文检索模型，例如 [BAAI/bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5)。v0.27 已运行固定 BGE 真实权重、同义改写诊断和一万条投影，独立人工质量验收仍未完成，具体环境与数据边界见[质量证据](quality-acceptance.md)。依赖接口见 [Sentence Transformers API](https://www.sbert.net/docs/package_reference/sentence_transformer/SentenceTransformer.html)。
 
 ```powershell
 python -m pip install '.[semantic]'
 $env:MEMORYDREAMING_EMBEDDING_PROVIDER = 'sentence-transformers'
+$env:MEMORYDREAMING_EMBEDDING_PROFILE = 'generic'
 $env:MEMORYDREAMING_EMBEDDING_MODEL_PATH = 'D:\Models\bge-small-zh-v1.5'
 $env:MEMORYDREAMING_EMBEDDING_REVISION = '填写已固定的模型提交 SHA'
 $env:MEMORYDREAMING_EMBEDDING_DIM = '512'
@@ -27,6 +28,7 @@ $env:MEMORYDREAMING_EMBEDDING_DOCUMENT_PREFIX = ''
 
 ```yaml
 embeddingProvider: sentence-transformers
+embeddingProfile: generic
 embeddingModelPath: 'D:\Models\bge-small-zh-v1.5'
 embeddingRevision: '填写已固定的模型提交 SHA'
 embeddingDim: 512
@@ -77,6 +79,7 @@ python -m memorydreaming --db .memorydreaming/deepseek-harness.db reindex --user
 | 代码 | 含义 |
 |---|---|
 | `EMBEDDING_UNAVAILABLE` | 依赖、目录、模型加载或编码不可用 |
+| `EMBEDDING_TIMEOUT` | 独立模型进程达到单批加载/编码/IPC 截止时间，已请求终止 |
 | `INVALID_EMBEDDING` | 模型维度/长度或输出数值不合法 |
 | `VECTOR_INDEX_CORRUPT` | 可见范围内存在损坏向量 |
 | `VECTOR_INDEX_INCOMPLETE` | 可见范围内存在其他配置投影；真实模型还检查完全缺失的投影 |
@@ -85,7 +88,7 @@ python -m memorydreaming --db .memorydreaming/deepseek-harness.db reindex --user
 
 所有候选仍经过作用域、活动授权、来源、状态和事实抑制复核。双时间历史查询不使用当前向量，继续只读修订快照。新适配器没有改变核心审批或遗忘权限。
 
-尚未完成：真实模型质量和依赖安装验收、大规模耗时/内存验证、ANN 索引。v0.19 将后台抽取/去重编码移出写事务，宿主查询改为只读快照并在发布时复核代次，见 [事务外计算](optimistic-computation.md)。v0.20 已将同步纠错及结构化审批替换的编码移出事务，加入提交前复核和原子回执，见 [纠错与变更审批](correction-approval.md)。当前本地编码没有可强制打断的硬超时，不能把故障回退称为超时保证。
+尚未完成：独立人工语义质量验收、官方 Qwen 权重的质量/延迟/内存比较及更大规模 ANN。BGE 真实依赖与一万条规模基线已运行；精确扫描仍为 O(ND)。v0.19 将后台抽取/去重编码移出写事务，宿主查询改为只读快照并在发布时复核代次，见 [事务外计算](optimistic-computation.md)。v0.20 已将同步纠错及结构化审批替换的编码移出事务，加入提交前复核和原子回执，见 [纠错与变更审批](correction-approval.md)。v0.26 起 Runtime 使用独立模型进程提供硬截止时间；直接注入的自定义适配器仍由调用者管理生命周期。
 
 ## v0.18 工程验证
 
@@ -94,4 +97,4 @@ python -m memorydreaming --db .memorydreaming/deepseek-harness.db reindex --user
 实际降级响应通过 JSON Schema 校验。v0.18 wheel 已在独立临时目录安装并运行内置评估，44 个源码/数据文件与仓库一致，可选依赖元数据存在。上述验证均未加载真实语义模型，不能证明真实模型依赖组合、语义质量或性能已通过验收。
 
 
-v0.26 Runtime 默认以独立进程运行本地 SentenceTransformer，MEMORYDREAMING_EMBEDDING_TIMEOUT_SECONDS 默认 30 秒，超时终止并在下次调用重启。直接构造底层适配器或注入自定义 Embedder 仍由可信调用方负责终止语义；模型权重质量仍未验收。详见 [运维与恢复](operations-and-recovery.md)。
+v0.26 Runtime 默认以独立进程运行本地 SentenceTransformer，MEMORYDREAMING_EMBEDDING_TIMEOUT_SECONDS 默认 30 秒，超时终止并在下次调用重启。v0.32 的诊断 CLI 与质量验收脚本也复用这一工厂；正文批量编码使用有界 IPC 分块，每块受截止时间限制，所有块成功后才原子发布。性能基线脚本为固定 CPU 线程测量采用进程内编码，须由离线执行方控制总运行时间。直接构造底层适配器或注入自定义 Embedder 仍由可信调用方负责终止语义。详见 [运维与恢复](operations-and-recovery.md)。

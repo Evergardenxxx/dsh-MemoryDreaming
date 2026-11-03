@@ -20,7 +20,7 @@ import json
 import uuid
 import sys
 from dataclasses import replace
-from contextlib import redirect_stdout
+from contextlib import closing, nullcontext, redirect_stdout
 
 from .clock import load_timezone, utcnow
 from .config import Settings
@@ -181,10 +181,13 @@ def main(argv: list[str] | None = None) -> int:
         from .embedding_evaluation import DEFAULT_DATASET, run_embedding_evaluation
         from .retrieval.embedding import embedder_from_settings
         settings = Settings.from_env()
-        report = run_embedding_evaluation(
-            embedder_from_settings(settings), dataset_path=args.dataset or DEFAULT_DATASET,
-            min_score=args.min_score if args.min_score is not None else settings.vector_min_score, k=args.k,
-        )
+        embedder = embedder_from_settings(settings, isolated=True)
+        # 语义评测和正常宿主共用可终止模型进程；哈希后端没有待释放资源。
+        with closing(embedder) if hasattr(embedder, "close") else nullcontext(embedder):
+            report = run_embedding_evaluation(
+                embedder, dataset_path=args.dataset or DEFAULT_DATASET,
+                min_score=args.min_score if args.min_score is not None else settings.vector_min_score, k=args.k,
+            )
         rendered = json.dumps(report, ensure_ascii=False, indent=2)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")

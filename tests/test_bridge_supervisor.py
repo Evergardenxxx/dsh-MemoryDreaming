@@ -58,6 +58,25 @@ assert.equal(client.child, null);
 assert.equal(client.pending.size, 0);
 ''')
 
+    def test_explicit_embedding_profile_overrides_inherited_configuration(self):
+        self.run_js('''
+process.env.MEMORYDREAMING_EMBEDDING_PROFILE = 'generic';
+let seen;
+const client = new BridgeClient({ ...config, embeddingProvider: 'sentence-transformers',
+  embeddingProfile: 'qwen3-embedding-0.6b', embeddingDim: 256,
+  embeddingQueryPrefix: '', embeddingDocumentPrefix: '' }, {}, { spawnProcess(python, args, options) {
+  seen = options.env;
+  return spawn(process.execPath, [worker, 'echo'], { ...options });
+} });
+clients.push(client);
+await client.request('bootstrap', {});
+assert.equal(seen.MEMORYDREAMING_EMBEDDING_PROVIDER, 'sentence-transformers');
+assert.equal(seen.MEMORYDREAMING_EMBEDDING_PROFILE, 'qwen3-embedding-0.6b');
+assert.equal(seen.MEMORYDREAMING_EMBEDDING_DIM, '256');
+assert.equal(seen.MEMORYDREAMING_EMBEDDING_QUERY_PREFIX, '');
+assert.equal(seen.MEMORYDREAMING_EMBEDDING_DOCUMENT_PREFIX, '');
+''')
+
     def test_cancel_kills_shared_hung_process_and_next_request_restarts(self):
         self.run_js('''
 const client = fakeClient('hang');

@@ -56,6 +56,7 @@ flowchart TD
 | `services/maintenance.py` | 健康、持久指标、实体查询/重建、审计链、快照入口 | 把访问次数和模型自评视为真实性 |
 | `storage/database.py` / `storage/repository.py` | 连接、显式事务、原子迁移、领域对象存取、代次触发器 | 跨用户授权、调用慢模型 |
 | `retrieval/` | 类别/时间计划、关键词/向量/图候选、融合、衰减、预算 | 绕过遗忘账本、给召回结果修改权限 |
+| `retrieval/profiles.py` / `embedding.py` / `isolated.py` | 共用本地模型配置、Qwen3架构/池化校验、MRL投影、配置指纹与可终止编码进程 | 认证权重来源、自动下载、替代身份/事实校验 |
 | `references.py` / `evidence.py` | 会话随机引用、逐跳可见性、AND/OR 支持组及外部根验证 | 用循环依赖证明事实、无限深度展开 |
 | `consolidation.py` / `worker.py` | 租约、心跳、退避、事务外抽取/编码和原子确认 | 重放过期 worker 的结果 |
 | `formation.py` / `extractors.py` / `llm_extractor.py` | 四类正文契约、来源片段、规则或 DeepSeek 候选 | 接受模型直接修改核心或数据库 |

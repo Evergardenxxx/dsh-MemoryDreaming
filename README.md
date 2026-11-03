@@ -8,7 +8,9 @@
 
 代码与问题反馈：[GitHub仓库](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issues](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)。
 
-**当前为可运行试用版：引擎 v0.31.0 / 原生插件 v0.18.0 / 数据库 schema 27。** 引擎、原生接入与首版桌面管理已实现；真实 DeepSeek 抽取质量、长期角色稳定性和当前登录模型的完整桌面流程仍待验收。详见[能力与证据](docs/open-problems.md)。
+**当前为可运行试用版：引擎 v0.32.0 / 原生插件 v0.19.0 / 数据库 schema 27。** 引擎、原生接入与首版桌面管理已实现；真实 DeepSeek 抽取质量、长期角色稳定性和当前登录模型的完整桌面流程仍待验收。详见[能力与证据](docs/open-problems.md)。
+
+本地语义检索可选 [Qwen3 Embedding](docs/qwen-retrieval.md)，支持查询指令、模型结构校验和 Matryoshka 降维；默认安装不含权重。官方 Qwen 权重与独立中文质量评测尚未完成，DeepSeek 继续是唯一生产 LLM 抽取目标。
 
 ## 为什么做这个项目
 

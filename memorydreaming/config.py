@@ -128,6 +128,8 @@ class Settings:
 
     # 真实语义嵌入为显式可选项；只能使用预先下载的本地权重。
     embedding_provider: str = "hash"
+    # generic 保留原模型严格等维行为；Qwen3 profile 显式启用检索指令和 MRL。
+    embedding_profile: str = "generic"
     embedding_model_path: str = ""
     embedding_revision: str = ""
     embedding_dim: int = 512
@@ -171,6 +173,10 @@ class Settings:
         for prefix in (self.embedding_query_prefix, self.embedding_document_prefix):
             if not isinstance(prefix, str) or len(prefix) > 2000:
                 raise ValueError("嵌入前缀必须为不超过 2000 字符的字符串")
+        from .retrieval.profiles import validate_embedding_profile
+        validate_embedding_profile(provider=self.embedding_provider, profile=self.embedding_profile,
+                                   dim=self.embedding_dim, query_prefix=self.embedding_query_prefix,
+                                   document_prefix=self.embedding_document_prefix)
         if (isinstance(self.vector_min_score, bool) or not isinstance(self.vector_min_score, (int, float))
                 or not math.isfinite(self.vector_min_score) or not -1 <= self.vector_min_score <= 1):
             raise ValueError("vector_min_score 必须在 [-1, 1] 内")
@@ -202,6 +208,7 @@ class Settings:
             context_token_budget=_env_int("TOKEN_BUDGET", 1800),
             vector_min_score=float(_env_str("VECTOR_MIN_SCORE", "0.10")),
             embedding_provider=_env_str("EMBEDDING_PROVIDER", "hash"),
+            embedding_profile=_env_str("EMBEDDING_PROFILE", "generic"),
             embedding_model_path=_env_str("EMBEDDING_MODEL_PATH", ""),
             embedding_revision=_env_str("EMBEDDING_REVISION", ""),
             embedding_dim=_env_int("EMBEDDING_DIM", 512),

@@ -1,6 +1,7 @@
 """校准/验收入口；不读取用户数据库，未达人工复核门槛返回 2。"""
 
 import argparse
+from contextlib import closing
 from datetime import datetime
 import json
 import os
@@ -59,10 +60,16 @@ def main(argv=None):
         command.add_argument("--output", required=True)
         command.add_argument("--review")
         if mode == "embedding":
+            from memorydreaming.retrieval.profiles import EMBEDDING_PROFILES
             command.add_argument("--model-path", required=True)
             command.add_argument("--revision", required=True)
+            command.add_argument("--profile", choices=EMBEDDING_PROFILES, default="generic")
             command.add_argument("--dim", type=int, default=512)
-            command.add_argument("--query-prefix", default="为这个句子生成表示以用于检索相关文章：")
+            command.add_argument("--query-prefix", help="generic 默认 BGE 检索指令；Qwen 默认记忆检索指令")
+            command.add_argument("--document-prefix", default="")
+            command.add_argument("--max-seq-length", type=int, default=512)
+            command.add_argument("--batch-size", type=int, default=16)
+            command.add_argument("--timeout-seconds", type=float, default=30)
             command.add_argument("--k", type=int, default=3)
             command.add_argument("--calibration-artifact", required=True)
         if mode == "extraction-replay":
@@ -97,20 +104,29 @@ def main(argv=None):
         return 0
     review = json.loads(Path(args.review).read_text(encoding="utf-8")) if args.review else None
     if args.mode == "embedding":
-        from memorydreaming.retrieval.embedding import SentenceTransformerEmbedder
-        embedder = SentenceTransformerEmbedder(args.model_path, revision=args.revision, dim=args.dim,
-                                                query_prefix=args.query_prefix)
-        artifact_path = Path(args.calibration_artifact)
-        if artifact_path.exists():
-            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
-        else:
-            artifact = calibrate_embedding(embedder, calibration_path=args.calibration, evaluation_path=args.evaluation, k=args.k)
-            artifact_path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
-        if artifact.get("status") != "calibrated":
-            report = artifact
-        else:
-            report = evaluate_embedding_acceptance(embedder, calibration_path=args.calibration, evaluation_path=args.evaluation,
-                                                    calibration_artifact=artifact, review=review)
+        from memorydreaming.config import Settings
+        from memorydreaming.retrieval.embedding import embedder_from_settings
+        prefix = args.query_prefix if args.query_prefix is not None else (
+            "为这个句子生成表示以用于检索相关文章：" if args.profile == "generic" else "")
+        settings = Settings(embedding_provider="sentence-transformers", embedding_profile=args.profile,
+            embedding_model_path=args.model_path, embedding_revision=args.revision, embedding_dim=args.dim,
+            embedding_query_prefix=prefix, embedding_document_prefix=args.document_prefix,
+            embedding_max_seq_length=args.max_seq_length, embedding_batch_size=args.batch_size,
+            embedding_timeout_seconds=args.timeout_seconds)
+        # 离线验收也走可终止进程，并与生产共享 profile；不能在评测中遗漏查询指令。
+        with closing(embedder_from_settings(settings, isolated=True)) as embedder:
+            artifact_path = Path(args.calibration_artifact)
+            if artifact_path.exists():
+                artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            else:
+                artifact = calibrate_embedding(embedder, calibration_path=args.calibration, evaluation_path=args.evaluation, k=args.k)
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                artifact_path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
+            if artifact.get("status") != "calibrated":
+                report = artifact
+            else:
+                report = evaluate_embedding_acceptance(embedder, calibration_path=args.calibration, evaluation_path=args.evaluation,
+                                                        calibration_artifact=artifact, review=review)
     else:
         from memorydreaming.extraction_evaluation import ReplayExtractor, dataset_fingerprint, load_dataset
         if args.mode == "extraction-deepseek":

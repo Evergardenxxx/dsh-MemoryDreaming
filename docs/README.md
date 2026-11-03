@@ -43,6 +43,7 @@
 |---|---|
 | [候选缓存](retrieval-cache.md) / [摘要生命周期](summary-lifecycle.md) | 缓存代次、失效、撤回和回源 |
 | [实体索引](entity-index.md) / [语义嵌入](semantic-embedding.md) | 图/实体投影、本地模型与原子重建 |
+| [Qwen检索方案](qwen-retrieval.md) | 已实现的本地Qwen3配置/MRL，以及精排、多模态后续条件 |
 | [可靠任务](reliable-consolidation.md) / [事务外计算](optimistic-computation.md) | 租约、崩溃恢复、慢计算与提交复核 |
 | [DeepSeek抽取](deepseek-extraction.md) / [请求调度](deepseek-scheduling.md) | API候选契约、失败退避与配额 |
 | [请求预算](request-budget.md) / [计量接入](tokenizer-integration.md) | 完整请求、精度声明与当前模型边界 |

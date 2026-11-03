@@ -8,7 +8,9 @@ A local long-term memory engine and native DeepSeek Harness plugin for companion
 
 [Source repository](https://github.com/Evergardenxxx/dsh-MemoryDreaming) · [Issue tracker](https://github.com/Evergardenxxx/dsh-MemoryDreaming/issues)
 
-**Experimental, runnable release:** engine 0.31.0, native plugin 0.18.0, database schema 27. The engine, native integration, and first desktop management panel are implemented. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
+**Experimental, runnable release:** engine 0.32.0, native plugin 0.19.0, database schema 27. The engine, native integration, and first desktop management panel are implemented. Real DeepSeek extraction quality, long-term role stability, and the full current desktop/model workflow still need acceptance testing.
+
+Optional local [Qwen3 Embedding profiles](docs/qwen-retrieval.md) add query instructions, architecture checks and Matryoshka output dimensions. Model weights are separate; official Qwen weights and independent Chinese retrieval quality have not been evaluated here. DeepSeek remains the only production LLM extraction target.
 
 ![MemoryDreaming architecture](docs/assets/architecture.svg)
 

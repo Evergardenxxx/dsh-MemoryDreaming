@@ -83,14 +83,7 @@ class MemoryRuntime(
         self._clock = clock or SystemClock()
         self._tz = load_timezone(self._settings.timezone)
         self._owns_embedder = embedder is None
-        if embedder is None and self._settings.embedding_provider == "sentence-transformers":
-            from .retrieval.isolated import IsolatedSentenceTransformerEmbedder
-            embedder = IsolatedSentenceTransformerEmbedder(self._settings.embedding_model_path,
-                revision=self._settings.embedding_revision, dim=self._settings.embedding_dim,
-                query_prefix=self._settings.embedding_query_prefix, document_prefix=self._settings.embedding_document_prefix,
-                max_seq_length=self._settings.embedding_max_seq_length, batch_size=self._settings.embedding_batch_size,
-                timeout_seconds=self._settings.embedding_timeout_seconds)
-        embedder = embedder if embedder is not None else embedder_from_settings(self._settings)
+        embedder = embedder if embedder is not None else embedder_from_settings(self._settings, isolated=True)
         # 运行时是唯一资源所有者。业务能力复用这些对象，后台线程另开连接。
         self._db = Database.open(self._settings.db_path)
         self._repos = self._db.repositories

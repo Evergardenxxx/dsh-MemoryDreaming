@@ -34,7 +34,7 @@ def parent_lifetime():
 
 def main():
     parent_lifetime()
-    from .retrieval.embedding import SentenceTransformerEmbedder
+    from .retrieval.embedding import EmbeddingError, SentenceTransformerEmbedder
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
         sys.stdout.reconfigure(encoding="utf-8")
@@ -50,6 +50,11 @@ def main():
                     model = SentenceTransformerEmbedder(**request["config"])
                 vectors = model._encode(request["texts"], request["prefix"])
             result = {"ok": True, "vectors": vectors}
+        except EmbeddingError as exc:
+            # 私有通道只透传固定代码，避免把路径、正文或底层异常暴露给宿主。
+            result = {"ok": False, "code": exc.code if exc.code in (
+                "INVALID_EMBEDDING", "EMBEDDING_UNAVAILABLE"
+            ) else "EMBEDDING_UNAVAILABLE"}
         except Exception:
             result = {"ok": False, "code": "EMBEDDING_UNAVAILABLE"}
         output.write(json.dumps(result, separators=(",", ":"), allow_nan=False)+"\n")

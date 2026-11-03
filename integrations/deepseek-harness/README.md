@@ -60,6 +60,8 @@
 
 普通抽取默认使用零依赖规则版。可选 `extractor:"deepseek"` 需要单独的 `DEEPSEEK_API_KEY`；睡眠审阅使用 Harness 当前模型路由，可以沿用应用登录态。可选本地语义权重与参数见 [语义嵌入](../../docs/semantic-embedding.md)，不会在启动窗口时下载模型。
 
+可选 `embeddingProfile: qwen3-embedding-0.6b`（另有4b/8b）提供Qwen3查询任务和Matryoshka输出维度；需要预备本地权重及插件Python环境中的可选依赖。配置、阈值验收和重建要求见[Qwen检索](../../docs/qwen-retrieval.md)，不改变DeepSeek抽取器或模型上下文预算。
+
 默认记忆上限为 1200 个估算 token，配置范围 128..4096。每次请求核对完整历史、指令、工具和输出预留，只替换一个自有资料节点；预算不足跳过注入并保留已授权用户事件。自传、承诺、偏好与成长仅按预算提供短资料，不把全部角色历史常驻上下文。完整线上请求仍标 `estimated`；本地 tokenizer 必须固定模型/资产，不能用 V3 代替当前 V4.1，见 [计量接口](../../docs/tokenizer-integration.md)。
 
 ## 生命周期、模块与验收

@@ -16,7 +16,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--revision", required=True)
+    from memorydreaming.retrieval.profiles import EMBEDDING_PROFILES
+    parser.add_argument("--profile", choices=EMBEDDING_PROFILES, default="generic")
     parser.add_argument("--dim", type=int, default=512)
+    parser.add_argument("--query-prefix")
+    parser.add_argument("--max-seq-length", type=int, default=512)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--size", type=int, default=10000)
     parser.add_argument("--queries", type=int, default=8)
     parser.add_argument("--threads", type=int, default=2)
@@ -27,10 +32,18 @@ def main(argv=None):
     import torch
     from memorydreaming import MemoryItem, MemoryRuntime, MemoryType, Scope
     from memorydreaming.models import new_id
-    from memorydreaming.retrieval.embedding import SentenceTransformerEmbedder
+    from memorydreaming.config import Settings
+    from memorydreaming.retrieval.embedding import embedder_from_settings
     torch.set_num_threads(args.threads)
-    embedder = SentenceTransformerEmbedder(args.model_path, revision=args.revision, dim=args.dim,
-        query_prefix="为这个句子生成表示以用于检索相关文章：", batch_size=32)
+    prefix = args.query_prefix if args.query_prefix is not None else (
+        "为这个句子生成表示以用于检索相关文章：" if args.profile == "generic" else "")
+    settings = Settings(embedding_provider="sentence-transformers", embedding_profile=args.profile,
+        embedding_model_path=args.model_path, embedding_revision=args.revision, embedding_dim=args.dim,
+        embedding_query_prefix=prefix, embedding_max_seq_length=args.max_seq_length,
+        embedding_batch_size=args.batch_size)
+    # 本离线基线使用进程内编码，以使 torch_threads 的测量约定真正生效。
+    # 正常宿主与质量验收使用带截止时间的独立模型进程。
+    embedder = embedder_from_settings(settings)
     with tempfile.TemporaryDirectory(prefix="memorydreaming-real-model-scale-") as directory:
         with MemoryRuntime(db_path=str(Path(directory)/"scale.db"), embedder=embedder) as runtime:
             scope = Scope("scale-test", "synthetic")
@@ -49,8 +62,10 @@ def main(argv=None):
                 start = time.perf_counter()
                 runtime.vectors.search_with_status(scope, f"黄昏在沙滩上搜寻第{index}种小贝壳", limit=3, min_score=.5)
                 timings.append((time.perf_counter()-start)*1000)
-            report = {"revision": args.revision, "documents": args.size, "indexed": count,
-                      "dimension": args.dim, "device": "cpu", "torch_threads": args.threads, "batch_size": 32,
+            report = {"revision": args.revision, "profile": args.profile,
+                      "embedding_namespace": runtime.vectors.model_name,
+                      "documents": args.size, "indexed": count,
+                      "dimension": args.dim, "device": "cpu", "torch_threads": args.threads, "batch_size": args.batch_size,
                       "write_seconds": round(write_seconds, 3), "index_seconds": round(index_seconds, 3),
                       "query_count": len(timings), "query_p50_ms": round(statistics.median(timings), 3),
                       "query_max_ms": round(max(timings), 3), "quality_accepted": False,

@@ -78,7 +78,8 @@ export class BridgeClient {
     if (this.config.autoPrefetch !== false) args.push('--auto-prefetch')
     const env = { ...process.env, PYTHONUTF8: '1' }
     const options = {
-      embeddingProvider: 'EMBEDDING_PROVIDER', embeddingModelPath: 'EMBEDDING_MODEL_PATH',
+      embeddingProvider: 'EMBEDDING_PROVIDER', embeddingProfile: 'EMBEDDING_PROFILE',
+      embeddingModelPath: 'EMBEDDING_MODEL_PATH',
       embeddingRevision: 'EMBEDDING_REVISION', embeddingDim: 'EMBEDDING_DIM',
       embeddingQueryPrefix: 'EMBEDDING_QUERY_PREFIX', embeddingDocumentPrefix: 'EMBEDDING_DOCUMENT_PREFIX',
       embeddingMaxSeqLength: 'EMBEDDING_MAX_SEQ_LENGTH', embeddingBatchSize: 'EMBEDDING_BATCH_SIZE',
